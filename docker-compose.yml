@@ -14,7 +14,7 @@ services:
       - PORT=3000
       - MASTER_PIN=814986
     volumes:
-      - inoms-data:/app/data
+      - ./data:/app/data
 
   # Cloudflare Tunnel (Secure HTTPS access to inoms.in)
   # cloudflared:
@@ -23,5 +23,4 @@ services:
   #   restart: unless-stopped
   #   command: tunnel --no-autoupdate run --token YOUR_CLOUDFLARE_TUNNEL_TOKEN
 
-volumes:
-  inoms-data:
+
