@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  inoms-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: inoms-home
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - MASTER_PIN=814986
+    volumes:
+      - inoms-data:/app/data
+
+  # Cloudflare Tunnel (Secure HTTPS access to inoms.in)
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: inoms-tunnel
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run --token YOUR_CLOUDFLARE_TUNNEL_TOKEN
+
+volumes:
+  inoms-data:

@@ -1,0 +1,6 @@
+{
+  "name": "INOMS - Integrated Inward & Outward Management System",
+  "description": "Integrated Inward & Outward Management System for service repair stations, client jobs, inventory, and station billing.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
