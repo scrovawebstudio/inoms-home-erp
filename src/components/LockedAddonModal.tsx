@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 
 export type AddonType =
+  | 'live_queue'
   | 'whatsapp'
   | 'barcode_qr'
   | 'outward_invoice'
@@ -40,6 +41,19 @@ const ADDON_DETAILS: Record<
     efficiencyGain: string;
   }
 > = {
+  live_queue: {
+    title: 'Live Repair Queue & Kanban Workbench',
+    icon: '📊',
+    tagline: 'Interactive drag-and-drop repair stages, live bench view & rack tracking',
+    benefits: [
+      'Visual Kanban workflow: Device Received → In Progress → Ready → Outwarded',
+      'Real-time job movement synchronized instantly with Inwards & Outward records',
+      'Interactive Outward delivery pop-up for instant payment settlement & bill collection',
+      'Workshop rack location tracking for quick device physical retrieval'
+    ],
+    priceHint: '₹399 / month',
+    efficiencyGain: 'Accelerates technician turnaround speed by 40% with zero lost jobs'
+  },
   whatsapp: {
     title: 'WhatsApp 1-Click Automated Messaging',
     icon: '💬',

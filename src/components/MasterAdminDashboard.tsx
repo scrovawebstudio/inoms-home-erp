@@ -31,7 +31,9 @@ import {
   Receipt,
   Tag,
   Sparkles,
-  Layers
+  Layers,
+  Clock,
+  AlertCircle
 } from 'lucide-react';
 import { AddonPricingConfig, MasterAdminInvoice, DEFAULT_ADDON_PRICING } from '../types';
 import MasterAdminPricing from './MasterAdminPricing';
@@ -189,6 +191,7 @@ export default function MasterAdminDashboard({
   const [regOwner, setRegOwner] = useState<string>('');
   const [regPin, setRegPin] = useState<string>('1234');
   const [regSecretKey, setRegSecretKey] = useState<string>('');
+  const [regSubscriptionType, setRegSubscriptionType] = useState<'trial_7d' | 'monthly' | 'annual' | 'lifetime'>('trial_7d');
 
   // Edit Org Modal state
   const [editingOrg, setEditingOrg] = useState<TenantOrg | null>(null);
@@ -199,15 +202,17 @@ export default function MasterAdminDashboard({
   const [editPin, setEditPin] = useState<string>('1234');
   const [editSecretKey, setEditSecretKey] = useState<string>('');
   const [editStatus, setEditStatus] = useState<'active' | 'deactivated'>('active');
+  const [editSubPlan, setEditSubPlan] = useState<'trial' | 'monthly' | 'quarterly' | 'annual' | 'lifetime'>('monthly');
+  const [editSubEndDate, setEditSubEndDate] = useState<string>('');
 
   // Modular Feature Add-ons State for Master Admin Control
+  const [editAllowLiveQueue, setEditAllowLiveQueue] = useState<boolean>(true);
   const [editAllowHomeServerSync, setEditAllowHomeServerSync] = useState<boolean>(true);
   const [editAllowBarcodeQrTags, setEditAllowBarcodeQrTags] = useState<boolean>(true);
-  const [editAllowWhatsAppMessaging, setEditAllowWhatsAppMessaging] = useState<boolean>(true);
   const [editAllowTechnicianAccounts, setEditAllowTechnicianAccounts] = useState<boolean>(true);
   const [editAllowOutwardTaxInvoiceButton, setEditAllowOutwardTaxInvoiceButton] = useState<boolean>(true);
   const [editAllowedModules, setEditAllowedModules] = useState<string[]>([
-    'dashboard', 'inwards', 'outwards', 'billing', 'payments', 'inventory', 'expenses', 'reports', 'settings'
+    'dashboard', 'live_queue', 'inwards', 'outwards', 'billing', 'payments', 'inventory', 'expenses', 'reports', 'settings'
   ]);
 
   const handleOpenEditModal = (org: TenantOrg) => {
@@ -219,11 +224,21 @@ export default function MasterAdminDashboard({
     setEditPin(org.pin);
     setEditSecretKey(org.secretKey || '');
     setEditStatus(org.status);
+    setEditSubPlan(org.subscriptionPlan || (org.isTrial ? 'trial' : 'monthly'));
+    
+    // Default or existing subscription end date
+    if (org.subscriptionEndDate) {
+      setEditSubEndDate(org.subscriptionEndDate.split('T')[0]);
+    } else {
+      const d = new Date();
+      d.setDate(d.getDate() + (org.isTrial ? 7 : 30));
+      setEditSubEndDate(d.toISOString().split('T')[0]);
+    }
 
     const f = getTenantFeatures(org);
+    setEditAllowLiveQueue(f.allowLiveQueue);
     setEditAllowHomeServerSync(f.allowHomeServerSync);
     setEditAllowBarcodeQrTags(f.allowBarcodeQrTags);
-    setEditAllowWhatsAppMessaging(f.allowWhatsAppMessaging);
     setEditAllowTechnicianAccounts(f.allowTechnicianAccounts);
     setEditAllowOutwardTaxInvoiceButton(f.allowOutwardTaxInvoiceButton);
     setEditAllowedModules(f.allowedModules);
@@ -246,10 +261,14 @@ export default function MasterAdminDashboard({
       pin: editPin.trim(),
       secretKey: editSecretKey.trim() || generateBase32Secret(),
       status: editStatus,
+      subscriptionPlan: editSubPlan,
+      subscriptionEndDate: editSubEndDate,
+      isTrial: editSubPlan === 'trial',
       features: {
+        allowLiveQueue: editAllowLiveQueue,
         allowHomeServerSync: editAllowHomeServerSync,
         allowBarcodeQrTags: editAllowBarcodeQrTags,
-        allowWhatsAppMessaging: editAllowWhatsAppMessaging,
+        allowWhatsAppMessaging: true, // Always allowed for all organizations
         allowTechnicianAccounts: editAllowTechnicianAccounts,
         allowOutwardTaxInvoiceButton: editAllowOutwardTaxInvoiceButton,
         allowedModules: editAllowedModules
@@ -308,6 +327,32 @@ export default function MasterAdminDashboard({
 
   const handleFinalizeRegistration = () => {
     if (!regName || !regMobile) return;
+    
+    // Calculate subscription dates based on selected trial/plan
+    const now = new Date();
+    const startDate = now.toISOString().split('T')[0];
+    const endDate = new Date(now);
+    
+    let trialDays = 0;
+    let isTrial = false;
+    let subscriptionPlan: 'trial' | 'monthly' | 'quarterly' | 'annual' | 'lifetime' = 'monthly';
+
+    if (regSubscriptionType === 'trial_7d') {
+      trialDays = 7;
+      isTrial = true;
+      subscriptionPlan = 'trial';
+      endDate.setDate(endDate.getDate() + 7);
+    } else if (regSubscriptionType === 'annual') {
+      subscriptionPlan = 'annual';
+      endDate.setFullYear(endDate.getFullYear() + 1);
+    } else if (regSubscriptionType === 'lifetime') {
+      subscriptionPlan = 'lifetime';
+      endDate.setFullYear(endDate.getFullYear() + 10);
+    } else {
+      subscriptionPlan = 'monthly';
+      endDate.setDate(endDate.getDate() + 30);
+    }
+
     const newOrg: TenantOrg = {
       id: `org-${Date.now()}`,
       name: regName,
@@ -316,8 +361,24 @@ export default function MasterAdminDashboard({
       ownerMobile: regMobile,
       ownerName: regOwner || 'Org Administrator',
       status: 'active',
-      createdAt: new Date().toISOString().split('T')[0],
-      secretKey: regSecretKey
+      createdAt: startDate,
+      secretKey: regSecretKey,
+      subscriptionPlan,
+      subscriptionStartDate: startDate,
+      subscriptionEndDate: endDate.toISOString().split('T')[0],
+      trialDays,
+      isTrial,
+      features: {
+        allowLiveQueue: true,
+        allowHomeServerSync: true,
+        allowBarcodeQrTags: true,
+        allowWhatsAppMessaging: true,
+        allowTechnicianAccounts: true,
+        allowOutwardTaxInvoiceButton: true,
+        allowedModules: [
+          'dashboard', 'live_queue', 'inwards', 'outwards', 'billing', 'payments', 'inventory', 'expenses', 'reports', 'settings'
+        ]
+      }
     };
 
     onRegisterOrg(newOrg);
@@ -349,7 +410,7 @@ export default function MasterAdminDashboard({
 🆔 Workspace Code: ${org.code}
 📱 Owner Mobile: ${org.ownerMobile}
 👤 Owner Name: ${org.ownerName || 'Admin'}
-🔑 Master PIN: ${org.pin}
+🔑 PIN: ${org.pin}
 🔐 2FA Secret Key: ${org.secretKey || 'Standard TOTP'}
 ---------------------------------------
 Login Page: Access with registered mobile and PIN on the portal.`;
@@ -442,52 +503,129 @@ Login Page: Access with registered mobile and PIN on the portal.`;
       {/* Tab 1: Organizations & Workspaces */}
       {masterTab === 'accounts' && (
         <>
-          {/* Overview Stat Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Workspaces</p>
-            <h3 className="text-2xl font-black text-slate-900 mt-1">{tenants.length}</h3>
-            <p className="text-[10px] text-slate-400 mt-0.5">Registered Organizations</p>
-          </div>
-          <div className="p-3 bg-slate-100 text-slate-700 rounded-2xl">
-            <Building className="w-6 h-6" />
-          </div>
-        </div>
+          {/* Overview Stat Cards with Subscription Health */}
+          {(() => {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
 
-        <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Active Accounts</p>
-            <h3 className="text-2xl font-black text-emerald-600 mt-1">{activeCount}</h3>
-            <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">Full System Access</p>
-          </div>
-          <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl">
-            <CheckCircle2 className="w-6 h-6" />
-          </div>
-        </div>
+            const expiringSoonOrExpired = tenants.filter(t => {
+              if (t.id === 'org-admin' || t.code?.toUpperCase() === 'ADMIN-00' || t.ownerMobile?.includes('8149862034')) return false;
+              if (!t.subscriptionEndDate) return false;
+              const end = new Date(t.subscriptionEndDate);
+              end.setHours(0, 0, 0, 0);
+              const diffDays = Math.ceil((end.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+              return diffDays <= 7; // Expired or expiring within 7 days
+            });
 
-        <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Deactivated Accounts</p>
-            <h3 className="text-2xl font-black text-rose-600 mt-1">{deactivatedCount}</h3>
-            <p className="text-[10px] text-rose-600 font-semibold mt-0.5">Login Blocked</p>
-          </div>
-          <div className="p-3 bg-rose-50 text-rose-600 rounded-2xl">
-            <XCircle className="w-6 h-6" />
-          </div>
-        </div>
+            const expiredCount = expiringSoonOrExpired.filter(t => {
+              const end = new Date(t.subscriptionEndDate!);
+              end.setHours(0, 0, 0, 0);
+              return end.getTime() < today.getTime();
+            }).length;
 
-        <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Active Broadcasts</p>
-            <h3 className="text-2xl font-black text-teal-600 mt-1">{announcements.length}</h3>
-            <p className="text-[10px] text-slate-400 mt-0.5">System Messages</p>
-          </div>
-          <div className="p-3 bg-teal-50 text-teal-600 rounded-2xl">
-            <Bell className="w-6 h-6" />
-          </div>
-        </div>
-      </div>
+            const trialsCount = tenants.filter(t => t.isTrial || t.subscriptionPlan === 'trial').length;
+
+            return (
+              <div className="space-y-4">
+                {/* Expiring / Expired Subscription Alert Bar if any */}
+                {expiringSoonOrExpired.length > 0 && (
+                  <div className="bg-gradient-to-r from-amber-500 via-rose-500 to-rose-600 p-4 rounded-2xl text-white shadow-md flex flex-col md:flex-row items-start md:items-center justify-between gap-3 animate-fade-in">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-white/20 rounded-xl backdrop-blur-xs">
+                        <AlertCircle className="w-5 h-5 text-white" />
+                      </div>
+                      <div>
+                        <h4 className="font-extrabold text-sm flex items-center gap-2">
+                          <span>Subscription Expiry Alert</span>
+                          <span className="bg-white/30 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">
+                            {expiringSoonOrExpired.length} {expiringSoonOrExpired.length === 1 ? 'Org' : 'Orgs'} Requiring Attention
+                          </span>
+                        </h4>
+                        <p className="text-xs text-white/90">
+                          {expiredCount > 0 
+                            ? `${expiredCount} organization subscription(s) have expired! Review access or renew their plans.` 
+                            : `${expiringSoonOrExpired.length} organization subscription(s) / 7-day trials are expiring within 7 days.`}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap text-xs">
+                      {expiringSoonOrExpired.slice(0, 3).map(org => {
+                        const end = new Date(org.subscriptionEndDate!);
+                        end.setHours(0, 0, 0, 0);
+                        const diffDays = Math.ceil((end.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+                        const isExpired = diffDays < 0;
+
+                        return (
+                          <button
+                            key={org.id}
+                            type="button"
+                            onClick={() => handleOpenEditModal(org)}
+                            className="bg-white/20 hover:bg-white/30 px-2.5 py-1.5 rounded-xl text-white font-bold flex items-center gap-1.5 transition cursor-pointer border border-white/30"
+                          >
+                            <span>{org.name}:</span>
+                            <span className={isExpired ? 'underline decoration-rose-300 font-extrabold' : 'font-extrabold'}>
+                              {isExpired ? `Expired (${Math.abs(diffDays)}d ago)` : diffDays === 0 ? 'Expires Today' : `${diffDays}d left`}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Workspaces</p>
+                      <h3 className="text-2xl font-black text-slate-900 mt-1">{tenants.length}</h3>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Registered Organizations</p>
+                    </div>
+                    <div className="p-3 bg-slate-100 text-slate-700 rounded-2xl">
+                      <Building className="w-6 h-6" />
+                    </div>
+                  </div>
+
+                  <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Active Accounts</p>
+                      <h3 className="text-2xl font-black text-emerald-600 mt-1">{activeCount}</h3>
+                      <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">Full System Access</p>
+                    </div>
+                    <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl">
+                      <CheckCircle2 className="w-6 h-6" />
+                    </div>
+                  </div>
+
+                  <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">7-Day Free Trials</p>
+                      <h3 className="text-2xl font-black text-teal-600 mt-1">{trialsCount}</h3>
+                      <p className="text-[10px] text-teal-600 font-semibold mt-0.5">Active Trial Evaluation</p>
+                    </div>
+                    <div className="p-3 bg-teal-50 text-teal-600 rounded-2xl">
+                      <Sparkles className="w-6 h-6" />
+                    </div>
+                  </div>
+
+                  <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Expiring / Expired</p>
+                      <h3 className={`text-2xl font-black mt-1 ${expiringSoonOrExpired.length > 0 ? 'text-amber-600' : 'text-slate-800'}`}>
+                        {expiringSoonOrExpired.length}
+                      </h3>
+                      <p className="text-[10px] text-amber-600 font-semibold mt-0.5">
+                        {expiredCount > 0 ? `${expiredCount} Expired` : 'Expiring within 7d'}
+                      </p>
+                    </div>
+                    <div className="p-3 bg-amber-50 text-amber-600 rounded-2xl">
+                      <Clock className="w-6 h-6" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
       {/* Main Section: Organizations Directory & Control Table */}
       <div className="bg-white border border-slate-200/80 rounded-3xl shadow-sm overflow-hidden">
@@ -542,7 +680,7 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                 <th className="p-4 whitespace-nowrap">Organization Name</th>
                 <th className="p-4 whitespace-nowrap">Org Code</th>
                 <th className="p-4 whitespace-nowrap">Owner Contact</th>
-                <th className="p-4 whitespace-nowrap">Registered Date</th>
+                <th className="p-4 whitespace-nowrap">Plan & Expiry</th>
                 <th className="p-4 whitespace-nowrap">Account Status</th>
                 <th className="p-4 text-center whitespace-nowrap">Manage / Actions</th>
               </tr>
@@ -558,6 +696,60 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                 filteredTenants.map(org => {
                   const isMasterAdmin = org.id === 'org-admin' || org.code?.toUpperCase() === 'ADMIN-00' || org.ownerMobile?.includes('8149862034');
                   const isActive = isMasterAdmin ? true : org.status === 'active';
+
+                  // Subscription calculation
+                  const today = new Date();
+                  today.setHours(0, 0, 0, 0);
+                  let subBadge = null;
+
+                  if (isMasterAdmin) {
+                    subBadge = (
+                      <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full text-[10px] font-bold border border-slate-200">
+                        ♾️ Lifetime System
+                      </span>
+                    );
+                  } else if (org.subscriptionEndDate) {
+                    const end = new Date(org.subscriptionEndDate);
+                    end.setHours(0, 0, 0, 0);
+                    const diffDays = Math.ceil((end.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+                    const isExpired = diffDays < 0;
+                    const isTrial = org.isTrial || org.subscriptionPlan === 'trial';
+
+                    if (isExpired) {
+                      subBadge = (
+                        <div className="flex flex-col gap-0.5">
+                          <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 px-2 py-0.5 rounded-md text-[10px] font-extrabold border border-rose-300">
+                            <AlertTriangle className="w-3 h-3 text-rose-600" /> Expired ({Math.abs(diffDays)}d ago)
+                          </span>
+                          <span className="text-[9px] text-slate-400 font-mono">{org.subscriptionEndDate.split('T')[0]}</span>
+                        </div>
+                      );
+                    } else if (diffDays <= 7) {
+                      subBadge = (
+                        <div className="flex flex-col gap-0.5">
+                          <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 px-2 py-0.5 rounded-md text-[10px] font-extrabold border border-amber-300 animate-pulse">
+                            <Clock className="w-3 h-3 text-amber-700" /> {diffDays === 0 ? 'Expires Today' : `${diffDays} days left`} {isTrial ? '(Trial)' : ''}
+                          </span>
+                          <span className="text-[9px] text-slate-400 font-mono">{org.subscriptionEndDate.split('T')[0]}</span>
+                        </div>
+                      );
+                    } else {
+                      subBadge = (
+                        <div className="flex flex-col gap-0.5">
+                          <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded-md text-[10px] font-bold border border-emerald-200">
+                            {isTrial ? '🎁 7-Day Trial' : org.subscriptionPlan ? `⭐ ${org.subscriptionPlan.toUpperCase()}` : 'Active Plan'} ({diffDays}d)
+                          </span>
+                          <span className="text-[9px] text-slate-400 font-mono">Until {org.subscriptionEndDate.split('T')[0]}</span>
+                        </div>
+                      );
+                    }
+                  } else {
+                    subBadge = (
+                      <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md text-[10px] font-medium border border-slate-200">
+                        {org.createdAt || 'Standard'}
+                      </span>
+                    );
+                  }
 
                   return (
                     <tr key={org.id} className="hover:bg-slate-50/80 transition">
@@ -592,8 +784,8 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                         {org.ownerMobile}
                       </td>
 
-                      <td className="p-4 whitespace-nowrap text-slate-500 text-[11px]">
-                        {org.createdAt || '2026-01-01'}
+                      <td className="p-4 whitespace-nowrap">
+                        {subBadge}
                       </td>
 
                       <td className="p-4 whitespace-nowrap">
@@ -958,17 +1150,95 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">Set Master PIN Code</label>
+                    <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">Organization Login PIN *</label>
                     <input
                       type="text"
                       required
                       maxLength={6}
-                      placeholder="1234"
+                      placeholder="e.g. 1234"
                       value={regPin}
                       onChange={e => setRegPin(e.target.value)}
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-800 outline-none focus:ring-2 focus:ring-teal-500"
                     />
+                    <p className="text-[10px] text-slate-400 mt-1">Specific login PIN for this organization</p>
                   </div>
+                </div>
+
+                {/* Subscription & 7-Day Free Trial Choice */}
+                <div className="bg-teal-50/60 border border-teal-200/80 p-3.5 rounded-2xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-extrabold text-teal-900 uppercase flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-teal-600" /> Subscription Plan / Free Trial Setup
+                    </span>
+                    <span className="text-[10px] bg-teal-100 text-teal-800 font-bold px-2 py-0.5 rounded-full border border-teal-200">
+                      7-Day Trial Default
+                    </span>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 text-xs font-semibold">
+                    <label className={`p-2.5 rounded-xl border cursor-pointer transition flex flex-col items-center text-center gap-1 ${
+                      regSubscriptionType === 'trial_7d' ? 'bg-teal-600 text-white border-teal-700 shadow-xs' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="regSubType"
+                        value="trial_7d"
+                        checked={regSubscriptionType === 'trial_7d'}
+                        onChange={() => setRegSubscriptionType('trial_7d')}
+                        className="hidden"
+                      />
+                      <span className="font-extrabold text-[11px]">🎁 7-Day Trial</span>
+                      <span className="text-[9px] opacity-80">Free Evaluation</span>
+                    </label>
+
+                    <label className={`p-2.5 rounded-xl border cursor-pointer transition flex flex-col items-center text-center gap-1 ${
+                      regSubscriptionType === 'monthly' ? 'bg-teal-600 text-white border-teal-700 shadow-xs' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="regSubType"
+                        value="monthly"
+                        checked={regSubscriptionType === 'monthly'}
+                        onChange={() => setRegSubscriptionType('monthly')}
+                        className="hidden"
+                      />
+                      <span className="font-extrabold text-[11px]">📅 1 Month</span>
+                      <span className="text-[9px] opacity-80">30 Days Access</span>
+                    </label>
+
+                    <label className={`p-2.5 rounded-xl border cursor-pointer transition flex flex-col items-center text-center gap-1 ${
+                      regSubscriptionType === 'annual' ? 'bg-teal-600 text-white border-teal-700 shadow-xs' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="regSubType"
+                        value="annual"
+                        checked={regSubscriptionType === 'annual'}
+                        onChange={() => setRegSubscriptionType('annual')}
+                        className="hidden"
+                      />
+                      <span className="font-extrabold text-[11px]">⭐ 1 Year</span>
+                      <span className="text-[9px] opacity-80">365 Days Access</span>
+                    </label>
+
+                    <label className={`p-2.5 rounded-xl border cursor-pointer transition flex flex-col items-center text-center gap-1 ${
+                      regSubscriptionType === 'lifetime' ? 'bg-teal-600 text-white border-teal-700 shadow-xs' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="regSubType"
+                        value="lifetime"
+                        checked={regSubscriptionType === 'lifetime'}
+                        onChange={() => setRegSubscriptionType('lifetime')}
+                        className="hidden"
+                      />
+                      <span className="font-extrabold text-[11px]">♾️ Lifetime</span>
+                      <span className="text-[9px] opacity-80">Permanent Plan</span>
+                    </label>
+                  </div>
+                  <p className="text-[10px] text-teal-800/80 font-medium">
+                    {regSubscriptionType === 'trial_7d' ? 'Organization will get full access for 7 days. Master Admin dashboard will alert when trial is expiring or expired.' : 'Subscription will be monitored on the Master Admin dashboard.'}
+                  </p>
                 </div>
 
                 <div className="flex justify-end gap-2 pt-2">
@@ -1216,6 +1486,54 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                 </div>
               </div>
 
+              {/* Subscription Plan & Duration Management */}
+              <div className="pt-2 border-t border-slate-200 space-y-3">
+                <div className="bg-teal-50/70 p-3 rounded-xl border border-teal-200">
+                  <h4 className="font-extrabold text-xs text-teal-900 uppercase tracking-wider flex items-center gap-1.5 mb-1">
+                    <Clock className="w-4 h-4 text-teal-700" /> Subscription Plan & Expiry Monitoring
+                  </h4>
+                  <p className="text-[11px] text-teal-700">
+                    Configure client subscription cycle, free trial status, and expiry date.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-500 uppercase mb-1">Plan Type</label>
+                    <select
+                      value={editSubPlan}
+                      onChange={(e) => {
+                        const nextPlan = e.target.value as any;
+                        setEditSubPlan(nextPlan);
+                        const d = new Date();
+                        if (nextPlan === 'trial') d.setDate(d.getDate() + 7);
+                        else if (nextPlan === 'monthly') d.setDate(d.getDate() + 30);
+                        else if (nextPlan === 'quarterly') d.setDate(d.getDate() + 90);
+                        else if (nextPlan === 'annual') d.setFullYear(d.getFullYear() + 1);
+                        else if (nextPlan === 'lifetime') d.setFullYear(d.getFullYear() + 10);
+                        setEditSubEndDate(d.toISOString().split('T')[0]);
+                      }}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold"
+                    >
+                      <option value="trial">🎁 7-Day Free Trial</option>
+                      <option value="monthly">📅 Monthly (30 Days)</option>
+                      <option value="quarterly">📊 Quarterly (90 Days)</option>
+                      <option value="annual">⭐ Annual (365 Days)</option>
+                      <option value="lifetime">♾️ Lifetime License</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-500 uppercase mb-1">Subscription Expiry Date</label>
+                    <input
+                      type="date"
+                      value={editSubEndDate}
+                      onChange={(e) => setEditSubEndDate(e.target.value)}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold"
+                    />
+                  </div>
+                </div>
+              </div>
+
               {/* Master Admin Feature Access & Add-ons Control Section */}
               <div className="pt-2 border-t border-slate-200 space-y-3">
                 <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
@@ -1228,6 +1546,20 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                 </div>
 
                 <div className="space-y-2 text-xs">
+                  {/* Live Queue & Workbench Add-on Toggle */}
+                  <label className="flex items-center justify-between p-2.5 bg-slate-50 hover:bg-slate-100/80 rounded-xl border border-slate-200 cursor-pointer">
+                    <div className="pr-2">
+                      <span className="font-bold text-slate-800 block">⚡ Live Repair Queue & Visual Workbench</span>
+                      <span className="text-[10px] text-slate-500 block">Kanban board live repair status sync and technician ticket workflows</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={editAllowLiveQueue}
+                      onChange={(e) => setEditAllowLiveQueue(e.target.checked)}
+                      className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500 cursor-pointer"
+                    />
+                  </label>
+
                   {/* Home Server Sync Toggle */}
                   <label className="flex items-center justify-between p-2.5 bg-slate-50 hover:bg-slate-100/80 rounded-xl border border-slate-200 cursor-pointer">
                     <div className="pr-2">
@@ -1252,20 +1584,6 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                       type="checkbox"
                       checked={editAllowBarcodeQrTags}
                       onChange={(e) => setEditAllowBarcodeQrTags(e.target.checked)}
-                      className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500 cursor-pointer"
-                    />
-                  </label>
-
-                  {/* WhatsApp Messaging Toggle */}
-                  <label className="flex items-center justify-between p-2.5 bg-slate-50 hover:bg-slate-100/80 rounded-xl border border-slate-200 cursor-pointer">
-                    <div className="pr-2">
-                      <span className="font-bold text-slate-800 block">💬 WhatsApp Automated Messaging</span>
-                      <span className="text-[10px] text-slate-500 block">Enable 1-click WhatsApp customer job status updates and receipts</span>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={editAllowWhatsAppMessaging}
-                      onChange={(e) => setEditAllowWhatsAppMessaging(e.target.checked)}
                       className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500 cursor-pointer"
                     />
                   </label>
@@ -1309,6 +1627,7 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                   <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-xs">
                     {[
                       { id: 'dashboard', label: '📊 Dashboard' },
+                      { id: 'live_queue', label: '⚡ Live Queue & Bench' },
                       { id: 'inwards', label: '📥 Inward Jobs' },
                       { id: 'outwards', label: '📤 Outward Jobs' },
                       { id: 'billing', label: '📄 Billing & Invoices' },

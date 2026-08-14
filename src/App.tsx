@@ -26,6 +26,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Truck,
+  Kanban,
   Menu,
   X,
   WifiOff,
@@ -51,10 +52,18 @@ import {
   checkHomeServerSession
 } from './lib/api';
 
+import {
+  bootstrapTenantFromHomeServer,
+  pullDeltaFromHomeServer,
+  pushPendingOperations,
+  getPendingOperationsCount
+} from './lib/localDb';
+
 // Modular Components
 import Dashboard from './components/Dashboard';
 import Clients from './components/Clients';
 import Inwards from './components/Inwards';
+import LiveRepairQueue from './components/LiveRepairQueue';
 import Outwards from './components/Outwards';
 import Billing from './components/Billing';
 import Payments from './components/Payments';
@@ -189,25 +198,48 @@ export default function App() {
     }
   };
 
-  // Helper to ensure Master System Admin org exists and strip unrequested demo tenants
+  // Helper to ensure Master System Admin org exists and strip unrequested demo tenants & duplicates
   const ensureAdminActive = (list: TenantOrg[]) => {
-    let result = list.filter(t => t.code !== 'SCROVA-01' && t.code !== 'NIBBAN-01' && t.id !== 'org-nibban' && t.id !== 'org-yash');
+    let result = list.filter(t => t && t.code !== 'SCROVA-01' && t.code !== 'NIBBAN-01' && t.id !== 'org-nibban' && t.id !== 'org-yash');
     const hasAdminOrg = result.some(t => t.id === 'org-admin' || t.ownerMobile?.includes('8149862034'));
     if (!hasAdminOrg) {
       result = [INITIAL_TENANTS[0], ...result];
     }
-    return result.map(t => {
-      if (t.id === 'org-admin' || t.code === 'ADMIN-00' || t.ownerMobile?.includes('8149862034')) {
-        return {
+    
+    // Deduplicate by ID and (name + cleanMobile)
+    const seenIds = new Set<string>();
+    const seenKeys = new Set<string>();
+    const deduped: TenantOrg[] = [];
+
+    for (const t of result) {
+      if (!t || !t.id || seenIds.has(t.id)) continue;
+      seenIds.add(t.id);
+
+      const cleanMobile = (t.ownerMobile || '').replace(/\D/g, '');
+      const cleanName = (t.name || '').trim().toLowerCase();
+      const isMasterAdmin = t.id === 'org-admin' || cleanMobile === '8149862034' || t.code?.toUpperCase() === 'ADMIN-00';
+      const dedupeKey = isMasterAdmin ? 'org-admin' : `${cleanName}_${cleanMobile}`;
+
+      if (!isMasterAdmin && cleanMobile && seenKeys.has(dedupeKey)) {
+        continue;
+      }
+      if (dedupeKey) seenKeys.add(dedupeKey);
+
+      if (isMasterAdmin) {
+        deduped.push({
           ...t,
+          id: 'org-admin',
           name: 'Master System Admin',
           ownerName: 'Master System Admin',
           ownerMobile: '+91 8149862034',
           status: 'active' as const
-        };
+        });
+      } else {
+        deduped.push(t);
       }
-      return t;
-    });
+    }
+
+    return deduped;
   };
 
   // Multi-Tenant Organizations State
@@ -1027,8 +1059,48 @@ export default function App() {
     const unSubEquipments = subscribeTenantCollection<Equipment>(tId, 'equipments', handleCloudCollectionUpdate('equipments', setEquipments), () => equipmentsRef.current);
     const unSubProblems = subscribeTenantCollection<Problem>(tId, 'problems', handleCloudCollectionUpdate('problems', setProblems), () => problemsRef.current);
 
+    // 1. Initial Authoritative Bootstrap from Home Server SQLite Database
+    bootstrapTenantFromHomeServer(tId)
+      .then(bData => {
+        if (bData && bData.collections) {
+          if (bData.collections.clients) setClients(bData.collections.clients);
+          if (bData.collections.jobs) setJobs(bData.collections.jobs);
+          if (bData.collections.invoices) setInvoices(bData.collections.invoices);
+          if (bData.collections.payments) setPayments(bData.collections.payments);
+          if (bData.collections.products) setProducts(bData.collections.products);
+          if (bData.collections.expenses) setExpenses(bData.collections.expenses);
+          if (bData.collections.ledger) setLedger(bData.collections.ledger);
+          if (bData.collections.users && bData.collections.users.length > 0) setUsers(bData.collections.users);
+          if (bData.collections.categories) setCategories(bData.collections.categories);
+          if (bData.collections.racks) setRacks(bData.collections.racks);
+          if (bData.collections.equipments) setEquipments(bData.collections.equipments);
+          if (bData.collections.problems) setProblems(bData.collections.problems);
+          if (bData.companyConfig) setCompanyConfig(prev => ({ ...prev, ...bData.companyConfig }));
+        }
+      })
+      .catch(err => {
+        console.info('Home Server bootstrap info:', err?.message || err);
+      });
+
+    // 2. Periodic Home Server Delta Synchronization (Every 10 seconds)
+    const deltaSyncInterval = setInterval(() => {
+      if (navigator.onLine) {
+        pullDeltaFromHomeServer(tId).catch(() => {});
+        pushPendingOperations(tId).catch(() => {});
+      }
+    }, 10000);
+
+    // 3. Online event listener to immediately flush pending offline queue
+    const handleOnline = () => {
+      pushPendingOperations(tId).catch(() => {});
+      pullDeltaFromHomeServer(tId).catch(() => {});
+    };
+    window.addEventListener('online', handleOnline);
+
     return () => {
       clearTimeout(syncTimer);
+      clearInterval(deltaSyncInterval);
+      window.removeEventListener('online', handleOnline);
       unSubConfig();
       unSubGlobalBranding();
       unSubClients();
@@ -1348,11 +1420,12 @@ export default function App() {
     setIsSyncing(true);
     const syncStartTime = Date.now();
     try {
-      // 0. Retry any queued offline writes from local storage to Cloud Firestore
-      await retryPendingCloudSync();
+      // 0. Flush any queued offline writes to Home Server SQLite
+      await pushPendingOperations(activeTenant.id);
+      await pullDeltaFromHomeServer(activeTenant.id);
       setPendingQueueCount(getPendingQueueCount());
       setIsQuotaExhaustedState(isQuotaExhausted());
-      // 1. Sync Company Config & Global System Branding to Cloud Firestore
+      // 1. Sync Company Config & Global System Branding to Home Server
       await saveCompanyConfigToFirestore(activeTenant.id, companyConfig);
       const isMasterAdminOrg = activeTenant.id === 'org-admin' || activeTenant.code === 'ADMIN-00' || activeTenant.ownerMobile?.includes('8149862034');
       if (isMasterAdminOrg || companyConfig.appLogoUrl) {
@@ -2703,6 +2776,7 @@ export default function App() {
     if (isAdmin) {
       items = [
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+        { id: 'live_queue', label: 'Live Queue & Bench', icon: Kanban },
         { id: 'inwards', label: 'Repair Inwards', icon: Briefcase },
         { id: 'outwards', label: 'Outward Jobs', icon: Truck },
         { id: 'billing', label: 'Billing / Invoice', icon: Receipt },
@@ -2721,6 +2795,10 @@ export default function App() {
       // Dashboard
       if (hasExplicitPerms ? !!perms.dashboard : true) {
         items.push({ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard });
+      }
+      // Live Queue & Workbench
+      if (hasExplicitPerms ? !!perms.operations : true) {
+        items.push({ id: 'live_queue', label: 'Live Queue & Bench', icon: Kanban });
       }
       // Repair Inwards & Outward Jobs
       if (hasExplicitPerms ? !!perms.operations : true) {
@@ -3285,6 +3363,23 @@ export default function App() {
               onNavigateToBillingForOrg={() => setActiveTab('billing')}
               onNavigateToJob={handleNavigateToJob}
               onNavigateToInvoice={handleNavigateToInvoice}
+            />
+          )}
+
+          {activeTab === 'live_queue' && activeTenant.id !== 'org-admin' && (
+            <LiveRepairQueue
+              jobs={jobs}
+              companyConfig={companyConfig}
+              users={users}
+              currentUser={currentUser}
+              onSelectJob={(job) => {
+                setInitialJobIdToView(job.id);
+                setActiveTab('inwards');
+              }}
+              onUpdateJob={updateJob}
+              onNewJobClick={() => {
+                setActiveTab('inwards');
+              }}
             />
           )}
 

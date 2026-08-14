@@ -1,21 +1,22 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore, collection, doc, setDoc, onSnapshot, getDocs, deleteDoc } from 'firebase/firestore';
 import { getAuth, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { TenantOrg, SystemAnnouncement, INITIAL_TENANTS } from '../components/AuthModal';
 import { CompanyConfig } from '../types';
-import { getHomeServerDbKey, saveHomeServerDbKey } from './api';
+import {
+  saveLocalRecord,
+  deleteLocalRecord,
+  replaceLocalCollection,
+  getLocalCollection,
+  subscribeLocalDb
+} from './localDb';
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-
-export const db = firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
-  ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
-  : getFirestore(app);
-
 export const auth = getAuth(app);
 
 /**
  * Executes official Google Login popup to authenticate the user using Firebase Auth.
+ * Authentication identity only — NO business data is stored or retrieved from Firebase.
  */
 export async function signInWithGoogle(): Promise<{ userEmail: string; displayName: string }> {
   try {
@@ -34,359 +35,113 @@ export async function signInWithGoogle(): Promise<{ userEmail: string; displayNa
   }
 }
 
-const TENANTS_COLLECTION = 'tenants';
-const ANNOUNCEMENTS_COLLECTION = 'announcements';
-const TENANT_CONFIGS_COLLECTION = 'tenant_configs';
-const TENANT_COLLECTIONS_COLLECTION = 'tenant_collections';
+// -------------------------------------------------------------
+// HOME SERVER MULTI-TENANT & CONFIGURATION SYNC
+// -------------------------------------------------------------
 
-// Global flag to operate strictly on Home Server local storage and bypass Firebase Firestore background listeners
-const DISABLE_CLOUD_FIRESTORE = false;
-let isFirestoreQuotaExhausted = false;
-const reportedQuotaWarning = new Set<string>();
-
-export function isQuotaExhausted(): boolean {
-  return isFirestoreQuotaExhausted;
-}
-
-export function resetQuotaStatus(): void {
-  isFirestoreQuotaExhausted = false;
-}
-
-// Persistent Outbox Queue for Cloud Sync Recovery
-const PENDING_QUEUE_KEY = 'inoms_pending_cloud_sync_queue';
-
-export interface PendingSyncItem {
-  id: string; // collectionName_docId
-  colName: string;
-  docId: string;
-  data: any;
-  updatedAt: string;
-}
-
-export function getPendingQueue(): PendingSyncItem[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(PENDING_QUEUE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch (e) {
-    return [];
-  }
-}
-
-export function clearPendingQueue(): void {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.removeItem(PENDING_QUEUE_KEY);
-    isFirestoreQuotaExhausted = false;
-    notifyQueueChanged();
-  } catch (e) {}
-}
-
-export function getPendingQueueCount(): number {
-  return getPendingQueue().length;
-}
-
-function notifyQueueChanged() {
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('inoms_sync_queue_changed', { detail: { count: getPendingQueueCount() } }));
-  }
-}
-
-export function saveToPendingQueue(colName: string, docId: string, data: any) {
-  if (typeof window === 'undefined') return;
-  try {
-    const queue = getPendingQueue();
-    const itemId = `${colName}_${docId}`;
-    const existingIndex = queue.findIndex(item => item.id === itemId);
-    const newItem: PendingSyncItem = {
-      id: itemId,
-      colName,
-      docId,
-      data,
-      updatedAt: new Date().toISOString()
-    };
-
-    if (existingIndex >= 0) {
-      queue[existingIndex] = newItem;
-    } else {
-      queue.push(newItem);
-    }
-    localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(queue));
-    notifyQueueChanged();
-  } catch (e) {
-    console.warn('Error queuing pending cloud sync:', e);
-  }
-}
-
-export function removeFromPendingQueue(id: string) {
-  if (typeof window === 'undefined') return;
-  try {
-    const queue = getPendingQueue().filter(item => item.id !== id);
-    localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(queue));
-    notifyQueueChanged();
-  } catch (e) {}
-}
-
-export async function retryPendingCloudSync(): Promise<{ success: boolean; syncedCount: number; remainingCount: number; message: string }> {
-  const queue = getPendingQueue();
-  if (queue.length === 0) {
-    isFirestoreQuotaExhausted = false;
-    return { success: true, syncedCount: 0, remainingCount: 0, message: 'All local changes are already synced to Cloud Firestore!' };
-  }
-
-  let syncedCount = 0;
-  let remainingCount = queue.length;
-  let quotaHit = false;
-
-  for (const item of queue) {
-    try {
-      await setDoc(doc(db, item.colName, item.docId), item.data, { merge: true });
-      removeFromPendingQueue(item.id);
-      syncedCount++;
-      remainingCount--;
-    } catch (err: any) {
-      if (
-        err?.code === 'resource-exhausted' ||
-        err?.message?.includes('Quota') ||
-        err?.message?.includes('quota') ||
-        err?.message?.includes('resource-exhausted')
-      ) {
-        isFirestoreQuotaExhausted = true;
-        quotaHit = true;
-        break; // Quota still exceeded today, stop further attempts until next retry/tomorrow
-      } else {
-        console.warn(`Failed to sync queued item ${item.id}:`, err);
-      }
-    }
-  }
-
-  if (!quotaHit && remainingCount === 0) {
-    isFirestoreQuotaExhausted = false;
-    return {
-      success: true,
-      syncedCount,
-      remainingCount: 0,
-      message: `Successfully synced all ${syncedCount} queued local changes to Cloud Firestore!`
-    };
-  }
-
-  return {
-    success: false,
-    syncedCount,
-    remainingCount,
-    message: quotaHit
-      ? `Synced ${syncedCount} item(s). Cloud quota is still exceeded for today. ${remainingCount} change(s) remain safely saved in local offline storage.`
-      : `Synced ${syncedCount} item(s). ${remainingCount} change(s) pending.`
-  };
-}
-
-function handleFirestoreError(context: string, error: any) {
-  if (
-    error?.code === 'resource-exhausted' ||
-    error?.message?.includes('Quota') ||
-    error?.message?.includes('quota') ||
-    error?.message?.includes('resource-exhausted')
-  ) {
-    isFirestoreQuotaExhausted = true;
-    if (!reportedQuotaWarning.has(context)) {
-      reportedQuotaWarning.add(context);
-      console.info(`[Firestore Sync] Daily cloud write quota reached for ${context}. Seamlessly operating in offline local PC storage mode.`);
-    }
-    return;
-  }
-  console.warn(`Firestore ${context} notice:`, error?.message || error);
-}
-
-// In-memory cache to track last known JSON state per document to prevent write loops and quota waste
-const lastKnownDocCache = new Map<string, string>();
-const writeDebounceTimers = new Map<string, NodeJS.Timeout>();
-
-/**
- * Real-time Firestore synchronization for Multi-Tenant Organizations, System Announcements,
- * Company Configurations, and Tenant Data Collections.
- * Includes automatic quota error handling and change-deduplication caching.
- */
 export function subscribeTenants(onUpdate: (tenants: TenantOrg[]) => void) {
-  const cacheKey = 'tenants_all';
-
-  getHomeServerDbKey<TenantOrg[]>('tenants_all').then(data => {
-    if (data && Array.isArray(data) && data.length > 0) {
-      onUpdate(data);
-    }
-  }).catch(() => {});
-
-  const intervalId = setInterval(() => {
-    getHomeServerDbKey<TenantOrg[]>('tenants_all').then(data => {
-      if (data && Array.isArray(data)) {
-        const serialized = JSON.stringify(data);
-        if (lastKnownDocCache.get(cacheKey) !== serialized) {
-          lastKnownDocCache.set(cacheKey, serialized);
-          onUpdate(data);
-        }
-      }
-    }).catch(() => {});
-  }, 4000);
-
-  let unsubscribe = () => {};
-  if (!isFirestoreQuotaExhausted) {
-    try {
-      unsubscribe = onSnapshot(
-        collection(db, TENANTS_COLLECTION),
-        (snapshot) => {
-          const tenantsList: TenantOrg[] = [];
-          snapshot.forEach((docSnap) => {
-            if (docSnap.exists()) {
-              tenantsList.push(docSnap.data() as TenantOrg);
+  // Fetch from Home Server API with deduplication
+  const fetchTenants = () => {
+    fetch('/api/auth/tenants')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && Array.isArray(data.tenants)) {
+          const list: TenantOrg[] = data.tenants;
+          const seen = new Map<string, boolean>();
+          const deduped: TenantOrg[] = [];
+          for (const t of list) {
+            if (!t || !t.id) continue;
+            const cleanMobile = (t.ownerMobile || '').replace(/\D/g, '');
+            const cleanName = (t.name || '').trim().toLowerCase();
+            const dedupeKey = t.id === 'org-admin' ? 'org-admin' : `${cleanName}_${cleanMobile}`;
+            if (!seen.has(t.id) && !seen.has(dedupeKey)) {
+              seen.set(t.id, true);
+              seen.set(dedupeKey, true);
+              deduped.push(t);
             }
-          });
-          if (tenantsList.length > 0) {
-            onUpdate(tenantsList);
-            saveHomeServerDbKey('tenants_all', tenantsList);
           }
-        },
-        (error) => {
-          handleFirestoreError('subscribeTenants', error);
+          onUpdate(deduped);
         }
-      );
-    } catch (err) {
-      handleFirestoreError('subscribeTenants', err);
-    }
-  }
-
-  return () => {
-    clearInterval(intervalId);
-    unsubscribe();
+      })
+      .catch(() => {});
   };
+
+  fetchTenants();
+  const interval = setInterval(fetchTenants, 15000); // 15s gentle polling for organization list
+
+  return () => clearInterval(interval);
 }
 
 export async function saveTenantToFirestore(tenant: TenantOrg): Promise<void> {
-  if (!tenant?.id) return;
-  const cacheKey = `tenant_${tenant.id}`;
-  const serialized = JSON.stringify(tenant);
-  if (lastKnownDocCache.get(cacheKey) === serialized) return;
-
-  saveHomeServerDbKey(`tenant_${tenant.id}`, tenant);
-
-  if (isFirestoreQuotaExhausted) {
-    saveToPendingQueue(TENANTS_COLLECTION, tenant.id, tenant);
-    return;
-  }
-
+  // Delegated to Home Server API
   try {
-    await setDoc(doc(db, TENANTS_COLLECTION, tenant.id), tenant, { merge: true });
-    lastKnownDocCache.set(cacheKey, serialized);
+    const isUpdate = !!tenant.id;
+    const url = isUpdate ? '/api/auth/update-org' : '/api/auth/register-org';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(tenant)
+    });
+    const result = await res.json();
+    if (!result.success && isUpdate) {
+      // If update returned 404/false, try register
+      await fetch('/api/auth/register-org', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(tenant)
+      });
+    }
   } catch (err) {
-    handleFirestoreError('saveTenantToFirestore', err);
-    saveToPendingQueue(TENANTS_COLLECTION, tenant.id, tenant);
+    console.warn('Error saving tenant to Home Server:', err);
   }
 }
 
+export async function updateTenantInFirestore(tenant: TenantOrg): Promise<void> {
+  await saveTenantToFirestore(tenant);
+}
+
 export async function deleteTenantFromFirestore(tenantId: string): Promise<void> {
-  if (isFirestoreQuotaExhausted || !tenantId) return;
   try {
-    await deleteDoc(doc(db, TENANTS_COLLECTION, tenantId));
-    lastKnownDocCache.delete(`tenant_${tenantId}`);
+    await fetch('/api/auth/delete-org', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: tenantId })
+    });
   } catch (err) {
-    handleFirestoreError('deleteTenantFromFirestore', err);
+    console.warn('Error deleting tenant from Home Server:', err);
   }
 }
 
 export function subscribeAnnouncements(onUpdate: (announcements: SystemAnnouncement[]) => void) {
-  if (isFirestoreQuotaExhausted) return () => {};
-  try {
-    return onSnapshot(
-      collection(db, ANNOUNCEMENTS_COLLECTION),
-      (snapshot) => {
-        const list: SystemAnnouncement[] = [];
-        snapshot.forEach((docSnap) => {
-          if (docSnap.exists()) {
-            list.push(docSnap.data() as SystemAnnouncement);
-          }
-        });
-        if (list.length > 0) {
-          onUpdate(list);
-        }
-      },
-      (error) => {
-        handleFirestoreError('subscribeAnnouncements', error);
-      }
-    );
-  } catch (err) {
-    handleFirestoreError('subscribeAnnouncements', err);
-    return () => {};
-  }
+  // Empty or local announcements
+  return () => {};
 }
 
 export async function saveAnnouncementToFirestore(announcement: SystemAnnouncement): Promise<void> {
-  if (isFirestoreQuotaExhausted || !announcement?.id) return;
-  const cacheKey = `announcement_${announcement.id}`;
-  const serialized = JSON.stringify(announcement);
-  if (lastKnownDocCache.get(cacheKey) === serialized) return;
-
-  try {
-    await setDoc(doc(db, ANNOUNCEMENTS_COLLECTION, announcement.id), announcement, { merge: true });
-    lastKnownDocCache.set(cacheKey, serialized);
-  } catch (err) {
-    handleFirestoreError('saveAnnouncementToFirestore', err);
-  }
+  // Local only
 }
 
-export async function deleteAnnouncementFromFirestore(announcementId: string): Promise<void> {
-  if (isFirestoreQuotaExhausted || !announcementId) return;
-  try {
-    await deleteDoc(doc(db, ANNOUNCEMENTS_COLLECTION, announcementId));
-    lastKnownDocCache.delete(`announcement_${announcementId}`);
-  } catch (err) {
-    handleFirestoreError('deleteAnnouncementFromFirestore', err);
-  }
+export async function deleteAnnouncementFromFirestore(id: string): Promise<void> {
+  // Local only
 }
 
 export function subscribeCompanyConfig(tenantId: string, onUpdate: (config: CompanyConfig) => void) {
-  if (isFirestoreQuotaExhausted || !tenantId) return () => {};
-  const cacheKey = `config_${tenantId}`;
-  try {
-    return onSnapshot(
-      doc(db, TENANT_CONFIGS_COLLECTION, tenantId),
-      (docSnap) => {
-        if (docSnap.exists()) {
-          const config = docSnap.data() as CompanyConfig;
-          lastKnownDocCache.set(cacheKey, JSON.stringify(config));
-          onUpdate(config);
-        }
-      },
-      (error) => {
-        handleFirestoreError('subscribeCompanyConfig', error);
-      }
-    );
-  } catch (err) {
-    handleFirestoreError('subscribeCompanyConfig', err);
-    return () => {};
-  }
+  if (!tenantId) return () => {};
+  
+  // Listen to localDb updates for config
+  const unsub = subscribeLocalDb((entity, data) => {
+    if (entity === 'config' && data.length > 0) {
+      onUpdate(data[0] as CompanyConfig);
+    }
+  });
+
+  return unsub;
 }
 
 export async function saveCompanyConfigToFirestore(tenantId: string, config: CompanyConfig): Promise<void> {
   if (!tenantId) return;
-  const cacheKey = `config_${tenantId}`;
-  const serialized = JSON.stringify(config);
-  if (lastKnownDocCache.get(cacheKey) === serialized) return;
-
-  // Mark in cache immediately to avoid re-triggering during async call
-  lastKnownDocCache.set(cacheKey, serialized);
-
-  if (isFirestoreQuotaExhausted) {
-    saveToPendingQueue(TENANT_CONFIGS_COLLECTION, tenantId, config);
-    return;
-  }
-
-  try {
-    await setDoc(doc(db, TENANT_CONFIGS_COLLECTION, tenantId), config, { merge: true });
-  } catch (err) {
-    handleFirestoreError('saveCompanyConfigToFirestore', err);
-    saveToPendingQueue(TENANT_CONFIGS_COLLECTION, tenantId, config);
-  }
+  await saveLocalRecord(tenantId, 'config', { ...config, id: tenantId });
 }
-
-const TENANT_SESSIONS_COLLECTION = 'tenant_sessions';
 
 export async function saveUserSessionToFirestore(
   tenantId: string,
@@ -394,30 +149,7 @@ export async function saveUserSessionToFirestore(
   sessionId: string,
   deviceInfo?: string
 ): Promise<void> {
-  if (!tenantId || !sessionUserId || !sessionId) return;
-  const docId = `${tenantId}_${sessionUserId}`;
-  const cacheKey = `session_${docId}`;
-  
-  // Stable payload WITHOUT volatile timestamps to avoid burning Firestore write quota on re-renders!
-  const payload = {
-    tenantId,
-    sessionUserId,
-    activeSessionId: sessionId,
-    deviceInfo: deviceInfo || (typeof navigator !== 'undefined' ? navigator.userAgent : 'Unknown')
-  };
-  const serialized = JSON.stringify(payload);
-  if (lastKnownDocCache.get(cacheKey) === serialized) return;
-
-  // Immediately cache to prevent duplicate async writes
-  lastKnownDocCache.set(cacheKey, serialized);
-
-  if (isFirestoreQuotaExhausted) return;
-
-  try {
-    await setDoc(doc(db, TENANT_SESSIONS_COLLECTION, docId), payload, { merge: true });
-  } catch (err) {
-    handleFirestoreError(`saveUserSessionToFirestore(${docId})`, err);
-  }
+  // Handled automatically by Home Server /api/auth/login and /api/auth/session
 }
 
 export function subscribeUserSession(
@@ -425,28 +157,23 @@ export function subscribeUserSession(
   sessionUserId: string,
   onUpdate: (sessionData: { activeSessionId: string; deviceInfo?: string }) => void
 ) {
-  if (!tenantId || !sessionUserId) return () => {};
-  const docId = `${tenantId}_${sessionUserId}`;
-  try {
-    return onSnapshot(
-      doc(db, TENANT_SESSIONS_COLLECTION, docId),
-      (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          if (data && data.activeSessionId) {
-            onUpdate({ activeSessionId: data.activeSessionId, deviceInfo: data.deviceInfo });
-          }
-        }
-      },
-      (error) => {
-        handleFirestoreError(`subscribeUserSession(${docId})`, error);
-      }
-    );
-  } catch (err) {
-    handleFirestoreError(`subscribeUserSession(${docId})`, err);
-    return () => {};
-  }
+  return () => {};
 }
+
+// Sync status and pending queue utilities
+export function isQuotaExhausted(): boolean {
+  return false;
+}
+
+export function getPendingQueueCount(): number {
+  return 0;
+}
+
+export function clearPendingQueue(): void {}
+
+export async function retryPendingCloudSync(): Promise<void> {}
+
+// -------------------------------------------------------------
 
 export function subscribeTenantCollection<T>(
   tenantId: string,
@@ -455,108 +182,35 @@ export function subscribeTenantCollection<T>(
   getLocalData?: () => T[]
 ) {
   if (!tenantId || !collectionName) return () => {};
-  const docId = `${tenantId}_${collectionName}`;
-  const cacheKey = `collection_${docId}`;
 
-  // 1. First attempt Home Server DB load immediately
-  getHomeServerDbKey<{ items: T[] }>(`col_${docId}`).then(data => {
-    if (data && Array.isArray(data.items) && data.items.length > 0) {
-      lastKnownDocCache.set(cacheKey, JSON.stringify(data.items));
-      onUpdate(data.items);
-    }
-  }).catch(() => {});
-
-  // 2. Set up interval polling for real-time Home Server multi-device sync (every 3s)
-  const intervalId = setInterval(() => {
-    getHomeServerDbKey<{ items: T[] }>(`col_${docId}`).then(data => {
-      if (data && Array.isArray(data.items)) {
-        const serialized = JSON.stringify(data.items);
-        if (lastKnownDocCache.get(cacheKey) !== serialized) {
-          lastKnownDocCache.set(cacheKey, serialized);
-          onUpdate(data.items);
-        }
+  // 1. Immediately load from local IndexedDB replica
+  getLocalCollection<T>(tenantId, collectionName).then(items => {
+    if (items && items.length > 0) {
+      onUpdate(items);
+    } else if (getLocalData) {
+      const fallback = getLocalData();
+      if (fallback && fallback.length > 0) {
+        onUpdate(fallback);
       }
-    }).catch(() => {});
-  }, 3000);
-
-  // 3. Firestore subscription (if quota is available)
-  let unsubscribeFirestore = () => {};
-  if (!isFirestoreQuotaExhausted) {
-    try {
-      unsubscribeFirestore = onSnapshot(
-        doc(db, TENANT_COLLECTIONS_COLLECTION, docId),
-        (docSnap) => {
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            if (data && Array.isArray(data.items)) {
-              const cloudItems = data.items as T[];
-              lastKnownDocCache.set(cacheKey, JSON.stringify(cloudItems));
-              onUpdate(cloudItems);
-              // Mirror to Home Server DB
-              saveHomeServerDbKey(`col_${docId}`, { items: cloudItems, updatedAt: new Date().toISOString() });
-            }
-          } else {
-            if (getLocalData && !isFirestoreQuotaExhausted) {
-              const local = getLocalData();
-              if (local && local.length > 0) {
-                saveTenantCollectionToFirestore(tenantId, collectionName, local);
-              }
-            }
-          }
-        },
-        (error) => {
-          handleFirestoreError(`subscribeTenantCollection(${docId})`, error);
-        }
-      );
-    } catch (err) {
-      handleFirestoreError(`subscribeTenantCollection(${docId})`, err);
     }
-  }
+  });
 
-  return () => {
-    clearInterval(intervalId);
-    unsubscribeFirestore();
-  };
+  // 2. Subscribe to reactive local replica updates
+  const unsubscribe = subscribeLocalDb((entity, data) => {
+    if (entity === collectionName) {
+      onUpdate(data as T[]);
+    }
+  });
+
+  return unsubscribe;
 }
 
-export async function saveTenantCollectionToFirestore(tenantId: string, collectionName: string, items: any[]): Promise<void> {
+export async function saveTenantCollectionToFirestore(
+  tenantId: string,
+  collectionName: string,
+  items: any[]
+): Promise<void> {
   if (!tenantId || !collectionName) return;
-  const docId = `${tenantId}_${collectionName}`;
-  const cacheKey = `collection_${docId}`;
-  const serialized = JSON.stringify(items);
-  if (lastKnownDocCache.get(cacheKey) === serialized) return;
-
-  // Immediately mark in cache to suppress duplicate triggers
-  lastKnownDocCache.set(cacheKey, serialized);
-
-  const payload = {
-    items,
-    updatedAt: new Date().toISOString()
-  };
-
-  // Always save directly to Home Server persistent database in /app/data/inoms_db.json
-  saveHomeServerDbKey(`col_${docId}`, payload);
-
-  if (isFirestoreQuotaExhausted) {
-    saveToPendingQueue(TENANT_COLLECTIONS_COLLECTION, docId, payload);
-    return;
-  }
-
-  // Debounce writes by 1500ms for Firestore to conserve quota
-  if (writeDebounceTimers.has(cacheKey)) {
-    clearTimeout(writeDebounceTimers.get(cacheKey)!);
-  }
-
-  writeDebounceTimers.set(
-    cacheKey,
-    setTimeout(async () => {
-      try {
-        await setDoc(doc(db, TENANT_COLLECTIONS_COLLECTION, docId), payload, { merge: true });
-      } catch (err) {
-        handleFirestoreError(`saveTenantCollectionToFirestore(${docId})`, err);
-        saveToPendingQueue(TENANT_COLLECTIONS_COLLECTION, docId, payload);
-      }
-    }, 1500)
-  );
+  // Atomically replace collection in local IndexedDB replica and queue push to Home Server
+  await replaceLocalCollection(tenantId, collectionName, items, true);
 }
-

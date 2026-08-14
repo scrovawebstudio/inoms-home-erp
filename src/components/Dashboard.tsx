@@ -272,11 +272,18 @@ export default function Dashboard({
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-100 shadow-xs">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-            Shop Overview <span className="text-xs bg-teal-50 text-teal-700 px-2.5 py-1 rounded-full font-bold border border-teal-200">Live Station Intelligence</span>
+            Workshop Overview &amp; Live Operations <span className="text-xs bg-teal-50 text-teal-700 px-2.5 py-1 rounded-full font-bold border border-teal-200">Live Station Intelligence</span>
           </h1>
-          <p className="text-xs text-slate-500 mt-1">Real-time status indicators and job distribution graph across your organization.</p>
+          <p className="text-xs text-slate-500 mt-1">Real-time status indicators, workbench queue, and job distribution graph across your organization.</p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => onNavigate('live_queue')}
+            className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-teal-300 text-xs font-bold px-4 py-2.5 rounded-xl transition shadow-xs hover:shadow-md cursor-pointer border border-slate-700"
+          >
+            <Layers className="w-4 h-4 text-teal-400" />
+            <span>Open Live Queue</span>
+          </button>
           <button
             onClick={onSync}
             disabled={isSyncing}
@@ -292,59 +299,84 @@ export default function Dashboard({
       {/* Operational Overview Metrics - Color matched to the circular chart */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="metrics-grid">
         {/* Box 1: Inward Received (Blue) */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 border-l-4 border-l-blue-500 shadow-xs flex items-center justify-between transition hover:shadow-md">
+        <div 
+          onClick={() => onNavigate('inwards')}
+          className="bg-white p-5 rounded-2xl border border-slate-100 border-l-4 border-l-blue-500 shadow-xs flex items-center justify-between transition hover:shadow-md cursor-pointer group"
+        >
           <div className="flex items-center gap-3.5">
-            <div className="p-3 bg-blue-50 text-blue-600 rounded-xl shrink-0">
+            <div className="p-3 bg-blue-50 text-blue-600 rounded-xl shrink-0 group-hover:scale-110 transition">
               <Inbox className="w-5 h-5" />
             </div>
             <div>
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Inward Received</span>
-              <span className="text-2xl font-black text-slate-800 tracking-tight">{inwardReceivedCount}</span>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Today's Inward</span>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-black text-slate-800 tracking-tight">{inwardReceivedCount}</span>
+                <span className="text-[10px] text-blue-600 font-bold font-mono">#{totalInwards} Tokens</span>
+              </div>
             </div>
           </div>
           <span className="w-3 h-3 rounded-full bg-blue-500 shrink-0" title="Color matched to circular graph slice"></span>
         </div>
 
         {/* Box 2: Under Diagnosis (Amber) */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 border-l-4 border-l-amber-500 shadow-xs flex items-center justify-between transition hover:shadow-md">
+        <div 
+          onClick={() => onNavigate('live_queue')}
+          className="bg-white p-5 rounded-2xl border border-slate-100 border-l-4 border-l-amber-500 shadow-xs flex items-center justify-between transition hover:shadow-md cursor-pointer group"
+        >
           <div className="flex items-center gap-3.5">
-            <div className="p-3 bg-amber-50 text-amber-600 rounded-xl shrink-0">
+            <div className="p-3 bg-amber-50 text-amber-600 rounded-xl shrink-0 group-hover:scale-110 transition">
               <Wrench className="w-5 h-5" />
             </div>
             <div>
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Under Diagnosis</span>
-              <span className="text-2xl font-black text-slate-800 tracking-tight">{underDiagnosisCount}</span>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Repairs in Progress</span>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-black text-slate-800 tracking-tight">{underDiagnosisCount}</span>
+                <span className="text-[10px] text-amber-600 font-bold font-mono">+{readyForDeliveryCount} Ready</span>
+              </div>
             </div>
           </div>
           <span className="w-3 h-3 rounded-full bg-amber-500 shrink-0" title="Color matched to circular graph slice"></span>
         </div>
 
         {/* Box 3: Ready for Delivery (Teal/Emerald) */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 border-l-4 border-l-emerald-500 shadow-xs flex items-center justify-between transition hover:shadow-md">
+        <div 
+          onClick={() => onNavigate('outwards')}
+          className="bg-white p-5 rounded-2xl border border-slate-100 border-l-4 border-l-emerald-500 shadow-xs flex items-center justify-between transition hover:shadow-md cursor-pointer group"
+        >
           <div className="flex items-center gap-3.5">
-            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl shrink-0">
+            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl shrink-0 group-hover:scale-110 transition">
               <CheckCircle2 className="w-5 h-5" />
             </div>
             <div>
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Ready for Delivery</span>
-              <span className="text-2xl font-black text-slate-800 tracking-tight">{readyForDeliveryCount}</span>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Today's Outward</span>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-black text-slate-800 tracking-tight">{outwardedCount}</span>
+                <span className="text-[10px] text-emerald-600 font-bold font-mono">Delivered</span>
+              </div>
             </div>
           </div>
           <span className="w-3 h-3 rounded-full bg-emerald-500 shrink-0" title="Color matched to circular graph slice"></span>
         </div>
 
-        {/* Box 4: Outwarded / Delivered (Purple) */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 border-l-4 border-l-purple-500 shadow-xs flex items-center justify-between transition hover:shadow-md">
+        {/* Box 4: Pending Dues (Rose) */}
+        <div 
+          onClick={() => onNavigate('clients')}
+          className="bg-white p-5 rounded-2xl border border-slate-100 border-l-4 border-l-rose-500 shadow-xs flex items-center justify-between transition hover:shadow-md cursor-pointer group"
+        >
           <div className="flex items-center gap-3.5">
-            <div className="p-3 bg-purple-50 text-purple-600 rounded-xl shrink-0">
-              <Truck className="w-5 h-5" />
+            <div className="p-3 bg-rose-50 text-rose-600 rounded-xl shrink-0 group-hover:scale-110 transition">
+              <DollarSign className="w-5 h-5" />
             </div>
             <div>
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Delivered / Outwarded</span>
-              <span className="text-2xl font-black text-slate-800 tracking-tight">{outwardedCount}</span>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Pending Dues</span>
+              <div className="flex items-baseline gap-2">
+                <span className="text-xl font-black text-rose-600 font-mono">
+                  ₹{clients.reduce((acc, c) => acc + (c.outstandingBalance || 0), 0).toLocaleString('en-IN')}
+                </span>
+              </div>
             </div>
           </div>
-          <span className="w-3 h-3 rounded-full bg-purple-500 shrink-0" title="Color matched to circular graph slice"></span>
+          <span className="w-3 h-3 rounded-full bg-rose-500 shrink-0" title="Color matched to circular graph slice"></span>
         </div>
       </div>
 

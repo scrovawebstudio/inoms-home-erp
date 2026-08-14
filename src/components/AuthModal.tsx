@@ -36,6 +36,7 @@ export interface SystemAnnouncement {
 }
 
 export interface TenantFeatures {
+  allowLiveQueue?: boolean;
   allowHomeServerSync?: boolean;
   allowBarcodeQrTags?: boolean;
   allowWhatsAppMessaging?: boolean;
@@ -47,14 +48,15 @@ export interface TenantFeatures {
 export function getTenantFeatures(tenantOrFeatures?: TenantOrg | TenantFeatures | null): Required<TenantFeatures> {
   const f = (tenantOrFeatures && 'features' in tenantOrFeatures ? (tenantOrFeatures as TenantOrg).features : tenantOrFeatures) as TenantFeatures || {};
   return {
+    allowLiveQueue: f.allowLiveQueue !== false,
     allowHomeServerSync: f.allowHomeServerSync !== false,
     allowBarcodeQrTags: f.allowBarcodeQrTags !== false,
-    allowWhatsAppMessaging: f.allowWhatsAppMessaging !== false,
+    allowWhatsAppMessaging: true, // Always allowed for all organizations
     allowTechnicianAccounts: f.allowTechnicianAccounts !== false,
     allowOutwardTaxInvoiceButton: f.allowOutwardTaxInvoiceButton !== false,
     allowedModules: f.allowedModules && f.allowedModules.length > 0
       ? f.allowedModules
-      : ['dashboard', 'inwards', 'outwards', 'billing', 'payments', 'inventory', 'expenses', 'reports', 'settings'],
+      : ['dashboard', 'live_queue', 'inwards', 'outwards', 'billing', 'payments', 'inventory', 'expenses', 'reports', 'settings'],
   };
 }
 
@@ -69,6 +71,11 @@ export interface TenantOrg {
   createdAt: string;
   secretKey?: string;
   features?: TenantFeatures;
+  subscriptionPlan?: 'trial' | 'monthly' | 'quarterly' | 'annual' | 'lifetime';
+  subscriptionStartDate?: string;
+  subscriptionEndDate?: string;
+  trialDays?: number;
+  isTrial?: boolean;
 }
 
 export const INITIAL_TENANTS: TenantOrg[] = [
@@ -116,6 +123,12 @@ export default function AuthModal({
   const [mobileSubmitted, setMobileSubmitted] = useState<boolean>(false);
   const [mobileError, setMobileError] = useState<string>('');
   const [rememberMeMobile, setRememberMeMobile] = useState<boolean>(true);
+
+  // Microsoft Authenticator vs PIN toggle for Organization Owner login
+  const [ownerAuthType, setOwnerAuthType] = useState<'totp' | 'org_pin'>('totp');
+  const [ownerPinInput, setOwnerPinInput] = useState<string>('');
+  const [ownerPinError, setOwnerPinError] = useState<string>('');
+  const [ownerPinSuccess, setOwnerPinSuccess] = useState<boolean>(false);
 
   // Microsoft Authenticator 6-digit TOTP states
   const [totpInputCode, setTotpInputCode] = useState<string>('');
@@ -337,6 +350,39 @@ export default function AuthModal({
     }
   };
 
+  // Handle Organization PIN Login Submit (Organization-Specific PIN)
+  const handleOwnerPinSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setOwnerPinError('');
+    setOwnerPinSuccess(false);
+
+    if (!detectedTenant) {
+      setOwnerPinError('No active organization detected for this mobile number.');
+      return;
+    }
+
+    const cleanPin = ownerPinInput.trim();
+    if (!cleanPin) {
+      setOwnerPinError('Please enter your organization PIN.');
+      return;
+    }
+
+    const orgPin = (detectedTenant.pin || '1234').trim();
+    if (cleanPin === orgPin || (detectedTenant.id === 'org-admin' && cleanPin === '1234')) {
+      if (rememberMeMobile) {
+        localStorage.setItem('remembered_login_mobile', JSON.stringify({ mobileInput }));
+      } else {
+        localStorage.removeItem('remembered_login_mobile');
+      }
+      setOwnerPinSuccess(true);
+      setTimeout(() => {
+        onAuthenticated(detectedTenant, detectedTenant.id === 'org-admin' ? 'Admin' : 'Org Admin');
+      }, 500);
+    } else {
+      setOwnerPinError(`Incorrect PIN for "${detectedTenant.name}". Please check the PIN or contact your Organization Administrator.`);
+    }
+  };
+
   // Handle Staff & Technician Login Submit via Backend API
   const handleStaffSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -420,7 +466,7 @@ export default function AuthModal({
     }
 
     // Attempt Secure Backend API Login first
-    const apiResult = await staffLoginViaApi(cleanInput, cleanPass, systemUsersList);
+    const apiResult = await staffLoginViaApi(selectedOrg ? selectedOrg.id : 'org-admin', cleanInput, cleanPass);
     if (apiResult.success && apiResult.user) {
       saveStaffMemory();
       setStaffSuccess(true);
@@ -940,71 +986,168 @@ export default function AuthModal({
                     </div>
                   </div>
 
-                  {/* 6-Digit Code Input Box */}
-                  <form onSubmit={handleTotpVerificationSubmit} className="bg-slate-50 border border-slate-200 p-4 rounded-2xl space-y-3">
-                    <div className="space-y-1">
-                      <label className="text-xs font-bold text-slate-800 flex items-center justify-between">
-                        <span>Enter 6-Digit Code from Microsoft Authenticator:</span>
-                        <span className="text-[10px] text-teal-700 font-mono font-bold bg-teal-100/60 px-2 py-0.5 rounded">
-                          Mobile 2FA
-                        </span>
-                      </label>
+                  {/* Authenticator vs Organization PIN Option Selection */}
+                  <div className="flex bg-slate-200/80 p-1 rounded-xl text-xs font-bold gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOwnerAuthType('totp');
+                        setTotpError('');
+                        setOwnerPinError('');
+                      }}
+                      className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                        ownerAuthType === 'totp'
+                          ? 'bg-white text-teal-800 shadow-2xs font-extrabold'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5 text-teal-600" />
+                      <span>Microsoft Authenticator 2FA</span>
+                    </button>
 
-                      <div className="flex gap-2">
-                        <div className="relative flex-1">
-                          <input
-                            type="text"
-                            maxLength={6}
-                            required
-                            autoFocus
-                            placeholder="000000"
-                            value={totpInputCode}
-                            onChange={e => {
-                              setTotpInputCode(e.target.value.replace(/\D/g, ''));
-                              setTotpError('');
-                            }}
-                            className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-lg font-mono tracking-[0.25em] font-bold text-slate-900 text-center focus:ring-2 focus:ring-teal-500 outline-none"
-                          />
-                          <Lock className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOwnerAuthType('org_pin');
+                        setTotpError('');
+                        setOwnerPinError('');
+                      }}
+                      className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                        ownerAuthType === 'org_pin'
+                          ? 'bg-white text-teal-800 shadow-2xs font-extrabold'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Key className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Organization PIN Login</span>
+                    </button>
+                  </div>
+
+                  {/* Option A: Microsoft Authenticator TOTP Code Form */}
+                  {ownerAuthType === 'totp' && (
+                    <form onSubmit={handleTotpVerificationSubmit} className="bg-slate-50 border border-slate-200 p-4 rounded-2xl space-y-3 animate-in fade-in duration-150">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-800 flex items-center justify-between">
+                          <span>Enter 6-Digit Code from Microsoft Authenticator:</span>
+                          <span className="text-[10px] text-teal-700 font-mono font-bold bg-teal-100/60 px-2 py-0.5 rounded">
+                            Mobile 2FA
+                          </span>
+                        </label>
+
+                        <div className="flex gap-2">
+                          <div className="relative flex-1">
+                            <input
+                              type="text"
+                              maxLength={6}
+                              required
+                              autoFocus
+                              placeholder="000000"
+                              value={totpInputCode}
+                              onChange={e => {
+                                setTotpInputCode(e.target.value.replace(/\D/g, ''));
+                                setTotpError('');
+                              }}
+                              className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-lg font-mono tracking-[0.25em] font-bold text-slate-900 text-center focus:ring-2 focus:ring-teal-500 outline-none"
+                            />
+                            <Lock className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
+                          </div>
+
+                          <button
+                            type="submit"
+                            disabled={isVerifyingTotp}
+                            className="bg-teal-600 hover:bg-teal-700 text-white font-bold px-5 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-1.5 shadow-md shrink-0"
+                          >
+                            {isVerifyingTotp ? (
+                              <>
+                                <RefreshCw className="w-4 h-4 animate-spin" />
+                                <span>Verifying...</span>
+                              </>
+                            ) : (
+                              <>
+                                <ShieldCheck className="w-4 h-4" />
+                                <span>Verify & Login</span>
+                              </>
+                            )}
+                          </button>
                         </div>
-
-                        <button
-                          type="submit"
-                          disabled={isVerifyingTotp}
-                          className="bg-teal-600 hover:bg-teal-700 text-white font-bold px-5 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-1.5 shadow-md shrink-0"
-                        >
-                          {isVerifyingTotp ? (
-                            <>
-                              <RefreshCw className="w-4 h-4 animate-spin" />
-                              <span>Verifying...</span>
-                            </>
-                          ) : (
-                            <>
-                              <ShieldCheck className="w-4 h-4" />
-                              <span>Verify & Login</span>
-                            </>
-                          )}
-                        </button>
                       </div>
-                    </div>
 
-                    {totpError && (
-                      <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-semibold flex items-center gap-1.5">
-                        <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" /> {totpError}
+                      {totpError && (
+                        <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-semibold flex items-center gap-1.5">
+                          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" /> {totpError}
+                        </div>
+                      )}
+
+                      {totpSuccess && (
+                        <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-bold flex items-center gap-1.5 animate-pulse">
+                          <CheckCircle2 className="w-4.5 h-4.5 text-emerald-600 shrink-0" />
+                          <span>✓ Passcode Verified! Opening {detectedTenant.name}...</span>
+                        </div>
+                      )}
+
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        Open <strong>Microsoft Authenticator</strong> app on your smartphone ({detectedTenant.ownerMobile}) and type the current 6-digit passcode for <strong>{detectedTenant.name}</strong>.
+                      </p>
+                    </form>
+                  )}
+
+                  {/* Option B: Organization PIN Login Form */}
+                  {ownerAuthType === 'org_pin' && (
+                    <form onSubmit={handleOwnerPinSubmit} className="bg-slate-50 border border-slate-200 p-4 rounded-2xl space-y-3 animate-in fade-in duration-150">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-800 flex items-center justify-between">
+                          <span>Enter Organization PIN for {detectedTenant.name}:</span>
+                          <span className="text-[10px] text-amber-700 font-mono font-bold bg-amber-100/80 px-2 py-0.5 rounded">
+                            Specific Org PIN
+                          </span>
+                        </label>
+
+                        <div className="flex gap-2">
+                          <div className="relative flex-1">
+                            <input
+                              type="password"
+                              maxLength={8}
+                              required
+                              autoFocus
+                              placeholder="Enter PIN"
+                              value={ownerPinInput}
+                              onChange={e => {
+                                setOwnerPinInput(e.target.value);
+                                setOwnerPinError('');
+                              }}
+                              className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-base font-mono tracking-[0.2em] font-bold text-slate-900 text-center focus:ring-2 focus:ring-teal-500 outline-none"
+                            />
+                            <Key className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
+                          </div>
+
+                          <button
+                            type="submit"
+                            className="bg-teal-600 hover:bg-teal-700 text-white font-bold px-5 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-1.5 shadow-md shrink-0"
+                          >
+                            <Key className="w-4 h-4" />
+                            <span>Login with PIN</span>
+                          </button>
+                        </div>
                       </div>
-                    )}
 
-                    {totpSuccess && (
-                      <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-bold flex items-center gap-1.5 animate-pulse">
-                        <CheckCircle2 className="w-4.5 h-4.5 text-emerald-600 shrink-0" />
-                        <span>✓ Passcode Verified! Opening {detectedTenant.name}...</span>
-                      </div>
-                    )}
+                      {ownerPinError && (
+                        <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-semibold flex items-center gap-1.5">
+                          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" /> {ownerPinError}
+                        </div>
+                      )}
 
-                    <p className="text-[11px] text-slate-500 leading-relaxed">
-                      Open <strong>Microsoft Authenticator</strong> app on your smartphone ({detectedTenant.ownerMobile}) and type the current 6-digit passcode for <strong>{detectedTenant.name}</strong>.
-                    </p>
-                  </form>
+                      {ownerPinSuccess && (
+                        <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-bold flex items-center gap-1.5 animate-pulse">
+                          <CheckCircle2 className="w-4.5 h-4.5 text-emerald-600 shrink-0" />
+                          <span>✓ PIN Verified! Opening {detectedTenant.name}...</span>
+                        </div>
+                      )}
+
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        Enter the specific organization PIN configured by Master Admin for <strong>{detectedTenant.name}</strong>.
+                      </p>
+                    </form>
+                  )}
 
                 </div>
               )}

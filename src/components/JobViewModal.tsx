@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { X, Wrench, Printer, CheckCircle2, AlertTriangle, Calendar, User, Phone, MapPin, Tag, ShieldCheck } from 'lucide-react';
+import { X, Wrench, Printer, CheckCircle2, AlertTriangle, Calendar, User, Phone, MapPin, Tag, ShieldCheck, Check, ArrowRight, Layers } from 'lucide-react';
 import { RepairJob, CompanyConfig, getEffectiveBillAmount } from '../types';
 
 interface JobViewModalProps {
@@ -17,8 +17,44 @@ export default function JobViewModal({ job, companyConfig, onClose }: JobViewMod
   if (!job) return null;
 
   const totalAmount = getEffectiveBillAmount(job);
-
   const isPaid = job.paymentStatus === 'Paid';
+
+  // 7 Connected Workflow Stages matching the marketing visualizer:
+  // 1. Customer / Item Received
+  // 2. Inward Entry Generated
+  // 3. Repair Tracking (Diagnosis/Bench)
+  // 4. Inventory & Parts Usage
+  // 5. Billing & Invoicing
+  // 6. Payment & Handover
+  // 7. Business Records & Accounts
+
+  const getStageIndex = () => {
+    if (job.status === 'Product Out' || job.status === 'Outwarded' || job.status === 'Completed') {
+      return isPaid ? 7 : 6;
+    }
+    if (job.status === 'Device Ready' || job.status === 'Ready' || job.status === 'Complete & Ready') {
+      return 5;
+    }
+    if (job.status === 'Work in Progress' || job.status === 'Approval Pending') {
+      return 4;
+    }
+    if (job.status === 'Device Received' || job.status === 'Received') {
+      return 3;
+    }
+    return 2;
+  };
+
+  const currentStageNum = getStageIndex();
+
+  const WORKFLOW_STAGES = [
+    { num: 1, title: 'Item Received', desc: 'Customer details logged' },
+    { num: 2, title: 'Inward Token', desc: 'Barcode/Token generated' },
+    { num: 3, title: 'Diagnosis', desc: 'Fault & checklist inspect' },
+    { num: 4, title: 'Bench Repair', desc: 'Parts & technician work' },
+    { num: 5, title: 'Ready / QA', desc: 'Tested OK & Bill ready' },
+    { num: 6, title: 'Payment Out', desc: 'Settlement & Handover' },
+    { num: 7, title: 'Ledger Closed', desc: 'Accounts & record saved' }
+  ];
 
   return (
     <div
@@ -67,6 +103,41 @@ export default function JobViewModal({ job, companyConfig, onClose }: JobViewMod
             >
               <X className="w-5 h-5" />
             </button>
+          </div>
+        </div>
+
+        {/* 7-Stage Connected Workflow Stepper Banner */}
+        <div className="bg-slate-950 text-white px-5 py-3 border-b border-slate-800 shrink-0">
+          <div className="flex items-center justify-between text-[11px] font-bold text-slate-400 mb-2">
+            <span className="flex items-center gap-1.5 text-teal-400">
+              <Layers className="w-3.5 h-3.5" /> 7-Stage Connected Lifecycle
+            </span>
+            <span>Stage 0{currentStageNum} of 07</span>
+          </div>
+
+          <div className="grid grid-cols-7 gap-1">
+            {WORKFLOW_STAGES.map(stage => {
+              const isCompleted = stage.num < currentStageNum;
+              const isCurrent = stage.num === currentStageNum;
+              return (
+                <div key={stage.num} className="space-y-1 text-center">
+                  <div 
+                    className={`h-1.5 rounded-full transition-all duration-300 ${
+                      isCompleted 
+                        ? 'bg-emerald-500' 
+                        : isCurrent 
+                        ? 'bg-teal-400 shadow-[0_0_8px_rgba(45,212,191,0.8)]' 
+                        : 'bg-slate-800'
+                    }`}
+                  ></div>
+                  <span className={`text-[9px] font-bold block truncate ${
+                    isCurrent ? 'text-teal-300' : isCompleted ? 'text-emerald-400' : 'text-slate-500'
+                  }`}>
+                    {stage.title}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
 

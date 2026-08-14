@@ -113,6 +113,7 @@ export interface RepairJob {
   repairOutcome?: 'Repaired' | 'Not Repaired';
   advanceRefunded?: boolean;
   advanceRefundMode?: string;
+  rackLocation?: string;
 }
 
 export interface Payment {
@@ -366,6 +367,7 @@ export interface CustomAddonPricingItem {
 export interface AddonPricingConfig {
   basePlatformMonthly: number;
   basePlatformAnnual: number;
+  liveRepairQueue: number;
   homeServerSync: number;
   barcodeQrTags: number;
   whatsAppMessaging: number;
@@ -377,6 +379,7 @@ export interface AddonPricingConfig {
 export const DEFAULT_ADDON_PRICING: AddonPricingConfig = {
   basePlatformMonthly: 999,
   basePlatformAnnual: 9999,
+  liveRepairQueue: 399,
   homeServerSync: 499,
   barcodeQrTags: 299,
   whatsAppMessaging: 499,

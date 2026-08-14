@@ -1,0 +1,1092 @@
+import express, { Request, Response, NextFunction } from 'express';
+import {
+  getDatabase,
+  hashPassword,
+  verifyPassword,
+  generateToken,
+  getNextRevision,
+  getCurrentRevision,
+  recordAuditLog,
+  createBackupSnapshot,
+  listBackups,
+  restoreBackupFile,
+  deleteBackupFile,
+  scheduleDbSave
+} from './sqliteDb';
+
+export const apiRouter = express.Router();
+
+// Session verification middleware
+export interface AuthenticatedRequest extends Request {
+  user?: {
+    id: string;
+    tenantId: string;
+    name: string;
+    role: string;
+    username?: string;
+  };
+}
+
+export function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : (req.query.token as string);
+
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'Authentication required. No session token provided.' });
+  }
+
+  const db = getDatabase();
+  const stmt = db.prepare(`
+    SELECT s.id as session_id, s.tenant_id, s.user_id, s.device_info,
+           u.name as user_name, u.role as user_role, u.username, u.status as user_status
+    FROM sessions s
+    JOIN users u ON s.user_id = u.id AND s.tenant_id = u.tenant_id
+    WHERE s.token = ?
+  `);
+  stmt.bind([token]);
+
+  if (!stmt.step()) {
+    stmt.free();
+    return res.status(401).json({ success: false, message: 'Invalid or expired session token.' });
+  }
+
+  const row = stmt.getAsObject();
+  stmt.free();
+
+  if (row.user_status === 'Deactivated') {
+    return res.status(403).json({ success: false, message: 'Account is deactivated.' });
+  }
+
+  // Update last active time
+  db.run('UPDATE sessions SET last_active_at = ? WHERE token = ?', [new Date().toISOString(), token]);
+
+  req.user = {
+    id: row.user_id as string,
+    tenantId: row.tenant_id as string,
+    name: row.user_name as string,
+    role: row.user_role as string,
+    username: row.username as string | undefined
+  };
+
+  next();
+}
+
+// -------------------------------------------------------------
+// HEALTH CHECK
+// -------------------------------------------------------------
+apiRouter.get('/health', (_req, res) => {
+  try {
+    const db = getDatabase();
+    const testStmt = db.prepare('SELECT COUNT(*) as count FROM organizations');
+    testStmt.step();
+    const orgCount = testStmt.getAsObject().count;
+    testStmt.free();
+
+    res.json({
+      status: 'ok',
+      database: 'ok',
+      engine: 'sqlite',
+      version: '2.0.0',
+      organizations: orgCount,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      status: 'error',
+      database: 'unhealthy',
+      error: err?.message || 'Database error',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// -------------------------------------------------------------
+// AUTHENTICATION ROUTES
+// -------------------------------------------------------------
+
+// List public tenant metadata for login picker & master admin management
+apiRouter.get('/auth/tenants', (_req, res) => {
+  try {
+    const db = getDatabase();
+    const stmt = db.prepare(`
+      SELECT id, name, code, owner_mobile, owner_name, status, created_at, secret_key, pin,
+             subscription_plan, subscription_start_date, subscription_end_date, trial_days, is_trial, features_json
+      FROM organizations 
+      WHERE status != "deleted"
+      ORDER BY created_at ASC, id ASC
+    `);
+    const tenants: any[] = [];
+    const seenMap = new Map<string, boolean>();
+
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      const cleanMobile = (row.owner_mobile as string || '').replace(/\D/g, '');
+      const cleanName = (row.name as string || '').trim().toLowerCase();
+      const dedupeKey = `${cleanName}_${cleanMobile}`;
+
+      // Skip duplicate entries if any
+      if (row.id !== 'org-admin' && cleanMobile !== '8149862034' && seenMap.has(dedupeKey)) {
+        continue;
+      }
+      if (dedupeKey) seenMap.set(dedupeKey, true);
+
+      let features: any = null;
+      if (row.features_json) {
+        try {
+          features = JSON.parse(row.features_json as string);
+        } catch (e) {}
+      }
+
+      tenants.push({
+        id: row.id,
+        name: row.name,
+        code: row.code,
+        ownerMobile: row.owner_mobile,
+        ownerName: row.owner_name,
+        status: row.status,
+        pin: row.pin || '1234',
+        createdAt: row.created_at,
+        secretKey: row.secret_key,
+        subscriptionPlan: row.subscription_plan || 'monthly',
+        subscriptionStartDate: row.subscription_start_date || row.created_at,
+        subscriptionEndDate: row.subscription_end_date || '',
+        trialDays: Number(row.trial_days) || 0,
+        isTrial: !!row.is_trial || row.subscription_plan === 'trial',
+        features: features || {
+          allowLiveQueue: true,
+          allowHomeServerSync: true,
+          allowBarcodeQrTags: true,
+          allowWhatsAppMessaging: true,
+          allowTechnicianAccounts: true,
+          allowOutwardTaxInvoiceButton: true,
+          allowedModules: ['dashboard', 'live_queue', 'inwards', 'outwards', 'billing', 'payments', 'inventory', 'expenses', 'reports', 'settings']
+        }
+      });
+    }
+    stmt.free();
+    res.json({ success: true, tenants });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Organization Login / PIN verification
+apiRouter.post('/auth/login', (req, res) => {
+  try {
+    const { tenantId, pin, username, password, deviceInfo } = req.body || {};
+    const db = getDatabase();
+
+    // 1. Organization Owner Login via PIN
+    if (tenantId && pin !== undefined) {
+      const orgStmt = db.prepare('SELECT * FROM organizations WHERE id = ?');
+      orgStmt.bind([tenantId]);
+      if (!orgStmt.step()) {
+        orgStmt.free();
+        return res.status(404).json({ success: false, message: 'Organization not found' });
+      }
+      const org = orgStmt.getAsObject();
+      orgStmt.free();
+
+      let isPinValid = false;
+      const cleanPin = pin.toString().trim();
+      if (org.pin_hash && org.pin_salt) {
+        isPinValid = verifyPassword(cleanPin, org.pin_hash as string, org.pin_salt as string);
+      } else if (cleanPin === '1234') {
+        // Fallback initial default if salt not yet stored
+        isPinValid = true;
+      }
+
+      if (!isPinValid) {
+        return res.status(401).json({ success: false, message: 'Incorrect Organization PIN' });
+      }
+
+      // Check or create admin user for this tenant
+      let userStmt = db.prepare('SELECT * FROM users WHERE tenant_id = ? AND role = "Admin" LIMIT 1');
+      userStmt.bind([tenantId]);
+      let adminUser: any = null;
+      if (userStmt.step()) {
+        adminUser = userStmt.getAsObject();
+      }
+      userStmt.free();
+
+      if (!adminUser) {
+        const adminId = `u_admin_${Date.now()}`;
+        const { hash: pHash, salt: pSalt } = hashPassword(cleanPin);
+        db.run(
+          `INSERT INTO users (id, tenant_id, name, username, mobile, role, status, password_hash, password_salt, pin_hash, pin_salt, created_at, updated_at, version)
+           VALUES (?, ?, ?, ?, ?, 'Admin', 'Active', ?, ?, ?, ?, ?, ?, 1)`,
+          [adminId, tenantId, org.owner_name || 'Admin', 'admin', org.owner_mobile, pHash, pSalt, pHash, pSalt, new Date().toISOString(), new Date().toISOString()]
+        );
+        adminUser = { id: adminId, name: org.owner_name || 'Admin', role: 'Admin', username: 'admin' };
+      }
+
+      // Generate Session Token
+      const token = generateToken();
+      const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const now = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+      db.run(
+        `INSERT INTO sessions (id, tenant_id, user_id, token, device_info, created_at, expires_at, last_active_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [sessionId, tenantId, adminUser.id, token, deviceInfo || 'Web Browser', now, expiresAt, now]
+      );
+      scheduleDbSave();
+
+      recordAuditLog({
+        tenantId,
+        userId: adminUser.id,
+        userName: adminUser.name,
+        action: 'LOGIN',
+        entity: 'auth',
+        details: { method: 'org_pin', deviceInfo }
+      });
+
+      return res.json({
+        success: true,
+        token,
+        sessionId,
+        user: {
+          id: adminUser.id,
+          name: adminUser.name,
+          role: 'Admin',
+          tenantId
+        },
+        organization: {
+          id: org.id,
+          name: org.name,
+          code: org.code,
+          ownerMobile: org.owner_mobile,
+          ownerName: org.owner_name,
+          status: org.status
+        }
+      });
+    }
+
+    // 2. Staff / Technician Login via Username & Password
+    if (tenantId && username) {
+      const cleanUser = (username || '').trim().toLowerCase();
+      const cleanPass = (password || '').trim();
+
+      const uStmt = db.prepare('SELECT * FROM users WHERE tenant_id = ? AND (LOWER(username) = ? OR mobile = ?)');
+      uStmt.bind([tenantId, cleanUser, cleanUser]);
+
+      if (!uStmt.step()) {
+        uStmt.free();
+        return res.status(404).json({ success: false, message: 'User not found in this organization' });
+      }
+
+      const user = uStmt.getAsObject();
+      uStmt.free();
+
+      if (user.status === 'Deactivated') {
+        return res.status(403).json({ success: false, message: 'User account has been deactivated' });
+      }
+
+      let isPassValid = false;
+      if (user.password_hash && user.password_salt) {
+        isPassValid = verifyPassword(cleanPass, user.password_hash as string, user.password_salt as string);
+      } else {
+        isPassValid = cleanPass === '1234' || cleanPass === (user.pin_hash ? '' : '1234');
+      }
+
+      if (!isPassValid) {
+        return res.status(401).json({ success: false, message: 'Incorrect Password' });
+      }
+
+      const token = generateToken();
+      const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const now = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+      db.run(
+        `INSERT INTO sessions (id, tenant_id, user_id, token, device_info, created_at, expires_at, last_active_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [sessionId, tenantId, user.id, token, deviceInfo || 'Web Browser', now, expiresAt, now]
+      );
+      scheduleDbSave();
+
+      recordAuditLog({
+        tenantId,
+        userId: user.id as string,
+        userName: user.name as string,
+        action: 'LOGIN',
+        entity: 'auth',
+        details: { method: 'staff_credentials', role: user.role }
+      });
+
+      return res.json({
+        success: true,
+        token,
+        sessionId,
+        user: {
+          id: user.id,
+          name: user.name,
+          username: user.username,
+          mobile: user.mobile,
+          role: user.role,
+          tenantId
+        }
+      });
+    }
+
+    return res.status(400).json({ success: false, message: 'Missing login credentials' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Login error' });
+  }
+});
+
+// Session Validation Endpoint
+apiRouter.get('/auth/session', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  res.json({
+    success: true,
+    user: req.user
+  });
+});
+
+// Logout Endpoint
+apiRouter.post('/auth/logout', (req, res) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : null;
+  if (token) {
+    const db = getDatabase();
+    db.run('DELETE FROM sessions WHERE token = ?', [token]);
+    scheduleDbSave();
+  }
+  res.json({ success: true, message: 'Logged out successfully' });
+});
+
+// Helper to upsert or update an organization
+function updateOrganizationInDb(db: any, orgData: any) {
+  const orgId = orgData.id;
+  if (!orgId) throw new Error('Organization ID is required for update');
+
+  const checkStmt = db.prepare('SELECT * FROM organizations WHERE id = ?');
+  checkStmt.bind([orgId]);
+  const exists = checkStmt.step();
+  const existingOrg = exists ? checkStmt.getAsObject() : null;
+  checkStmt.free();
+
+  if (!existingOrg) {
+    throw new Error('Organization not found');
+  }
+
+  const name = (orgData.name || existingOrg.name || '').trim();
+  const code = (orgData.code || existingOrg.code || '').trim().toUpperCase();
+  const ownerMobile = (orgData.ownerMobile || existingOrg.owner_mobile || '').trim();
+  const ownerName = (orgData.ownerName || existingOrg.owner_name || 'Admin').trim();
+  const status = orgData.status || existingOrg.status || 'active';
+  const secretKey = orgData.secretKey || existingOrg.secret_key || '';
+  const subscriptionPlan = orgData.subscriptionPlan || existingOrg.subscription_plan || 'monthly';
+  const subscriptionStartDate = orgData.subscriptionStartDate || existingOrg.subscription_start_date || existingOrg.created_at;
+  const subscriptionEndDate = orgData.subscriptionEndDate || existingOrg.subscription_end_date || '';
+  const trialDays = orgData.trialDays !== undefined ? Number(orgData.trialDays) : Number(existingOrg.trial_days) || 0;
+  const isTrial = orgData.isTrial !== undefined ? (orgData.isTrial ? 1 : 0) : (existingOrg.is_trial ? 1 : 0);
+  const featuresJson = orgData.features ? JSON.stringify(orgData.features) : existingOrg.features_json;
+  const now = new Date().toISOString();
+
+  let pinText = orgData.pin || existingOrg.pin || '1234';
+  let pinHash = existingOrg.pin_hash;
+  let pinSalt = existingOrg.pin_salt;
+
+  if (orgData.pin && orgData.pin !== '••••••') {
+    pinText = orgData.pin.toString().trim();
+    const hashed = hashPassword(pinText);
+    pinHash = hashed.hash;
+    pinSalt = hashed.salt;
+
+    // Update Admin user PIN
+    db.run(
+      `UPDATE users SET pin_hash = ?, pin_salt = ?, password_hash = ?, password_salt = ?, name = ?, mobile = ?, updated_at = ?
+       WHERE tenant_id = ? AND role = 'Admin'`,
+      [pinHash, pinSalt, pinHash, pinSalt, ownerName, ownerMobile, now, orgId]
+    );
+  } else {
+    // Update Admin user name and mobile if changed
+    db.run(
+      `UPDATE users SET name = ?, mobile = ?, updated_at = ? WHERE tenant_id = ? AND role = 'Admin'`,
+      [ownerName, ownerMobile, now, orgId]
+    );
+  }
+
+  db.run(
+    `UPDATE organizations
+     SET name = ?, code = ?, owner_mobile = ?, owner_name = ?, status = ?, secret_key = ?,
+         pin = ?, pin_hash = ?, pin_salt = ?, subscription_plan = ?, subscription_start_date = ?,
+         subscription_end_date = ?, trial_days = ?, is_trial = ?, features_json = ?, updated_at = ?, version = version + 1
+     WHERE id = ?`,
+    [
+      name, code, ownerMobile, ownerName, status, secretKey,
+      pinText, pinHash, pinSalt, subscriptionPlan, subscriptionStartDate,
+      subscriptionEndDate, trialDays, isTrial, featuresJson, now,
+      orgId
+    ]
+  );
+
+  scheduleDbSave();
+
+  recordAuditLog({
+    tenantId: orgId,
+    action: 'UPDATE_ORG',
+    entity: 'organizations',
+    entityId: orgId,
+    details: { name, code, ownerMobile, status }
+  });
+
+  return {
+    id: orgId,
+    name,
+    code,
+    ownerMobile,
+    ownerName,
+    status,
+    pin: pinText,
+    secretKey,
+    subscriptionPlan,
+    subscriptionStartDate,
+    subscriptionEndDate,
+    trialDays,
+    isTrial: !!isTrial,
+    features: orgData.features,
+    createdAt: existingOrg.created_at,
+    updatedAt: now
+  };
+}
+
+// Register New Organization
+apiRouter.post('/auth/register-org', (req, res) => {
+  try {
+    const { id, name, code: customCode, ownerMobile, ownerName, pin, secretKey: customSecret, subscriptionPlan, subscriptionStartDate, subscriptionEndDate, trialDays, isTrial, features } = req.body || {};
+    if (!name || !ownerMobile) {
+      return res.status(400).json({ success: false, message: 'Organization name and mobile are required' });
+    }
+
+    const db = getDatabase();
+
+    // If an ID is provided and organization exists, update it instead of creating a duplicate!
+    if (id) {
+      const checkStmt = db.prepare('SELECT id FROM organizations WHERE id = ?');
+      checkStmt.bind([id]);
+      const exists = checkStmt.step();
+      checkStmt.free();
+      if (exists) {
+        const updated = updateOrganizationInDb(db, req.body);
+        return res.json({ success: true, org: updated });
+      }
+    }
+
+    const orgId = id || `org-${Date.now()}`;
+    const code = customCode ? customCode.trim().toUpperCase() : `${name.substring(0, 4).toUpperCase().replace(/[^A-Z]/g, 'ORG')}-${Math.floor(10 + Math.random() * 90)}`;
+    const now = new Date().toISOString();
+    const pinText = (pin || '1234').toString().trim();
+    const { hash: pinHash, salt: pinSalt } = hashPassword(pinText);
+
+    // Generate Base32 2FA secret
+    let secretKey = customSecret || '';
+    if (!secretKey) {
+      const seed = (name + ownerMobile + Date.now().toString()).toUpperCase();
+      const base32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+      for (let i = 0; i < 16; i++) {
+        const idx = Math.floor((seed.charCodeAt(i % seed.length) + i * 7) % base32Chars.length);
+        secretKey += base32Chars[idx];
+      }
+    }
+
+    const featuresJson = features ? JSON.stringify(features) : null;
+    const subPlan = subscriptionPlan || 'monthly';
+    const subStart = subscriptionStartDate || now.split('T')[0];
+    const subEnd = subscriptionEndDate || '';
+    const tDays = trialDays !== undefined ? Number(trialDays) : (subPlan === 'trial' ? 7 : 0);
+    const isTr = isTrial !== undefined ? (isTrial ? 1 : 0) : (subPlan === 'trial' ? 1 : 0);
+
+    db.run(
+      `INSERT INTO organizations (
+        id, name, code, owner_mobile, owner_name, status, secret_key, pin, pin_hash, pin_salt,
+        subscription_plan, subscription_start_date, subscription_end_date, trial_days, is_trial, features_json,
+        created_at, updated_at, version
+      ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      [
+        orgId, name.trim(), code, ownerMobile.trim(), (ownerName || 'Owner').trim(), secretKey, pinText, pinHash, pinSalt,
+        subPlan, subStart, subEnd, tDays, isTr, featuresJson,
+        now, now
+      ]
+    );
+
+    // Create Initial Admin User
+    const adminId = `u_${Date.now()}`;
+    db.run(
+      `INSERT INTO users (id, tenant_id, name, username, mobile, role, status, password_hash, password_salt, pin_hash, pin_salt, created_at, updated_at, version)
+       VALUES (?, ?, ?, 'admin', ?, 'Admin', 'Active', ?, ?, ?, ?, ?, ?, 1)`,
+      [adminId, orgId, (ownerName || 'Owner').trim(), ownerMobile.trim(), pinHash, pinSalt, pinHash, pinSalt, now, now]
+    );
+
+    // Initialize Revision
+    db.run(
+      `INSERT INTO sync_revisions (tenant_id, current_revision, last_updated) VALUES (?, 1, ?)`,
+      [orgId, now]
+    );
+
+    scheduleDbSave();
+
+    recordAuditLog({
+      tenantId: orgId,
+      userId: adminId,
+      userName: ownerName || 'Owner',
+      action: 'REGISTER_ORG',
+      entity: 'organizations',
+      entityId: orgId,
+      details: { name, code, ownerMobile }
+    });
+
+    res.json({
+      success: true,
+      org: {
+        id: orgId,
+        name: name.trim(),
+        code,
+        ownerMobile: ownerMobile.trim(),
+        ownerName: (ownerName || 'Owner').trim(),
+        status: 'active',
+        pin: pinText,
+        secretKey,
+        subscriptionPlan: subPlan,
+        subscriptionStartDate: subStart,
+        subscriptionEndDate: subEnd,
+        trialDays: tDays,
+        isTrial: !!isTr,
+        features: features || undefined,
+        createdAt: now.split('T')[0]
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Registration error' });
+  }
+});
+
+// Update Existing Organization (Master Admin / Settings)
+apiRouter.post('/auth/update-org', (req, res) => {
+  try {
+    const db = getDatabase();
+    const updated = updateOrganizationInDb(db, req.body);
+    res.json({ success: true, org: updated });
+  } catch (err: any) {
+    res.status(err.message === 'Organization not found' ? 404 : 500).json({ success: false, error: err?.message || 'Update error' });
+  }
+});
+
+apiRouter.put('/auth/organizations/:id', (req, res) => {
+  try {
+    const db = getDatabase();
+    const updated = updateOrganizationInDb(db, { ...req.body, id: req.params.id });
+    res.json({ success: true, org: updated });
+  } catch (err: any) {
+    res.status(err.message === 'Organization not found' ? 404 : 500).json({ success: false, error: err?.message || 'Update error' });
+  }
+});
+
+// Delete Organization (Master Admin)
+apiRouter.post('/auth/delete-org', (req, res) => {
+  try {
+    const { id } = req.body || {};
+    if (!id) return res.status(400).json({ success: false, message: 'Organization ID required' });
+    if (id === 'org-admin') {
+      return res.status(403).json({ success: false, message: 'Master System Admin cannot be deleted' });
+    }
+
+    const db = getDatabase();
+    db.run('DELETE FROM organizations WHERE id = ?', [id]);
+    scheduleDbSave();
+
+    res.json({ success: true, message: `Organization ${id} deleted successfully` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Delete error' });
+  }
+});
+
+apiRouter.delete('/auth/organizations/:id', (req, res) => {
+  try {
+    const id = req.params.id;
+    if (id === 'org-admin') {
+      return res.status(403).json({ success: false, message: 'Master System Admin cannot be deleted' });
+    }
+
+    const db = getDatabase();
+    db.run('DELETE FROM organizations WHERE id = ?', [id]);
+    scheduleDbSave();
+
+    res.json({ success: true, message: `Organization ${id} deleted successfully` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Delete error' });
+  }
+});
+
+// -------------------------------------------------------------
+// AUTHORITATIVE SYNC ENGINE (SQLite Backend)
+// -------------------------------------------------------------
+
+// Helper to query all active records for an entity table
+function getEntityRecords(db: any, table: string, tenantId: string): any[] {
+  const stmt = db.prepare(`SELECT * FROM ${table} WHERE tenant_id = ? AND (deleted_at IS NULL OR deleted_at = '')`);
+  stmt.bind([tenantId]);
+  const results: any[] = [];
+  while (stmt.step()) {
+    const row = stmt.getAsObject();
+    if (row.data_json) {
+      try {
+        const parsed = JSON.parse(row.data_json as string);
+        results.push({ ...parsed, id: row.id, version: row.version, updatedAt: row.updated_at });
+        continue;
+      } catch (e) {}
+    }
+    // Fallback to table fields
+    results.push(row);
+  }
+  stmt.free();
+  return results;
+}
+
+// 1. BOOTSTRAP: Full Authoritative Snapshot for Authenticated Tenant
+apiRouter.get('/sync/bootstrap', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    const db = getDatabase();
+    const revision = getCurrentRevision(tenantId);
+
+    // Fetch tenant config
+    const configStmt = db.prepare('SELECT * FROM tenant_configs WHERE tenant_id = ?');
+    configStmt.bind([tenantId]);
+    let companyConfig: any = null;
+    if (configStmt.step()) {
+      const cRow = configStmt.getAsObject();
+      if (cRow.config_json) {
+        try {
+          companyConfig = JSON.parse(cRow.config_json as string);
+        } catch (e) {}
+      }
+      if (!companyConfig) {
+        companyConfig = {
+          name: cRow.name,
+          phone: cRow.phone,
+          email: cRow.email,
+          address: cRow.address,
+          gstin: cRow.gstin,
+          upiId: cRow.upi_id
+        };
+      }
+    }
+    configStmt.free();
+
+    // Fetch all business collections
+    const collections = {
+      clients: getEntityRecords(db, 'clients', tenantId),
+      jobs: getEntityRecords(db, 'jobs', tenantId),
+      invoices: getEntityRecords(db, 'invoices', tenantId),
+      payments: getEntityRecords(db, 'payments', tenantId),
+      products: getEntityRecords(db, 'products', tenantId),
+      expenses: getEntityRecords(db, 'expenses', tenantId),
+      ledger: getEntityRecords(db, 'ledger', tenantId),
+      users: getEntityRecords(db, 'users', tenantId).map(u => {
+        const clean = { ...u };
+        delete clean.password_hash;
+        delete clean.password_salt;
+        delete clean.pin_hash;
+        delete clean.pin_salt;
+        return clean;
+      }),
+      categories: getEntityRecords(db, 'categories', tenantId),
+      racks: getEntityRecords(db, 'racks', tenantId),
+      equipments: getEntityRecords(db, 'equipments', tenantId),
+      problems: getEntityRecords(db, 'problems', tenantId)
+    };
+
+    res.json({
+      success: true,
+      tenantId,
+      serverRevision: revision,
+      companyConfig,
+      collections,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Bootstrap sync failed' });
+  }
+});
+
+// 2. PULL: Delta Changes since last known revision
+apiRouter.get('/sync/pull', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    const sinceRevision = parseInt((req.query.sinceRevision as string) || '0', 10);
+    const db = getDatabase();
+    const currentRevision = getCurrentRevision(tenantId);
+
+    if (sinceRevision >= currentRevision) {
+      return res.json({
+        success: true,
+        tenantId,
+        currentRevision,
+        hasChanges: false,
+        changes: []
+      });
+    }
+
+    const stmt = db.prepare(`
+      SELECT revision, entity, entity_id, operation, data_json, timestamp
+      FROM change_log
+      WHERE tenant_id = ? AND revision > ?
+      ORDER BY revision ASC
+    `);
+    stmt.bind([tenantId, sinceRevision]);
+
+    const changes: any[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      changes.push({
+        revision: row.revision,
+        entity: row.entity,
+        entityId: row.entity_id,
+        operation: row.operation,
+        data: row.data_json ? JSON.parse(row.data_json as string) : null,
+        timestamp: row.timestamp
+      });
+    }
+    stmt.free();
+
+    res.json({
+      success: true,
+      tenantId,
+      currentRevision,
+      hasChanges: changes.length > 0,
+      changes
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Pull sync failed' });
+  }
+});
+
+// 3. PUSH: Transactional Batch Changes from Client
+apiRouter.post('/sync/push', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { operations } = req.body || {};
+
+    if (!Array.isArray(operations) || operations.length === 0) {
+      return res.status(400).json({ success: false, message: 'No operations provided in push request.' });
+    }
+
+    const db = getDatabase();
+    const committed: any[] = [];
+    const conflicts: any[] = [];
+    const now = new Date().toISOString();
+
+    // Begin ACID transaction on SQLite
+    db.run('BEGIN TRANSACTION');
+
+    try {
+      const nextRev = getNextRevision(tenantId);
+
+      for (const op of operations) {
+        const { entity, operation, record, expectedVersion } = op;
+        if (!entity || !record || !record.id) continue;
+
+        const tableMap: Record<string, string> = {
+          clients: 'clients',
+          jobs: 'jobs',
+          invoices: 'invoices',
+          payments: 'payments',
+          products: 'products',
+          expenses: 'expenses',
+          ledger: 'ledger',
+          users: 'users',
+          categories: 'categories',
+          racks: 'racks',
+          equipments: 'equipments',
+          problems: 'problems',
+          config: 'tenant_configs'
+        };
+
+        const table = tableMap[entity];
+        if (!table) continue;
+
+        // Check for concurrency conflicts on updates/deletions
+        if (operation === 'update' || operation === 'delete') {
+          const checkStmt = db.prepare(`SELECT version, updated_at FROM ${table} WHERE id = ? AND tenant_id = ?`);
+          checkStmt.bind([record.id, tenantId]);
+          if (checkStmt.step()) {
+            const currentRec = checkStmt.getAsObject();
+            const serverVersion = currentRec.version as number || 1;
+            if (expectedVersion !== undefined && expectedVersion < serverVersion) {
+              // Concurrency conflict detected!
+              conflicts.push({
+                entity,
+                id: record.id,
+                serverVersion,
+                clientVersion: expectedVersion,
+                message: `Conflict: Record ${record.id} was updated on server (v${serverVersion}) after client version (v${expectedVersion}).`
+              });
+              checkStmt.free();
+              continue; // Do not overwrite conflicting record
+            }
+          }
+          checkStmt.free();
+        }
+
+        const newVersion = (record.version || 0) + 1;
+        const recordWithMeta = {
+          ...record,
+          tenantId,
+          version: newVersion,
+          updatedAt: now
+        };
+        const dataJson = JSON.stringify(recordWithMeta);
+
+        if (operation === 'delete') {
+          db.run(
+            `UPDATE ${table} SET deleted_at = ?, version = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
+            [now, newVersion, now, record.id, tenantId]
+          );
+        } else {
+          // Entity-specific insert or replace statements
+          switch (entity) {
+            case 'clients':
+              db.run(
+                `INSERT OR REPLACE INTO clients (id, tenant_id, name, phone, email, address, city, gstin, credit_limit, opening_balance, current_balance, notes, data_json, created_at, updated_at, deleted_at, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+                [
+                  record.id, tenantId, record.name || 'Client', record.phone || null, record.email || null,
+                  record.address || null, record.city || null, record.gstin || null, record.creditLimit || 0,
+                  record.openingBalance || 0, record.currentBalance || 0, record.notes || null, dataJson,
+                  record.createdAt || now, now, newVersion
+                ]
+              );
+              break;
+
+            case 'jobs':
+              db.run(
+                `INSERT OR REPLACE INTO jobs (id, tenant_id, job_no, client_id, client_name, client_phone, equipment_type, brand_model, serial_no, problem_description, estimated_cost, advance_paid, status, priority, assigned_to, rack_location, data_json, created_at, updated_at, completed_at, deleted_at, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+                [
+                  record.id, tenantId, record.jobNo || record.id, record.clientId || null, record.clientName || null,
+                  record.clientPhone || null, record.equipmentType || null, record.brandModel || record.model || null,
+                  record.serialNo || null, record.problemDescription || record.problem || null, record.estimatedCost || 0,
+                  record.advancePaid || 0, record.status || 'Pending', record.priority || 'Normal', record.assignedTo || null,
+                  record.rackLocation || null, dataJson, record.createdAt || now, now, record.completedAt || null, newVersion
+                ]
+              );
+              break;
+
+            case 'invoices':
+              db.run(
+                `INSERT OR REPLACE INTO invoices (id, tenant_id, invoice_no, job_id, client_id, client_name, client_phone, subtotal, discount, tax, total, paid_amount, balance_due, payment_mode, status, data_json, created_at, updated_at, deleted_at, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+                [
+                  record.id, tenantId, record.invoiceNo || record.id, record.jobId || null, record.clientId || null,
+                  record.clientName || null, record.clientPhone || null, record.subtotal || 0, record.discount || 0,
+                  record.tax || 0, record.total || record.grandTotal || 0, record.paidAmount || 0, record.balanceDue || 0,
+                  record.paymentMode || 'Cash', record.status || 'Paid', dataJson, record.createdAt || now, now, newVersion
+                ]
+              );
+              break;
+
+            case 'payments':
+              db.run(
+                `INSERT OR REPLACE INTO payments (id, tenant_id, payment_no, client_id, client_name, invoice_id, job_id, amount, payment_mode, transaction_ref, notes, received_by, date, data_json, created_at, updated_at, deleted_at, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+                [
+                  record.id, tenantId, record.paymentNo || record.id, record.clientId || null, record.clientName || null,
+                  record.invoiceId || null, record.jobId || null, record.amount || 0, record.paymentMode || 'Cash',
+                  record.transactionRef || null, record.notes || null, record.receivedBy || null, record.date || now,
+                  dataJson, record.createdAt || now, now, newVersion
+                ]
+              );
+              break;
+
+            case 'products':
+              db.run(
+                `INSERT OR REPLACE INTO products (id, tenant_id, code, name, category, description, cost_price, selling_price, stock_quantity, min_stock_alert, unit, location, data_json, created_at, updated_at, deleted_at, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+                [
+                  record.id, tenantId, record.code || record.sku || null, record.name || 'Product', record.category || null,
+                  record.description || null, record.costPrice || 0, record.sellingPrice || record.price || 0,
+                  record.stockQuantity || record.stock || 0, record.minStockAlert || 0, record.unit || 'pcs',
+                  record.location || null, dataJson, record.createdAt || now, now, newVersion
+                ]
+              );
+              break;
+
+            case 'expenses':
+              db.run(
+                `INSERT OR REPLACE INTO expenses (id, tenant_id, expense_no, category, amount, payment_mode, description, paid_to, date, recorded_by, data_json, created_at, updated_at, deleted_at, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+                [
+                  record.id, tenantId, record.expenseNo || record.id, record.category || 'General', record.amount || 0,
+                  record.paymentMode || 'Cash', record.description || null, record.paidTo || null, record.date || now,
+                  record.recordedBy || null, dataJson, record.createdAt || now, now, newVersion
+                ]
+              );
+              break;
+
+            case 'ledger':
+              db.run(
+                `INSERT OR REPLACE INTO ledger (id, tenant_id, client_id, entry_type, amount, reference_id, description, balance_after, date, data_json, created_at, updated_at, deleted_at, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+                [
+                  record.id, tenantId, record.clientId || null, record.entryType || 'Debit', record.amount || 0,
+                  record.referenceId || null, record.description || null, record.balanceAfter || 0, record.date || now,
+                  dataJson, record.createdAt || now, now, newVersion
+                ]
+              );
+              break;
+
+            case 'config':
+              db.run(
+                `INSERT OR REPLACE INTO tenant_configs (tenant_id, name, phone, email, address, gstin, upi_id, config_json, updated_at, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  tenantId, record.name || null, record.phone || null, record.email || null,
+                  record.address || null, record.gstin || null, record.upiId || null,
+                  dataJson, now, newVersion
+                ]
+              );
+              break;
+
+            default:
+              // Generic tables (categories, racks, equipments, problems)
+              db.run(
+                `INSERT OR REPLACE INTO ${table} (id, tenant_id, name, data_json, created_at, updated_at, deleted_at, version)
+                 VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
+                [record.id, tenantId, record.name || record.title || 'Item', dataJson, record.createdAt || now, now, newVersion]
+              );
+              break;
+          }
+        }
+
+        // Record into change_log for delta pull
+        db.run(
+          `INSERT INTO change_log (tenant_id, revision, entity, entity_id, operation, data_json, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [tenantId, nextRev, entity, record.id, operation, operation === 'delete' ? null : dataJson, now]
+        );
+
+        // Record Audit log
+        recordAuditLog({
+          tenantId,
+          userId: req.user!.id,
+          userName: req.user!.name,
+          action: `${operation.toUpperCase()}_${entity.toUpperCase()}`,
+          entity,
+          entityId: record.id,
+          details: { version: newVersion }
+        });
+
+        committed.push({
+          entity,
+          id: record.id,
+          operation,
+          version: newVersion,
+          updatedAt: now
+        });
+      }
+
+      db.run('COMMIT');
+      scheduleDbSave();
+
+      res.json({
+        success: true,
+        tenantId,
+        serverRevision: nextRev,
+        committedCount: committed.length,
+        committed,
+        conflicts
+      });
+    } catch (txErr) {
+      db.run('ROLLBACK');
+      throw txErr;
+    }
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Push sync transaction failed' });
+  }
+});
+
+// -------------------------------------------------------------
+// ADMIN BACKUP & DISASTER RECOVERY ENDPOINTS
+// -------------------------------------------------------------
+apiRouter.post('/admin/backups/create', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  if (req.user?.role !== 'Admin' && req.user?.role !== 'Master Admin') {
+    return res.status(403).json({ success: false, message: 'Admin role required to create backup' });
+  }
+  try {
+    const filename = createBackupSnapshot();
+    recordAuditLog({
+      tenantId: req.user!.tenantId,
+      userId: req.user!.id,
+      userName: req.user!.name,
+      action: 'CREATE_BACKUP',
+      entity: 'system_backup',
+      details: { filename }
+    });
+    res.json({ success: true, filename, message: 'Backup created successfully on Home Server' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Backup creation failed' });
+  }
+});
+
+apiRouter.get('/admin/backups/list', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  if (req.user?.role !== 'Admin' && req.user?.role !== 'Master Admin') {
+    return res.status(403).json({ success: false, message: 'Admin role required to list backups' });
+  }
+  try {
+    const backups = listBackups();
+    res.json({ success: true, backups });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+apiRouter.post('/admin/backups/restore', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  if (req.user?.role !== 'Master Admin' && req.user?.role !== 'Admin') {
+    return res.status(403).json({ success: false, message: 'Master Admin role required to restore database backup' });
+  }
+  try {
+    const { filename } = req.body || {};
+    if (!filename) {
+      return res.status(400).json({ success: false, message: 'Backup filename is required' });
+    }
+    restoreBackupFile(filename);
+    recordAuditLog({
+      tenantId: req.user!.tenantId,
+      userId: req.user!.id,
+      userName: req.user!.name,
+      action: 'RESTORE_BACKUP',
+      entity: 'system_backup',
+      details: { filename }
+    });
+    res.json({ success: true, message: `Database successfully restored from ${filename}` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Backup restore failed' });
+  }
+});
+
+apiRouter.post('/admin/backups/delete', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  if (req.user?.role !== 'Master Admin' && req.user?.role !== 'Admin') {
+    return res.status(403).json({ success: false, message: 'Admin role required to delete backup' });
+  }
+  try {
+    const { filename } = req.body || {};
+    if (!filename) {
+      return res.status(400).json({ success: false, message: 'Backup filename is required' });
+    }
+    deleteBackupFile(filename);
+    recordAuditLog({
+      tenantId: req.user!.tenantId,
+      userId: req.user!.id,
+      userName: req.user!.name,
+      action: 'DELETE_BACKUP',
+      entity: 'system_backup',
+      details: { filename }
+    });
+    res.json({ success: true, message: `Backup file ${filename} deleted successfully` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Backup deletion failed' });
+  }
+});

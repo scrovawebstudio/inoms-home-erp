@@ -1,24 +1,8 @@
 {
   "entities": {
-    "tenants": {
-      "title": "Tenant Organizations",
-      "description": "Multi-tenant organization registrations and status",
-      "properties": {
-        "id": { "type": "string" },
-        "name": { "type": "string" },
-        "code": { "type": "string" },
-        "pin": { "type": "string" },
-        "ownerMobile": { "type": "string" },
-        "ownerName": { "type": "string" },
-        "status": { "type": "string" },
-        "createdAt": { "type": "string" },
-        "secretKey": { "type": "string" }
-      },
-      "required": ["id", "name", "ownerMobile"]
-    },
     "announcements": {
       "title": "System Announcements",
-      "description": "Platform-wide or tenant-specific broadcasts",
+      "description": "Platform-wide broadcasts",
       "properties": {
         "id": { "type": "string" },
         "title": { "type": "string" },
@@ -28,29 +12,6 @@
         "severity": { "type": "string" }
       },
       "required": ["id", "title", "message"]
-    },
-    "tenant_configs": {
-      "title": "Tenant Company Profiles & Settings",
-      "description": "Organization company configuration, logo, signature, and tax details",
-      "properties": {
-        "id": { "type": "string" },
-        "name": { "type": "string" },
-        "phone": { "type": "string" },
-        "email": { "type": "string" },
-        "address": { "type": "string" },
-        "gstin": { "type": "string" },
-        "upiId": { "type": "string" }
-      },
-      "required": ["name"]
-    },
-    "tenant_collections": {
-      "title": "Tenant Isolated Collections",
-      "description": "Stores clients, jobs, invoices, products, expenses, users, and logs per organization tenant ID",
-      "properties": {
-        "items": { "type": "array" },
-        "updatedAt": { "type": "string" }
-      },
-      "required": ["items"]
     }
   }
 }
