@@ -31,7 +31,19 @@ export interface ClientLedgerEntry {
   balance: number;
 }
 
-export type JobStatus = 'Received' | 'Work in Progress' | 'Approval Pending' | 'Ready' | 'Product Out' | 'Pending' | 'Completed' | 'Complete & Ready' | 'Outwarded';
+export type JobStatus =
+  | 'Device Received'
+  | 'Received'
+  | 'Work in Progress'
+  | 'Approval Pending'
+  | 'Device Ready'
+  | 'Ready'
+  | 'Device Not repairable'
+  | 'Product Out'
+  | 'Pending'
+  | 'Completed'
+  | 'Complete & Ready'
+  | 'Outwarded';
 
 export interface Problem {
   id: string;
@@ -173,6 +185,49 @@ export interface Expense {
   remarks?: string;
 }
 
+export interface UserPermissions {
+  // Navigation & High-Level Access
+  dashboard?: boolean;
+  operations?: boolean;
+  clientLedger?: boolean;
+  billingInvoice?: boolean;
+  billing?: boolean;
+  payments?: boolean;
+  inventoryEdit?: boolean;
+  inventory?: boolean;
+  accounts?: boolean;
+  reports?: boolean;
+  setup?: boolean;
+
+  // Granular Operational Access Controls
+  inwardView?: boolean;
+  inwardCreate?: boolean;
+  inwardEdit?: boolean;
+
+  outwardView?: boolean;
+  outwardEdit?: boolean;
+
+  billingView?: boolean;
+  billingCreate?: boolean;
+  billingEdit?: boolean;
+
+  paymentsView?: boolean;
+  paymentsCreate?: boolean;
+
+  clientView?: boolean;
+  clientCreateEdit?: boolean;
+
+  inventoryView?: boolean;
+  inventoryEditStock?: boolean;
+
+  expensesView?: boolean;
+  expensesCreateEdit?: boolean;
+
+  reportsView?: boolean;
+
+  [key: string]: boolean | undefined;
+}
+
 export interface SystemUser {
   id: string;
   tenantId?: string;
@@ -183,7 +238,7 @@ export interface SystemUser {
   password?: string;
   pin?: string;
   role: 'Admin' | 'Front Desk' | 'Technician' | 'HR';
-  permissions: { [key: string]: boolean };
+  permissions: UserPermissions;
   isDeactivated?: boolean;
   status?: 'Active' | 'Deactivated';
 }
@@ -222,6 +277,7 @@ export interface CompanyConfig {
   address: string;
   phone: string;
   email: string;
+  website?: string;
   gstin: string;
   logoUrl?: string;
   signatureUrl?: string;
@@ -289,6 +345,7 @@ export function sortJobsByLatest(jobsList: RepairJob[]): RepairJob[] {
     }
 
     // Compare job ID numerical part descending
+
     const numA = parseInt(a.id.split('/').pop() || '0', 10);
     const numB = parseInt(b.id.split('/').pop() || '0', 10);
     if (!isNaN(numA) && !isNaN(numB) && numA !== numB) {
@@ -297,4 +354,74 @@ export function sortJobsByLatest(jobsList: RepairJob[]): RepairJob[] {
     return b.id.localeCompare(a.id);
   });
 }
+
+export interface CustomAddonPricingItem {
+  id: string;
+  name: string;
+  price: number;
+  description?: string;
+  billingCycle: 'monthly' | 'annual' | 'one-time';
+}
+
+export interface AddonPricingConfig {
+  basePlatformMonthly: number;
+  basePlatformAnnual: number;
+  homeServerSync: number;
+  barcodeQrTags: number;
+  whatsAppMessaging: number;
+  technicianAccounts: number;
+  outwardTaxInvoice: number;
+  customAddons: CustomAddonPricingItem[];
+}
+
+export const DEFAULT_ADDON_PRICING: AddonPricingConfig = {
+  basePlatformMonthly: 999,
+  basePlatformAnnual: 9999,
+  homeServerSync: 499,
+  barcodeQrTags: 299,
+  whatsAppMessaging: 499,
+  technicianAccounts: 399,
+  outwardTaxInvoice: 199,
+  customAddons: [
+    {
+      id: 'custom-priority-support',
+      name: '24x7 Priority Technical Support',
+      price: 299,
+      description: 'Dedicated phone & remote desk technical assistance',
+      billingCycle: 'monthly'
+    }
+  ]
+};
+
+export interface MasterAdminInvoiceItem {
+  id: string;
+  description: string;
+  addonKey?: string;
+  qty: number;
+  rate: number;
+  amount: number;
+}
+
+export interface MasterAdminInvoice {
+  id: string;
+  tenantId: string;
+  tenantName: string;
+  tenantCode: string;
+  ownerMobile: string;
+  ownerName: string;
+  date: string;
+  dueDate: string;
+  billingPeriod: 'Monthly' | 'Quarterly' | 'Half-Yearly' | 'Annual' | 'One-Time';
+  items: MasterAdminInvoiceItem[];
+  subtotal: number;
+  discount: number;
+  gstPercent: number;
+  gstAmount: number;
+  grandTotal: number;
+  paymentStatus: 'Paid' | 'Unpaid' | 'Partial';
+  paymentMode?: string;
+  notes?: string;
+  createdAt: string;
+}
+
 

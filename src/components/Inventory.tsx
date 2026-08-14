@@ -17,13 +17,15 @@ import {
   ChevronRight,
   TrendingUp
 } from 'lucide-react';
-import { Product, Category, LocationRack } from '../types';
+import { Product, Category, LocationRack, SystemUser } from '../types';
 
 interface InventoryProps {
   products: Product[];
   categories: Category[];
   racks: LocationRack[];
   isStaff?: boolean;
+  currentUser?: SystemUser | null;
+  userRole?: string;
   onAddProduct: (product: Omit<Product, 'id'>) => void;
   onEditProduct: (product: Product) => void;
   onDeleteProduct: (id: string) => void;
@@ -36,12 +38,16 @@ export default function Inventory({
   categories,
   racks,
   isStaff = false,
+  currentUser,
+  userRole,
   onAddProduct,
   onEditProduct,
   onDeleteProduct,
   onAddCategory,
   onAddRack
 }: InventoryProps) {
+  const isAdmin = userRole === 'Admin' || currentUser?.role === 'Admin';
+  const canEditInventory = isAdmin || currentUser?.permissions?.inventoryEditStock !== false || currentUser?.permissions?.inventoryEdit !== false;
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('All');
   const [selectedRackFilter, setSelectedRackFilter] = useState('All');

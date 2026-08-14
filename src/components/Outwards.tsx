@@ -16,7 +16,10 @@ import {
   Receipt,
   Clock
 } from 'lucide-react';
-import { RepairJob, Client, CompanyConfig, JobStatus, Invoice, getEffectiveBillAmount, sortJobsByLatest } from '../types';
+import { RepairJob, Client, CompanyConfig, JobStatus, Invoice, SystemUser, getEffectiveBillAmount, sortJobsByLatest } from '../types';
+import { TenantFeatures, getTenantFeatures } from './AuthModal';
+import LockedAddonModal, { AddonType } from './LockedAddonModal';
+import { openWhatsAppForJob } from '../lib/whatsappUtils';
 
 const WhatsAppIcon = ({ className = "w-3.5 h-3.5" }: { className?: string }) => (
   <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -30,6 +33,9 @@ interface OutwardsProps {
   clients: Client[];
   invoices?: Invoice[];
   companyConfig: CompanyConfig;
+  userRole?: string;
+  currentUser?: SystemUser | null;
+  tenantFeatures?: TenantFeatures;
   initialJobIdToView?: string | null;
   onClearInitialJobIdToView?: () => void;
   onUpdateJob: (updatedJob: RepairJob) => void;
@@ -42,12 +48,19 @@ export default function Outwards({
   clients,
   invoices = [],
   companyConfig,
+  userRole,
+  currentUser,
+  tenantFeatures,
   initialJobIdToView,
   onClearInitialJobIdToView,
   onUpdateJob,
   onDeleteJob,
   onGenerateInvoiceForJob
 }: OutwardsProps) {
+  const features = getTenantFeatures(tenantFeatures);
+  const isAdmin = userRole === 'Admin' || currentUser?.role === 'Admin';
+  const perms = currentUser?.permissions;
+  const canEditOutward = isAdmin || perms?.outwardEdit !== false;
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'complete' | 'outwarded'>('all');
   
@@ -67,6 +80,23 @@ export default function Outwards({
   const [editRepairOutcome, setEditRepairOutcome] = useState<'Repaired' | 'Not Repaired'>('Repaired');
   const [editAdvanceRefunded, setEditAdvanceRefunded] = useState<boolean>(false);
   const [editAdvanceRefundMode, setEditAdvanceRefundMode] = useState<string>('UPI');
+  const [lockedAddon, setLockedAddon] = useState<AddonType | null>(null);
+
+  const handleTriggerWhatsApp = (job: RepairJob) => {
+    if (!features.allowWhatsAppMessaging) {
+      setLockedAddon('whatsapp');
+      return;
+    }
+    handleSendWhatsAppNotification(job);
+  };
+
+  const handleTriggerInvoice = (job: RepairJob) => {
+    if (!features.allowOutwardTaxInvoiceButton) {
+      setLockedAddon('outward_invoice');
+      return;
+    }
+    onGenerateInvoiceForJob?.(job);
+  };
 
   const formatDisplayDateTime = (dateStr?: string) => {
     if (!dateStr) return { date: '—', time: '—' };
@@ -128,7 +158,7 @@ export default function Outwards({
   const totalProductOut = jobs.filter(j => j.status === 'Product Out' || j.status === 'Outwarded').length;
   const totalOutwardValue = outwardJobs.reduce((sum, j) => sum + getEffectiveBillAmount(j), 0);
 
-  const handleSaveEditedJob = () => {
+  const handleSaveEditedJob = (sendWhatsApp: boolean = false) => {
     if (!editingJob) return;
 
     if (!editPaymentStatus) {
@@ -165,39 +195,18 @@ export default function Outwards({
 
     onUpdateJob(updated);
     setEditingJob(null);
+
+    if (sendWhatsApp) {
+      if (!tenantFeatures?.allowWhatsAppMessaging) {
+        setLockedAddon('whatsapp');
+      } else {
+        handleSendWhatsAppNotification(updated);
+      }
+    }
   };
 
   const handleSendWhatsAppNotification = (job: RepairJob) => {
-    const cleanMobile = job.clientMobile ? job.clientMobile.replace(/[^0-9]/g, '') : '';
-    const formattedMobile = cleanMobile.length === 10 ? `91${cleanMobile}` : cleanMobile;
-    const issuesList = job.problems && job.problems.length > 0 ? job.problems.join(', ') : job.problemDescription || 'General Service & Inspection';
-    
-    const effectiveAmount = getEffectiveBillAmount(job);
-
-    let msg = `*${companyConfig.name} - Job Outward Update*\n\n`;
-    msg += `Dear *${job.clientName}*,\n`;
-    msg += `Your repair job *${job.equipment}* (${job.productName || 'Device'}) [Job ID: *${job.id}*] details:\n\n`;
-    msg += `📌 *Reported Fault:* ${issuesList}\n`;
-    msg += `🏷️ *Serial / IMEI:* ${job.serialNo || 'N/A'}\n`;
-    msg += `📊 *Current Status:* ${job.status}\n`;
-    msg += `🛠️ *Repair Action Taken:* ${job.actionTaken || 'Inspected & Serviced'}\n`;
-    msg += `💰 *Estimate Amount:* ₹${(job.estimateAmount || 0).toLocaleString('en-IN')}\n`;
-    msg += `💵 *Final Bill Amount:* ₹${effectiveAmount.toLocaleString('en-IN')}\n`;
-    if (job.deliveryStatus) {
-      msg += `🚚 *Delivery Status:* ${job.deliveryStatus}\n`;
-    }
-    if (job.courierName) {
-      msg += `📦 *Courier:* ${job.courierName} (AWB: ${job.trackingNo || 'N/A'})\n`;
-    }
-    msg += `\nThank you for choosing ${companyConfig.name}!\n`;
-    msg += `📞 Contact: ${companyConfig.phone}`;
-
-    const encoded = encodeURIComponent(msg);
-    if (formattedMobile) {
-      window.open(`https://wa.me/${formattedMobile}?text=${encoded}`, '_blank');
-    } else {
-      window.open(`https://wa.me/?text=${encoded}`, '_blank');
-    }
+    openWhatsAppForJob(job, companyConfig);
   };
 
   return (
@@ -276,9 +285,13 @@ export default function Outwards({
                     <td className="py-3.5 px-4 whitespace-nowrap">
                       <div className="flex items-center gap-1.5">
                         <button
-                          onClick={() => handleSendWhatsAppNotification(job)}
-                          title="Send WhatsApp Update to Client"
-                          className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 rounded-lg transition cursor-pointer"
+                          onClick={() => handleTriggerWhatsApp(job)}
+                          title={features.allowWhatsAppMessaging ? "Send WhatsApp Update to Client" : "WhatsApp Messaging (Add-on Locked)"}
+                          className={`p-1.5 rounded-lg transition cursor-pointer ${
+                            features.allowWhatsAppMessaging
+                              ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-600"
+                              : "bg-slate-100 hover:bg-slate-200 text-slate-400"
+                          }`}
                         >
                           <WhatsAppIcon className="w-3.5 h-3.5" />
                         </button>
@@ -287,20 +300,32 @@ export default function Outwards({
                           if (existingInv) {
                             return (
                               <button
-                                onClick={() => onGenerateInvoiceForJob?.(job)}
-                                title={`Bill Already Generated (#${existingInv.id} on ${existingInv.date || 'earlier'}). Click to edit or update bill.`}
-                                className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg transition cursor-pointer flex items-center gap-1 font-bold text-[10px]"
+                                onClick={() => handleTriggerInvoice(job)}
+                                title={
+                                  features.allowOutwardTaxInvoiceButton
+                                    ? `Bill Already Generated (#${existingInv.id} on ${existingInv.date || 'earlier'}). Click to edit or update bill.`
+                                    : `Bill #${existingInv.id} (Tax Invoice Add-on Locked)`
+                                }
+                                className={`p-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 font-bold text-[10px] ${
+                                  features.allowOutwardTaxInvoiceButton
+                                    ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200"
+                                    : "bg-slate-100 hover:bg-slate-200 text-slate-400 border border-slate-200"
+                                }`}
                               >
-                                <Receipt className="w-3.5 h-3.5 text-emerald-600" />
+                                <Receipt className={`w-3.5 h-3.5 ${features.allowOutwardTaxInvoiceButton ? "text-emerald-600" : "text-slate-400"}`} />
                                 <span className="hidden xl:inline text-[9px]">Bill #{existingInv.id}</span>
                               </button>
                             );
                           }
                           return (
                             <button
-                              onClick={() => onGenerateInvoiceForJob?.(job)}
-                              title="Generate Tax Invoice / Bill for Job"
-                              className="p-1.5 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded-lg transition cursor-pointer flex items-center gap-1 font-semibold text-[10px]"
+                              onClick={() => handleTriggerInvoice(job)}
+                              title={features.allowOutwardTaxInvoiceButton ? "Generate Tax Invoice / Bill for Job" : "Generate Tax Invoice (Add-on Locked)"}
+                              className={`p-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 font-semibold text-[10px] ${
+                                features.allowOutwardTaxInvoiceButton
+                                  ? "bg-purple-50 hover:bg-purple-100 text-purple-600"
+                                  : "bg-slate-100 hover:bg-slate-200 text-slate-400"
+                              }`}
                             >
                               <Receipt className="w-3.5 h-3.5" />
                             </button>
@@ -458,10 +483,11 @@ export default function Outwards({
                     className="bg-slate-900 text-white font-extrabold text-xs rounded-xl px-3 py-1 border-2 border-teal-500 hover:border-teal-400 focus:outline-none focus:ring-2 focus:ring-teal-400/50 cursor-pointer shadow-sm"
                   >
                     <option value="Product Out" className="bg-slate-900 text-emerald-400 font-bold">Product Out (Outward)</option>
-                    <option value="Ready" className="bg-slate-900 text-purple-400 font-bold">Ready</option>
+                    <option value="Device Ready" className="bg-slate-900 text-purple-400 font-bold">Device Ready</option>
+                    <option value="Device Not repairable" className="bg-slate-900 text-rose-400 font-bold">Device Not repairable</option>
                     <option value="Approval Pending" className="bg-slate-900 text-orange-400 font-bold">Approval Pending</option>
                     <option value="Work in Progress" className="bg-slate-900 text-amber-400 font-bold">Work in Progress</option>
-                    <option value="Received" className="bg-slate-900 text-blue-400 font-bold">Received</option>
+                    <option value="Device Received" className="bg-slate-900 text-blue-400 font-bold">Device Received</option>
                   </select>
                 </div>
 
@@ -738,7 +764,14 @@ export default function Outwards({
               </button>
               <button
                 type="button"
-                onClick={handleSaveEditedJob}
+                onClick={() => handleSaveEditedJob(true)}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold transition cursor-pointer shadow-sm flex items-center gap-1.5"
+              >
+                <WhatsAppIcon className="w-3.5 h-3.5" /> Save & Send WhatsApp
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSaveEditedJob(false)}
                 className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-bold transition cursor-pointer shadow-sm"
               >
                 Save Outward Changes
@@ -763,6 +796,16 @@ export default function Outwards({
             <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
               <span className="font-bold uppercase tracking-wider text-teal-400">Outward Slip Preview</span>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    if (previewJob) {
+                      handleTriggerWhatsApp(previewJob);
+                    }
+                  }}
+                  className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-xs font-bold px-3 py-1 rounded-lg transition cursor-pointer"
+                >
+                  <WhatsAppIcon className="w-3.5 h-3.5" /> WhatsApp
+                </button>
                 <button
                   onClick={() => window.print()}
                   className="flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-xs font-bold px-3 py-1 rounded-lg transition"
@@ -829,6 +872,14 @@ export default function Outwards({
           </div>
         </div>
       )}
+
+      {/* Locked Add-on Feature Modal */}
+      <LockedAddonModal
+        isOpen={!!lockedAddon}
+        onClose={() => setLockedAddon(null)}
+        addonType={lockedAddon || 'whatsapp'}
+        orgName={companyConfig.name}
+      />
     </div>
   );
 }

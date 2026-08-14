@@ -65,9 +65,10 @@ export default function Dashboard({
   const totalClients = clients.length;
   const totalInwards = jobs.length;
 
-  const inwardReceivedCount = jobs.filter(j => (j.status as string) === 'Received' || (j.status as string) === 'Pending' || !j.status).length;
+  const inwardReceivedCount = jobs.filter(j => (j.status as string) === 'Device Received' || (j.status as string) === 'Received' || (j.status as string) === 'Pending' || !j.status).length;
   const underDiagnosisCount = jobs.filter(j => (j.status as string) === 'Work in Progress' || (j.status as string) === 'Approval Pending').length;
-  const readyForDeliveryCount = jobs.filter(j => (j.status as string) === 'Ready' || (j.status as string) === 'Complete & Ready' || (j.status as string) === 'Completed').length;
+  const readyForDeliveryCount = jobs.filter(j => (j.status as string) === 'Device Ready' || (j.status as string) === 'Ready' || (j.status as string) === 'Complete & Ready' || (j.status as string) === 'Completed').length;
+  const notRepairableCount = jobs.filter(j => (j.status as string) === 'Device Not repairable' || j.repairOutcome === 'Not Repaired').length;
   const outwardedCount = jobs.filter(j => (j.status as string) === 'Outwarded' || (j.status as string) === 'Product Out').length;
 
   const totalPaymentsReceived = payments.reduce((sum, p) => sum + p.amount, 0);
@@ -75,7 +76,7 @@ export default function Dashboard({
   // Circular Donut Chart Data with matching colors
   const statusPieData = [
     {
-      name: 'Inward Received',
+      name: 'Device Received',
       count: inwardReceivedCount,
       color: '#3b82f6', // Blue
       bgClass: 'bg-blue-50',
@@ -91,12 +92,20 @@ export default function Dashboard({
       borderClass: 'border-amber-500'
     },
     {
-      name: 'Ready for Delivery',
+      name: 'Device Ready',
       count: readyForDeliveryCount,
       color: '#10b981', // Emerald
       bgClass: 'bg-emerald-50',
       textClass: 'text-emerald-600',
       borderClass: 'border-emerald-500'
+    },
+    {
+      name: 'Not Repairable',
+      count: notRepairableCount,
+      color: '#f43f5e', // Rose
+      bgClass: 'bg-rose-50',
+      textClass: 'text-rose-600',
+      borderClass: 'border-rose-500'
     },
     {
       name: 'Outwarded / Delivered',
@@ -113,9 +122,10 @@ export default function Dashboard({
   const chartPieData = hasJobData
     ? statusPieData.map(d => ({ ...d, value: d.count }))
     : [
-        { name: 'Inward Received', value: 3, count: 0, color: '#3b82f6', bgClass: 'bg-blue-50', textClass: 'text-blue-600', borderClass: 'border-blue-500' },
+        { name: 'Device Received', value: 3, count: 0, color: '#3b82f6', bgClass: 'bg-blue-50', textClass: 'text-blue-600', borderClass: 'border-blue-500' },
         { name: 'Under Diagnosis', value: 4, count: 0, color: '#f59e0b', bgClass: 'bg-amber-50', textClass: 'text-amber-600', borderClass: 'border-amber-500' },
-        { name: 'Ready for Delivery', value: 5, count: 0, color: '#10b981', bgClass: 'bg-emerald-50', textClass: 'text-emerald-600', borderClass: 'border-emerald-500' },
+        { name: 'Device Ready', value: 5, count: 0, color: '#10b981', bgClass: 'bg-emerald-50', textClass: 'text-emerald-600', borderClass: 'border-emerald-500' },
+        { name: 'Not Repairable', value: 1, count: 0, color: '#f43f5e', bgClass: 'bg-rose-50', textClass: 'text-rose-600', borderClass: 'border-rose-500' },
         { name: 'Outwarded / Delivered', value: 2, count: 0, color: '#8b5cf6', bgClass: 'bg-purple-50', textClass: 'text-purple-600', borderClass: 'border-purple-500' }
       ];
 

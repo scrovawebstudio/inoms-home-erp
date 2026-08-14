@@ -8,26 +8,34 @@ function getHandleKey(tenantId: string = 'org-admin'): string {
 
 export async function saveDirectoryHandle(handle: FileSystemDirectoryHandle, tenantId: string = 'org-admin'): Promise<void> {
   const key = getHandleKey(tenantId);
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     try {
       const request = indexedDB.open(DB_NAME, 1);
       request.onupgradeneeded = () => {
-        const db = request.result;
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          db.createObjectStore(STORE_NAME);
+        try {
+          const db = request.result;
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            db.createObjectStore(STORE_NAME);
+          }
+        } catch {
+          // Ignore upgradeneeded error
         }
       };
       request.onsuccess = () => {
-        const db = request.result;
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const putReq = store.put(handle, key);
-        putReq.onsuccess = () => resolve();
-        putReq.onerror = () => reject(putReq.error);
+        try {
+          const db = request.result;
+          const tx = db.transaction(STORE_NAME, 'readwrite');
+          const store = tx.objectStore(STORE_NAME);
+          const putReq = store.put(handle, key);
+          putReq.onsuccess = () => resolve();
+          putReq.onerror = () => resolve();
+        } catch {
+          resolve();
+        }
       };
-      request.onerror = () => reject(request.error);
-    } catch (e) {
-      reject(e);
+      request.onerror = () => resolve();
+    } catch {
+      resolve();
     }
   });
 }

@@ -23,7 +23,7 @@ import {
   DollarSign,
   Calendar
 } from 'lucide-react';
-import { Client, ClientLedgerEntry, ClientType, RepairJob, Invoice, CompanyConfig, getEffectiveBillAmount } from '../types';
+import { Client, ClientLedgerEntry, ClientType, RepairJob, Invoice, CompanyConfig, SystemUser, getEffectiveBillAmount } from '../types';
 import { TenantOrg } from './AuthModal';
 import AddClientModal from './AddClientModal';
 import JobViewModal from './JobViewModal';
@@ -38,6 +38,7 @@ interface ClientsProps {
   tenants?: TenantOrg[];
   isAdmin?: boolean;
   isStaff?: boolean;
+  currentUser?: SystemUser | null;
   onAddClient: (client: Omit<Client, 'id'>) => void;
   onEditClient: (client: Client) => void;
   onDeleteClient: (id: string) => void;
@@ -81,6 +82,7 @@ export default function Clients({
   tenants = [],
   isAdmin = false,
   isStaff = false,
+  currentUser,
   onAddClient,
   onEditClient,
   onDeleteClient,
@@ -91,6 +93,7 @@ export default function Clients({
   onNavigateToJob,
   onNavigateToInvoice
 }: ClientsProps) {
+  const canEditClient = isAdmin || currentUser?.permissions?.clientCreateEdit !== false;
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showLedgerModal, setShowLedgerModal] = useState(false);

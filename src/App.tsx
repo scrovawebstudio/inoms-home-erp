@@ -43,6 +43,14 @@ import {
   removeAppSessionItem
 } from './lib/storage';
 
+import {
+  getHomeServerDbKey,
+  saveHomeServerDbKey,
+  restoreHomeServerDb,
+  registerHomeServerSession,
+  checkHomeServerSession
+} from './lib/api';
+
 // Modular Components
 import Dashboard from './components/Dashboard';
 import Clients from './components/Clients';
@@ -111,7 +119,10 @@ import {
   DEFAULT_THEME_PALETTE,
   TenantThemePalette,
   getEffectiveBillAmount,
-  sortJobsByLatest
+  sortJobsByLatest,
+  AddonPricingConfig,
+  MasterAdminInvoice,
+  DEFAULT_ADDON_PRICING
 } from './types';
 
 export default function App() {
@@ -126,6 +137,7 @@ export default function App() {
         address: 'Badambadi, Cuttack, Odisha',
         phone: '+91 8149862034',
         email: 'admin@mastersystem.com',
+        website: 'www.mastersystem.com',
         gstin: '21AJDSBSDWERDS',
         syncMode: 'offline',
         lanHostIp: '192.168.25.10',
@@ -143,6 +155,7 @@ export default function App() {
         address: 'Link Road, Cuttack, Odisha',
         phone: '+91 9876543210',
         email: 'support@inoms.com',
+        website: 'www.inoms.com',
         gstin: '21INOMS1234F1Z',
         syncMode: 'offline',
         lanHostIp: '192.168.1.15',
@@ -160,6 +173,7 @@ export default function App() {
         address: 'Main Office',
         phone: tenant.ownerMobile || '',
         email: `contact@${tenant.code?.toLowerCase() || 'org'}.com`,
+        website: `www.${tenant.code?.toLowerCase() || 'org'}.com`,
         gstin: '',
         syncMode: 'offline',
         lanHostIp: '192.168.1.100',
@@ -197,9 +211,13 @@ export default function App() {
 
   // Multi-Tenant Organizations State
   const [tenants, setTenants] = useState<TenantOrg[]>(() => {
-    const saved = getAppStorageItem('tenants_v3');
-    const parsed = saved ? JSON.parse(saved) : INITIAL_TENANTS;
-    return ensureAdminActive(parsed);
+    try {
+      const saved = getAppStorageItem('tenants_v3');
+      const parsed = saved ? JSON.parse(saved) : INITIAL_TENANTS;
+      return ensureAdminActive(Array.isArray(parsed) ? parsed : INITIAL_TENANTS);
+    } catch {
+      return ensureAdminActive(INITIAL_TENANTS);
+    }
   });
 
   const [activeTenant, setActiveTenant] = useState<TenantOrg>(() => {
@@ -452,8 +470,12 @@ export default function App() {
 
   // System Announcements & Broadcast State
   const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>(() => {
-    const saved = getAppStorageItem('announcements_v2');
-    return saved ? JSON.parse(saved) : [
+    try {
+      const saved = getAppStorageItem('announcements_v2');
+      const parsed = saved ? JSON.parse(saved) : null;
+      if (Array.isArray(parsed)) return parsed;
+    } catch {}
+    return [
       {
         id: 'ann-1',
         title: 'Platform System Announcement',
@@ -615,6 +637,86 @@ export default function App() {
       }
     }
   }, [tenants, activeTenant, isAuthenticated, userRole]);
+
+  // Master Admin SaaS Invoices & Add-on Pricing Configuration States
+  const [initialSaasBillingTenantId, setInitialSaasBillingTenantId] = useState<string | null>(null);
+
+  const [pricingConfig, setPricingConfig] = useState<AddonPricingConfig>(() => {
+    try {
+      const saved = getAppStorageItem('master_admin_addon_pricing_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_ADDON_PRICING;
+  });
+
+  const handleSavePricing = (newConfig: AddonPricingConfig) => {
+    setPricingConfig(newConfig);
+    try {
+      setAppStorageItem('master_admin_addon_pricing_v1', JSON.stringify(newConfig));
+    } catch {}
+    triggerSaveNotification('✓ Add-on Pricing Matrix updated successfully!');
+  };
+
+  const [saasInvoices, setSaasInvoices] = useState<MasterAdminInvoice[]>(() => {
+    try {
+      const saved = getAppStorageItem('master_admin_saas_invoices_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [
+      {
+        id: 'SAAS-1001',
+        tenantId: 'org-1',
+        tenantName: 'Dev Infotech',
+        tenantCode: 'DEV-10',
+        ownerMobile: '+91 9876543210',
+        ownerName: 'Devendra Patel',
+        date: '2026-07-01',
+        dueDate: '2026-07-08',
+        billingPeriod: 'Monthly',
+        items: [
+          { id: 'it-1', description: 'Core Enterprise ERP Platform License (Monthly)', addonKey: 'basePlatform', qty: 1, rate: 999, amount: 999 },
+          { id: 'it-2', description: 'WhatsApp Automated Cloud Messaging Integration (1 Mo)', addonKey: 'whatsAppMessaging', qty: 1, rate: 499, amount: 499 },
+          { id: 'it-3', description: 'Thermal Barcode & QR Code Tag Generation (1 Mo)', addonKey: 'barcodeQrTags', qty: 1, rate: 299, amount: 299 }
+        ],
+        subtotal: 1797,
+        discount: 0,
+        gstPercent: 18,
+        gstAmount: 323,
+        grandTotal: 2120,
+        paymentStatus: 'Paid',
+        paymentMode: 'UPI',
+        notes: 'Monthly SaaS subscription active.',
+        createdAt: '2026-07-01T10:00:00.000Z'
+      }
+    ];
+  });
+
+  const handleAddSaasInvoice = (inv: MasterAdminInvoice) => {
+    const next = [inv, ...saasInvoices];
+    setSaasInvoices(next);
+    try {
+      setAppStorageItem('master_admin_saas_invoices_v1', JSON.stringify(next));
+    } catch {}
+    triggerSaveNotification(`✓ SaaS Bill #${inv.id} generated for ${inv.tenantName}!`);
+  };
+
+  const handleUpdateSaasInvoice = (inv: MasterAdminInvoice) => {
+    const next = saasInvoices.map(i => i.id === inv.id ? inv : i);
+    setSaasInvoices(next);
+    try {
+      setAppStorageItem('master_admin_saas_invoices_v1', JSON.stringify(next));
+    } catch {}
+    triggerSaveNotification(`✓ SaaS Bill #${inv.id} updated successfully!`);
+  };
+
+  const handleDeleteSaasInvoice = (id: string) => {
+    const next = saasInvoices.filter(i => i.id !== id);
+    setSaasInvoices(next);
+    try {
+      setAppStorageItem('master_admin_saas_invoices_v1', JSON.stringify(next));
+    } catch {}
+    triggerSaveNotification(`✓ SaaS Bill #${id} deleted.`);
+  };
 
   const handleSendAnnouncement = async (newAnn: Omit<SystemAnnouncement, 'id' | 'createdAt' | 'createdBy'>) => {
     const announcement: SystemAnnouncement = {
@@ -786,7 +888,7 @@ export default function App() {
     setProblems(getTenantData('problems', tId, COMMON_PROBLEMS));
   }, [activeTenant?.id]);
 
-  // Single Active Device / Session Enforcement per User Account (BroadcastChannel + LocalStorage + Cloud Firestore)
+  // Single Active Device / Session Enforcement per User Account via Home Server
   React.useEffect(() => {
     if (!isAuthenticated || !activeTenant?.id) return;
 
@@ -797,24 +899,26 @@ export default function App() {
         : 'org_owner';
 
     const sessionStorageKey = `active_session_${activeTenant.id}_${sessionUserId}`;
+    const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : 'Browser';
 
-    // Claim active session locally in localStorage & BroadcastChannel
+    // Claim active session locally in localStorage
     setAppStorageItem(sessionStorageKey, currentSessionId);
 
-    // Register active device session in Cloud Firestore
+    // Register active device session on Home Server & Firestore
+    registerHomeServerSession(activeTenant.id, sessionUserId, currentSessionId, userAgent);
     saveUserSessionToFirestore(activeTenant.id, sessionUserId, currentSessionId);
 
     const handleDisplacement = (newDeviceName?: string) => {
-      triggerSaveNotification(`⚠️ Account logged in on another device/window${newDeviceName ? ` (${newDeviceName})` : ''}. Logging out this session...`, true);
+      triggerSaveNotification(`⚠️ Account was signed in on another device/window${newDeviceName ? ` (${newDeviceName})` : ''}. Signed out.`, true);
       setTimeout(() => {
         setIsAuthenticated(false);
         setShowAuthModal(true);
         removeAppSessionItem('authenticated');
         removeAppSessionItem('current_user');
-      }, 1200);
+      }, 1500);
     };
 
-    // 1. Setup Local BroadcastChannel for instant same-browser / multi-tab / incognito enforcement
+    // 1. Setup Local BroadcastChannel for instant same-browser multi-tab displacement
     let bc: BroadcastChannel | null = null;
     try {
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -846,7 +950,7 @@ export default function App() {
       console.warn('BroadcastChannel session setup notice:', err);
     }
 
-    // 2. Setup Storage Event Listener for multi-window / incognito tab session takeover
+    // 2. Setup Storage Event Listener for multi-window / tab takeover
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === `app_storage_${sessionStorageKey}` || e.key === sessionStorageKey) {
         if (e.newValue && e.newValue !== currentSessionId) {
@@ -856,19 +960,20 @@ export default function App() {
     };
     window.addEventListener('storage', handleStorageChange);
 
-    // 3. Subscribe to Cloud Firestore session document for cross-device remote enforcement
-    const unSubSession = subscribeUserSession(activeTenant.id, sessionUserId, (sessionData) => {
-      if (sessionData && sessionData.activeSessionId && sessionData.activeSessionId !== currentSessionId) {
-        handleDisplacement(sessionData.deviceInfo || 'Another Remote Device');
+    // 3. Periodic Home Server check to log out older remote sessions if a newer session claimed ownership
+    const sessionPollTimer = setInterval(async () => {
+      const status = await checkHomeServerSession(activeTenant.id, sessionUserId);
+      if (status && status.activeSessionId && status.activeSessionId !== currentSessionId) {
+        handleDisplacement(status.deviceInfo || 'Remote Device');
       }
-    });
+    }, 12000);
 
     return () => {
       if (bc) {
         try { bc.close(); } catch (_) {}
       }
       window.removeEventListener('storage', handleStorageChange);
-      unSubSession();
+      clearInterval(sessionPollTimer);
     };
   }, [isAuthenticated, activeTenant?.id, currentUser?.id, currentUser?.username, currentSessionId]);
 
@@ -1058,6 +1163,10 @@ export default function App() {
   React.useEffect(() => {
     // CRITICAL: Prevent any background backup from triggering before user completes authentication
     if (!isAuthenticated) return;
+    // SECURITY GUARD: Only Organization Owners (Admin) and Master Admin can execute or download local backups
+    const isAllowedRoleForBackup = userRole === 'Admin' || userRole === 'Master Admin' || activeTenant?.id === 'org-admin';
+    if (!isAllowedRoleForBackup) return;
+
     const isEnabled = companyConfig.localBackupEnabled ?? true;
     if (!isEnabled) return;
     const freq = companyConfig.localBackupFrequency || 'daily';
@@ -1448,7 +1557,7 @@ export default function App() {
       return client;
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to save client: ${err.message}`, true);
-      throw err;
+      return null;
     }
   };
 
@@ -1645,6 +1754,51 @@ export default function App() {
         }
       }
 
+      // Sync Advance Payment with Payments list if advance amount changed or payment mode changed
+      if (oldAdvance !== newAdvance || (oldJob && oldJob.advancePaymentMode !== updatedJob.advancePaymentMode)) {
+        setPayments(prevPayments => {
+          const existingIndex = prevPayments.findIndex(p => 
+            p.linkedJobId === updatedJob.id || 
+            (p.refNo && (p.refNo.includes(`Inward Advance ${updatedJob.id}`) || p.refNo.includes(`ADV-${updatedJob.id}`)))
+          );
+
+          if (newAdvance > 0) {
+            if (existingIndex >= 0) {
+              const updated = [...prevPayments];
+              updated[existingIndex] = {
+                ...updated[existingIndex],
+                amount: newAdvance,
+                mode: updatedJob.advancePaymentMode || updated[existingIndex].mode || 'UPI',
+                clientId: updatedJob.clientId,
+                clientName: updatedJob.clientName,
+                date: updatedJob.date || updated[existingIndex].date,
+                remarks: `Advance payment updated for inward job card ${updatedJob.id}`
+              };
+              return updated;
+            } else {
+              const newAdvPay: Payment = {
+                id: `pay-${Date.now()}`,
+                tenantId: activeTenant.id,
+                date: updatedJob.date || new Date().toISOString().split('T')[0],
+                clientId: updatedJob.clientId,
+                clientName: updatedJob.clientName,
+                amount: newAdvance,
+                mode: updatedJob.advancePaymentMode || 'UPI',
+                refNo: `Inward Advance ${updatedJob.id}`,
+                remarks: `Advance payment added for job card ${updatedJob.id}`,
+                linkedJobId: updatedJob.id
+              };
+              return [newAdvPay, ...prevPayments];
+            }
+          } else {
+            if (existingIndex >= 0) {
+              return prevPayments.filter((_, idx) => idx !== existingIndex);
+            }
+            return prevPayments;
+          }
+        });
+      }
+
       // Handle Advance Refund if checked and advance was taken
       if (updatedJob.advanceRefunded && newAdvance > 0 && (!oldJob || !oldJob.advanceRefunded)) {
         const refundAmount = newAdvance;
@@ -1770,6 +1924,12 @@ export default function App() {
       const nextJobs = jobs.filter(j => j.id !== id);
       setJobs(nextJobs);
       setAppStorageItem(`jobs_${activeTenant.id}`, JSON.stringify(nextJobs));
+
+      // Remove any linked advance / outward payments associated with deleted job
+      setPayments(prevPayments => prevPayments.filter(p => 
+        p.linkedJobId !== id && 
+        !(p.refNo && (p.refNo.includes(`Inward Advance ${id}`) || p.refNo.includes(`ADV-${id}`) || p.refNo.includes(`Outward Bill ${id}`)))
+      ));
 
       const audit: ActivityLog = {
         id: `log-${Date.now()}`,
@@ -2536,8 +2696,10 @@ export default function App() {
 
     // 2. Organization Admin / Owner (Full Access across ERP)
     const isAdmin = userRole === 'Admin' || currentUser?.role === 'Admin' || (!isStaffUser && userRole !== 'Technician');
+    let items: { id: string; label: string; icon: any }[] = [];
+
     if (isAdmin) {
-      return [
+      items = [
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
         { id: 'inwards', label: 'Repair Inwards', icon: Briefcase },
         { id: 'outwards', label: 'Outward Jobs', icon: Truck },
@@ -2549,50 +2711,54 @@ export default function App() {
         { id: 'reports', label: 'Reports Hub', icon: TrendingUp },
         { id: 'settings', label: 'Setup Settings', icon: Settings }
       ];
+    } else {
+      // 3. Staff / Technician User (Dynamic Access strictly based on permissions saved by Admin)
+      const perms = currentUser?.permissions || {};
+      const hasExplicitPerms = !!(currentUser?.permissions && Object.keys(currentUser.permissions).length > 0);
+
+      // Dashboard
+      if (hasExplicitPerms ? !!perms.dashboard : true) {
+        items.push({ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard });
+      }
+      // Repair Inwards & Outward Jobs
+      if (hasExplicitPerms ? !!perms.operations : true) {
+        items.push({ id: 'inwards', label: 'Repair Inwards', icon: Briefcase });
+        items.push({ id: 'outwards', label: 'Outward Jobs', icon: Truck });
+      }
+      // Billing / Invoice
+      if (!!perms.billingInvoice || !!perms.billing) {
+        items.push({ id: 'billing', label: 'Billing / Invoice', icon: Receipt });
+      }
+      // Clients Ledger
+      if (!!perms.clientLedger) {
+        items.push({ id: 'clients', label: 'Clients Ledger', icon: Users });
+      }
+      // Payment History
+      if (!!perms.payments) {
+        items.push({ id: 'payments', label: 'Payment History', icon: Wallet });
+      }
+      // Inventory / Stock
+      if (!!perms.inventoryEdit || !!perms.inventory) {
+        items.push({ id: 'inventory', label: 'Inventory / Stock', icon: Package });
+      }
+      // Expenses
+      if (!!perms.accounts) {
+        items.push({ id: 'expenses', label: 'Expenses Outflow', icon: PiggyBank });
+      }
+      // Reports Hub
+      if (!!perms.reports) {
+        items.push({ id: 'reports', label: 'Reports Hub', icon: TrendingUp });
+      }
+      // Setup Settings
+      if (!!perms.setup) {
+        items.push({ id: 'settings', label: 'Setup Settings', icon: Settings });
+      }
     }
 
-    // 3. Staff / Technician User (Dynamic Access strictly based on permissions saved by Admin)
-    const perms = currentUser?.permissions || {};
-    const hasExplicitPerms = !!(currentUser?.permissions && Object.keys(currentUser.permissions).length > 0);
-
-    const items = [];
-
-    // Dashboard
-    if (hasExplicitPerms ? !!perms.dashboard : true) {
-      items.push({ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard });
-    }
-    // Repair Inwards & Outward Jobs
-    if (hasExplicitPerms ? !!perms.operations : true) {
-      items.push({ id: 'inwards', label: 'Repair Inwards', icon: Briefcase });
-      items.push({ id: 'outwards', label: 'Outward Jobs', icon: Truck });
-    }
-    // Billing / Invoice
-    if (!!perms.billingInvoice || !!perms.billing) {
-      items.push({ id: 'billing', label: 'Billing / Invoice', icon: Receipt });
-    }
-    // Clients Ledger
-    if (!!perms.clientLedger) {
-      items.push({ id: 'clients', label: 'Clients Ledger', icon: Users });
-    }
-    // Payment History
-    if (!!perms.payments) {
-      items.push({ id: 'payments', label: 'Payment History', icon: Wallet });
-    }
-    // Inventory / Stock
-    if (!!perms.inventoryEdit || !!perms.inventory) {
-      items.push({ id: 'inventory', label: 'Inventory / Stock', icon: Package });
-    }
-    // Expenses
-    if (!!perms.accounts) {
-      items.push({ id: 'expenses', label: 'Expenses Outflow', icon: PiggyBank });
-    }
-    // Reports Hub
-    if (!!perms.reports) {
-      items.push({ id: 'reports', label: 'Reports Hub', icon: TrendingUp });
-    }
-    // Setup Settings
-    if (!!perms.setup) {
-      items.push({ id: 'settings', label: 'Setup Settings', icon: Settings });
+    // Filter by Organization Allowed Navigation Modules if restricted by Master Admin
+    const allowedModules = activeTenant?.features?.allowedModules;
+    if (allowedModules && allowedModules.length > 0 && activeTenant?.id !== 'org-admin') {
+      items = items.filter(m => allowedModules.includes(m.id));
     }
 
     // Fallback if no items configured
@@ -2974,8 +3140,8 @@ export default function App() {
 
         </header>
 
-        {/* Offline Local-First / Quota Safety Banner */}
-        {(isQuotaExhaustedState || pendingQueueCount > 0) && (
+        {/* Offline Local-First / Network Connection Banner */}
+        {(isQuotaExhaustedState || pendingQueueCount > 0 || !navigator.onLine) && (
           <div className="bg-amber-500 text-slate-950 px-4 py-2.5 text-xs font-semibold border-b border-amber-600 flex flex-wrap items-center justify-between gap-3 shadow-md shrink-0">
             <div className="flex items-center gap-2.5">
               <div className="p-1.5 bg-amber-950/20 rounded-lg text-slate-950 font-bold shrink-0">
@@ -2983,13 +3149,13 @@ export default function App() {
               </div>
               <div>
                 <p className="font-bold text-slate-950 flex items-center gap-2">
-                  <span>⚡ Local Offline Cache Active (Cloud Firestore Daily Quota Exceeded)</span>
+                  <span>🌐 Offline Mode Active — Disconnected from Home Server</span>
                   <span className="bg-amber-950/20 text-slate-950 px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider">
-                    100% Saved on PC
+                    Saved Locally
                   </span>
                 </p>
                 <p className="text-[11px] text-slate-900 opacity-90 mt-0.5">
-                  Your work is saved locally on this computer. {pendingQueueCount > 0 ? `${pendingQueueCount} pending update(s) queued for automatic cloud sync when quota resets tomorrow.` : 'You can continue working without losing any changes.'}
+                  Your machine is currently offline or unable to connect to the Home Server. {pendingQueueCount > 0 ? `${pendingQueueCount} pending update(s) saved locally, ready to auto-sync when network is restored.` : 'All work is safely stored locally and will sync automatically when reconnected.'}
                 </p>
               </div>
             </div>
@@ -3009,33 +3175,35 @@ export default function App() {
                 className="px-3 py-1.5 bg-slate-950 text-amber-300 hover:bg-slate-900 rounded-lg font-bold text-xs transition flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncRetrying ? 'animate-spin' : ''}`} />
-                <span>{isSyncRetrying ? 'Syncing...' : 'Retry Cloud Sync'}</span>
+                <span>{isSyncRetrying ? 'Connecting...' : 'Retry Home Server Sync'}</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  const dataToExport = {
-                    tenantId: activeTenant.id,
-                    orgName: companyConfig.name || activeTenant.name,
-                    timestamp: new Date().toISOString(),
-                    clients, jobs, invoices, products, ledger, payments, expenses, users, categories, racks, equipments, problems, companyConfig
-                  };
-                  const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: 'application/json' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `INOMS_Local_Backup_${activeTenant.id}_${new Date().toISOString().slice(0, 10)}.json`;
-                  document.body.appendChild(a);
-                  a.click();
-                  document.body.removeChild(a);
-                  URL.revokeObjectURL(url);
-                }}
-                className="px-3 py-1.5 bg-white/95 text-slate-900 hover:bg-white rounded-lg font-bold text-xs transition flex items-center gap-1.5 cursor-pointer shadow-xs"
-              >
-                <BookOpen className="w-3.5 h-3.5 text-teal-700" />
-                <span>Download Local JSON Backup</span>
-              </button>
+              {(userRole === 'Admin' || userRole === 'Master Admin' || activeTenant?.id === 'org-admin') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const dataToExport = {
+                      tenantId: activeTenant.id,
+                      orgName: companyConfig.name || activeTenant.name,
+                      timestamp: new Date().toISOString(),
+                      clients, jobs, invoices, products, ledger, payments, expenses, users, categories, racks, equipments, problems, companyConfig
+                    };
+                    const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `INOMS_Local_Backup_${activeTenant.id}_${new Date().toISOString().slice(0, 10)}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="px-3 py-1.5 bg-white/95 text-slate-900 hover:bg-white rounded-lg font-bold text-xs transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  <BookOpen className="w-3.5 h-3.5 text-teal-700" />
+                  <span>Download Local JSON Backup</span>
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -3067,6 +3235,20 @@ export default function App() {
               onDeleteTenant={handleDeleteTenant}
               onSendAnnouncement={handleSendAnnouncement}
               onDeleteAnnouncement={handleDeleteAnnouncement}
+              pricingConfig={pricingConfig}
+              onSavePricing={handleSavePricing}
+              saasInvoices={saasInvoices}
+              onAddSaasInvoice={handleAddSaasInvoice}
+              onUpdateSaasInvoice={handleUpdateSaasInvoice}
+              onDeleteSaasInvoice={handleDeleteSaasInvoice}
+              onNavigateToSaasBilling={(tenantId) => {
+                setInitialSaasBillingTenantId(tenantId || null);
+                setActiveTab('billing');
+              }}
+              onNavigateToPricing={() => {
+                setInitialSaasBillingTenantId(null);
+                setActiveTab('billing');
+              }}
             />
           )}
 
@@ -3079,6 +3261,7 @@ export default function App() {
               tenants={tenants}
               isAdmin={userRole === 'Admin'}
               isStaff={isStaffUser}
+              currentUser={currentUser}
               onAddClient={addClient}
               onEditClient={editClient}
               onDeleteClient={deleteClient}
@@ -3132,6 +3315,9 @@ export default function App() {
               clients={clients}
               invoices={invoices}
               companyConfig={companyConfig}
+              userRole={userRole}
+              currentUser={currentUser}
+              tenantFeatures={activeTenant?.features}
               initialJobIdToView={initialJobIdToView}
               onClearInitialJobIdToView={() => setInitialJobIdToView(null)}
               onUpdateJob={updateJob}
@@ -3151,7 +3337,9 @@ export default function App() {
               products={products}
               companyConfig={companyConfig}
               tenants={tenants}
+              tenantFeatures={activeTenant?.features}
               isAdmin={userRole === 'Admin'}
+              currentUser={currentUser}
               activeTenantId={activeTenant.id}
               initialJobForInvoice={selectedJobForInvoice}
               onClearInitialJobForInvoice={() => setSelectedJobForInvoice(null)}
@@ -3161,6 +3349,14 @@ export default function App() {
               onUpdateInvoice={updateInvoice}
               onDeleteInvoice={deleteInvoice}
               onAddClient={addClient}
+              pricingConfig={pricingConfig}
+              onSavePricing={handleSavePricing}
+              saasInvoices={saasInvoices}
+              onAddSaasInvoice={handleAddSaasInvoice}
+              onUpdateSaasInvoice={handleUpdateSaasInvoice}
+              onDeleteSaasInvoice={handleDeleteSaasInvoice}
+              initialSaasBillingTenantId={initialSaasBillingTenantId}
+              onClearInitialSaasBillingTenantId={() => setInitialSaasBillingTenantId(null)}
             />
           )}
 
@@ -3187,6 +3383,8 @@ export default function App() {
               categories={categories}
               racks={racks}
               isStaff={isStaffUser}
+              currentUser={currentUser}
+              userRole={userRole}
               onAddProduct={addProduct}
               onEditProduct={editProduct}
               onDeleteProduct={deleteProduct}
@@ -3217,6 +3415,9 @@ export default function App() {
             <SettingsComponent
               activeTenantId={activeTenant.id}
               userRole={userRole}
+              currentUser={currentUser}
+              tenantFeatures={activeTenant?.features}
+              isStaff={isStaffUser}
               users={users}
               logs={logs.filter(l => !l.tenantId || l.tenantId === activeTenant.id)}
               equipments={equipments}

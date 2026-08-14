@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import MicrosoftAuthQR, { generateBase32Secret } from './MicrosoftAuthQR';
-import { TenantOrg, SystemAnnouncement } from './AuthModal';
+import { TenantOrg, SystemAnnouncement, getTenantFeatures, TenantFeatures } from './AuthModal';
 import {
   Building,
   Plus,
@@ -27,8 +27,15 @@ import {
   RefreshCw,
   Lock,
   Unlock,
-  Edit
+  Edit,
+  Receipt,
+  Tag,
+  Sparkles,
+  Layers
 } from 'lucide-react';
+import { AddonPricingConfig, MasterAdminInvoice, DEFAULT_ADDON_PRICING } from '../types';
+import MasterAdminPricing from './MasterAdminPricing';
+import MasterAdminBilling from './MasterAdminBilling';
 
 interface MasterAdminDashboardProps {
   tenants: TenantOrg[];
@@ -41,6 +48,14 @@ interface MasterAdminDashboardProps {
   onDeleteAnnouncement: (id: string) => void;
   jobsCountByTenant?: Record<string, number>;
   revenueByTenant?: Record<string, number>;
+  onNavigateToSaasBilling?: (tenantId?: string) => void;
+  onNavigateToPricing?: () => void;
+  pricingConfig?: AddonPricingConfig;
+  onSavePricing?: (config: AddonPricingConfig) => void;
+  saasInvoices?: MasterAdminInvoice[];
+  onAddSaasInvoice?: (inv: MasterAdminInvoice) => void;
+  onUpdateSaasInvoice?: (inv: MasterAdminInvoice) => void;
+  onDeleteSaasInvoice?: (id: string) => void;
 }
 
 export default function MasterAdminDashboard({
@@ -53,8 +68,115 @@ export default function MasterAdminDashboard({
   onSendAnnouncement,
   onDeleteAnnouncement,
   jobsCountByTenant = {},
-  revenueByTenant = {}
+  revenueByTenant = {},
+  onNavigateToSaasBilling,
+  onNavigateToPricing,
+  pricingConfig: propPricingConfig,
+  onSavePricing: propOnSavePricing,
+  saasInvoices: propSaasInvoices,
+  onAddSaasInvoice: propOnAddSaasInvoice,
+  onUpdateSaasInvoice: propOnUpdateSaasInvoice,
+  onDeleteSaasInvoice: propOnDeleteSaasInvoice
 }: MasterAdminDashboardProps) {
+  // Navigation Tabs: Accounts / Price Set / SaaS Billing
+  const [masterTab, setMasterTab] = useState<'accounts' | 'pricing' | 'billing'>('accounts');
+  const [preSelectedBillingTenantId, setPreSelectedBillingTenantId] = useState<string | null>(null);
+
+  // Add-on Pricing Configuration State
+  const [localPricingConfig, setLocalPricingConfig] = useState<AddonPricingConfig>(() => {
+    try {
+      const saved = localStorage.getItem('master_admin_addon_pricing_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_ADDON_PRICING;
+  });
+
+  const pricingConfig = propPricingConfig || localPricingConfig;
+
+  const handleSavePricing = (newConfig: AddonPricingConfig) => {
+    if (propOnSavePricing) {
+      propOnSavePricing(newConfig);
+    } else {
+      setLocalPricingConfig(newConfig);
+      try {
+        localStorage.setItem('master_admin_addon_pricing_v1', JSON.stringify(newConfig));
+      } catch {}
+    }
+  };
+
+  // Master Admin Generated SaaS Invoices State
+  const [localSaasInvoices, setLocalSaasInvoices] = useState<MasterAdminInvoice[]>(() => {
+    try {
+      const saved = localStorage.getItem('master_admin_saas_invoices_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [
+      {
+        id: 'SAAS-1001',
+        tenantId: 'org-1',
+        tenantName: 'Dev Infotech',
+        tenantCode: 'DEV-10',
+        ownerMobile: '+91 9876543210',
+        ownerName: 'Devendra Patel',
+        date: '2026-07-01',
+        dueDate: '2026-07-08',
+        billingPeriod: 'Monthly',
+        items: [
+          { id: 'it-1', description: 'Core Enterprise ERP Platform License (Monthly)', addonKey: 'basePlatform', qty: 1, rate: 999, amount: 999 },
+          { id: 'it-2', description: 'WhatsApp Automated Cloud Messaging Integration (1 Mo)', addonKey: 'whatsAppMessaging', qty: 1, rate: 499, amount: 499 },
+          { id: 'it-3', description: 'Thermal Barcode & QR Code Tag Generation (1 Mo)', addonKey: 'barcodeQrTags', qty: 1, rate: 299, amount: 299 }
+        ],
+        subtotal: 1797,
+        discount: 0,
+        gstPercent: 18,
+        gstAmount: 323,
+        grandTotal: 2120,
+        paymentStatus: 'Paid',
+        paymentMode: 'UPI',
+        notes: 'Monthly SaaS subscription active.',
+        createdAt: '2026-07-01T10:00:00.000Z'
+      }
+    ];
+  });
+
+  const saasInvoices = propSaasInvoices || localSaasInvoices;
+
+  const handleAddSaasInvoice = (inv: MasterAdminInvoice) => {
+    if (propOnAddSaasInvoice) {
+      propOnAddSaasInvoice(inv);
+    } else {
+      const next = [inv, ...localSaasInvoices];
+      setLocalSaasInvoices(next);
+      try {
+        localStorage.setItem('master_admin_saas_invoices_v1', JSON.stringify(next));
+      } catch {}
+    }
+  };
+
+  const handleUpdateSaasInvoice = (inv: MasterAdminInvoice) => {
+    if (propOnUpdateSaasInvoice) {
+      propOnUpdateSaasInvoice(inv);
+    } else {
+      const next = localSaasInvoices.map(i => i.id === inv.id ? inv : i);
+      setLocalSaasInvoices(next);
+      try {
+        localStorage.setItem('master_admin_saas_invoices_v1', JSON.stringify(next));
+      } catch {}
+    }
+  };
+
+  const handleDeleteSaasInvoice = (id: string) => {
+    if (propOnDeleteSaasInvoice) {
+      propOnDeleteSaasInvoice(id);
+    } else {
+      const next = localSaasInvoices.filter(i => i.id !== id);
+      setLocalSaasInvoices(next);
+      try {
+        localStorage.setItem('master_admin_saas_invoices_v1', JSON.stringify(next));
+      } catch {}
+    }
+  };
+
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'deactivated'>('all');
   const [showSensitiveKeys, setShowSensitiveKeys] = useState<boolean>(false);
@@ -78,6 +200,16 @@ export default function MasterAdminDashboard({
   const [editSecretKey, setEditSecretKey] = useState<string>('');
   const [editStatus, setEditStatus] = useState<'active' | 'deactivated'>('active');
 
+  // Modular Feature Add-ons State for Master Admin Control
+  const [editAllowHomeServerSync, setEditAllowHomeServerSync] = useState<boolean>(true);
+  const [editAllowBarcodeQrTags, setEditAllowBarcodeQrTags] = useState<boolean>(true);
+  const [editAllowWhatsAppMessaging, setEditAllowWhatsAppMessaging] = useState<boolean>(true);
+  const [editAllowTechnicianAccounts, setEditAllowTechnicianAccounts] = useState<boolean>(true);
+  const [editAllowOutwardTaxInvoiceButton, setEditAllowOutwardTaxInvoiceButton] = useState<boolean>(true);
+  const [editAllowedModules, setEditAllowedModules] = useState<string[]>([
+    'dashboard', 'inwards', 'outwards', 'billing', 'payments', 'inventory', 'expenses', 'reports', 'settings'
+  ]);
+
   const handleOpenEditModal = (org: TenantOrg) => {
     setEditingOrg(org);
     setEditName(org.name);
@@ -87,6 +219,14 @@ export default function MasterAdminDashboard({
     setEditPin(org.pin);
     setEditSecretKey(org.secretKey || '');
     setEditStatus(org.status);
+
+    const f = getTenantFeatures(org);
+    setEditAllowHomeServerSync(f.allowHomeServerSync);
+    setEditAllowBarcodeQrTags(f.allowBarcodeQrTags);
+    setEditAllowWhatsAppMessaging(f.allowWhatsAppMessaging);
+    setEditAllowTechnicianAccounts(f.allowTechnicianAccounts);
+    setEditAllowOutwardTaxInvoiceButton(f.allowOutwardTaxInvoiceButton);
+    setEditAllowedModules(f.allowedModules);
   };
 
   const handleSaveEditOrg = (e: React.FormEvent) => {
@@ -105,7 +245,15 @@ export default function MasterAdminDashboard({
       ownerMobile: editOwnerMobile.trim(),
       pin: editPin.trim(),
       secretKey: editSecretKey.trim() || generateBase32Secret(),
-      status: editStatus
+      status: editStatus,
+      features: {
+        allowHomeServerSync: editAllowHomeServerSync,
+        allowBarcodeQrTags: editAllowBarcodeQrTags,
+        allowWhatsAppMessaging: editAllowWhatsAppMessaging,
+        allowTechnicianAccounts: editAllowTechnicianAccounts,
+        allowOutwardTaxInvoiceButton: editAllowOutwardTaxInvoiceButton,
+        allowedModules: editAllowedModules
+      }
     };
 
     if (onUpdateTenant) {
@@ -240,8 +388,62 @@ Login Page: Access with registered mobile and PIN on the portal.`;
         </button>
       </div>
 
-      {/* Overview Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Top Sub-Navigation Tabs */}
+      <div className="flex bg-slate-200/80 p-1.5 rounded-2xl gap-2 text-xs font-bold w-fit shadow-inner">
+        <button
+          type="button"
+          onClick={() => setMasterTab('accounts')}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl transition cursor-pointer ${
+            masterTab === 'accounts'
+              ? 'bg-white text-slate-900 shadow-sm font-extrabold'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Building className="w-4 h-4 text-teal-600" />
+          <span>Organizations & Workspaces</span>
+          <span className="bg-slate-100 text-slate-700 text-[10px] px-2 py-0.5 rounded-full border border-slate-200">
+            {tenants.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setMasterTab('pricing')}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl transition cursor-pointer ${
+            masterTab === 'pricing'
+              ? 'bg-white text-slate-900 shadow-sm font-extrabold'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Tag className="w-4 h-4 text-teal-600" />
+          <span>Add-on Price Set</span>
+          <span className="bg-teal-50 text-teal-700 text-[10px] px-2 py-0.5 rounded-full border border-teal-200">
+            Rates Matrix
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setMasterTab('billing')}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl transition cursor-pointer ${
+            masterTab === 'billing'
+              ? 'bg-white text-slate-900 shadow-sm font-extrabold'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Receipt className="w-4 h-4 text-teal-600" />
+          <span>SaaS Bill Generation & Invoices</span>
+          <span className="bg-emerald-50 text-emerald-700 text-[10px] px-2 py-0.5 rounded-full border border-emerald-200">
+            {saasInvoices.length} Bills
+          </span>
+        </button>
+      </div>
+
+      {/* Tab 1: Organizations & Workspaces */}
+      {masterTab === 'accounts' && (
+        <>
+          {/* Overview Stat Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center justify-between">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Workspaces</p>
@@ -413,6 +615,23 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                       <td className="p-4 whitespace-nowrap">
                         <div className="flex items-center justify-center gap-2">
                           
+                          {/* Generate SaaS Bill */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onNavigateToSaasBilling) {
+                                onNavigateToSaasBilling(org.id);
+                              } else {
+                                setPreSelectedBillingTenantId(org.id);
+                                setMasterTab('billing');
+                              }
+                            }}
+                            className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg font-bold text-[11px] transition cursor-pointer flex items-center gap-1 border border-emerald-200"
+                            title="Generate SaaS Bill with Auto-filled Access Points"
+                          >
+                            <Receipt className="w-3.5 h-3.5 text-emerald-600" /> Bill
+                          </button>
+
                           {/* Share Credentials */}
                           <button
                             type="button"
@@ -650,6 +869,30 @@ Login Page: Access with registered mobile and PIN on the portal.`;
         </div>
 
       </div>
+    </>
+  )}
+
+  {/* Tab 2: Add-on Price Set Matrix */}
+  {masterTab === 'pricing' && (
+    <MasterAdminPricing
+      pricingConfig={pricingConfig}
+      onSavePricing={handleSavePricing}
+    />
+  )}
+
+  {/* Tab 3: SaaS Bill Generation & Invoices */}
+  {masterTab === 'billing' && (
+    <MasterAdminBilling
+      tenants={tenants}
+      pricingConfig={pricingConfig}
+      invoices={saasInvoices}
+      onAddInvoice={handleAddSaasInvoice}
+      onUpdateInvoice={handleUpdateSaasInvoice}
+      onDeleteInvoice={handleDeleteSaasInvoice}
+      preSelectedTenantId={preSelectedBillingTenantId}
+      onClearPreSelectedTenant={() => setPreSelectedBillingTenantId(null)}
+    />
+  )}
 
       {/* Register Organization Modal (Master Admin Only) */}
       {showRegisterModal && (
@@ -880,7 +1123,7 @@ Login Page: Access with registered mobile and PIN on the portal.`;
           onClick={() => setEditingOrg(null)}
         >
           <div
-            className="bg-white rounded-2xl border border-slate-100 shadow-xl max-w-lg w-full overflow-hidden animate-slide-up cursor-default"
+            className="bg-white rounded-2xl border border-slate-100 shadow-xl max-w-xl w-full max-h-[90vh] overflow-y-auto animate-slide-up cursor-default"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="bg-slate-900 p-4 text-white flex justify-between items-center">
@@ -970,6 +1213,131 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                   >
                     Regenerate 2FA
                   </button>
+                </div>
+              </div>
+
+              {/* Master Admin Feature Access & Add-ons Control Section */}
+              <div className="pt-2 border-t border-slate-200 space-y-3">
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <h4 className="font-extrabold text-xs text-slate-800 uppercase tracking-wider flex items-center gap-1.5 mb-1">
+                    <ShieldCheck className="w-4 h-4 text-teal-600" /> Organization Plan Feature Add-ons
+                  </h4>
+                  <p className="text-[11px] text-slate-500">
+                    Master Admin controls for activating or disabling paid add-on features and services for this client organization.
+                  </p>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  {/* Home Server Sync Toggle */}
+                  <label className="flex items-center justify-between p-2.5 bg-slate-50 hover:bg-slate-100/80 rounded-xl border border-slate-200 cursor-pointer">
+                    <div className="pr-2">
+                      <span className="font-bold text-slate-800 block">🌐 Home Server DB Data Sync</span>
+                      <span className="text-[10px] text-slate-500 block">Sync job cards, invoices, and ledgers with central Home Server DB</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={editAllowHomeServerSync}
+                      onChange={(e) => setEditAllowHomeServerSync(e.target.checked)}
+                      className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500 cursor-pointer"
+                    />
+                  </label>
+
+                  {/* Barcode & QR Tags Toggle */}
+                  <label className="flex items-center justify-between p-2.5 bg-slate-50 hover:bg-slate-100/80 rounded-xl border border-slate-200 cursor-pointer">
+                    <div className="pr-2">
+                      <span className="font-bold text-slate-800 block">🏷️ Barcode & QR Tag Sheet Printing</span>
+                      <span className="text-[10px] text-slate-500 block">Enable printing job card sticker tag sheets with barcodes & QR codes</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={editAllowBarcodeQrTags}
+                      onChange={(e) => setEditAllowBarcodeQrTags(e.target.checked)}
+                      className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500 cursor-pointer"
+                    />
+                  </label>
+
+                  {/* WhatsApp Messaging Toggle */}
+                  <label className="flex items-center justify-between p-2.5 bg-slate-50 hover:bg-slate-100/80 rounded-xl border border-slate-200 cursor-pointer">
+                    <div className="pr-2">
+                      <span className="font-bold text-slate-800 block">💬 WhatsApp Automated Messaging</span>
+                      <span className="text-[10px] text-slate-500 block">Enable 1-click WhatsApp customer job status updates and receipts</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={editAllowWhatsAppMessaging}
+                      onChange={(e) => setEditAllowWhatsAppMessaging(e.target.checked)}
+                      className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500 cursor-pointer"
+                    />
+                  </label>
+
+                  {/* Technician Accounts Toggle */}
+                  <label className="flex items-center justify-between p-2.5 bg-slate-50 hover:bg-slate-100/80 rounded-xl border border-slate-200 cursor-pointer">
+                    <div className="pr-2">
+                      <span className="font-bold text-slate-800 block">👥 Technician / Staff Sub-accounts</span>
+                      <span className="text-[10px] text-slate-500 block">Allow organization to add and manage technician logins</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={editAllowTechnicianAccounts}
+                      onChange={(e) => setEditAllowTechnicianAccounts(e.target.checked)}
+                      className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500 cursor-pointer"
+                    />
+                  </label>
+
+                  {/* Outward Tax Invoice Button Toggle */}
+                  <label className="flex items-center justify-between p-2.5 bg-slate-50 hover:bg-slate-100/80 rounded-xl border border-slate-200 cursor-pointer">
+                    <div className="pr-2">
+                      <span className="font-bold text-slate-800 block">🧾 Outward Tax Invoice Generation ($ Button)</span>
+                      <span className="text-[10px] text-slate-500 block">Show green Tax Invoice button on Outward job cards</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={editAllowOutwardTaxInvoiceButton}
+                      onChange={(e) => setEditAllowOutwardTaxInvoiceButton(e.target.checked)}
+                      className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500 cursor-pointer"
+                    />
+                  </label>
+                </div>
+
+                {/* Enabled Navigation Modules Section */}
+                <div className="pt-2">
+                  <label className="block font-extrabold text-slate-700 uppercase text-[11px] mb-1">
+                    Enabled Navigation Modules for Organization
+                  </label>
+                  <p className="text-[10px] text-slate-500 mb-2">Uncheck modules that are not included in this organization's subscription plan.</p>
+                  
+                  <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-xs">
+                    {[
+                      { id: 'dashboard', label: '📊 Dashboard' },
+                      { id: 'inwards', label: '📥 Inward Jobs' },
+                      { id: 'outwards', label: '📤 Outward Jobs' },
+                      { id: 'billing', label: '📄 Billing & Invoices' },
+                      { id: 'payments', label: '💳 Payments & Cashbook' },
+                      { id: 'inventory', label: '📦 Inventory & Stock' },
+                      { id: 'expenses', label: '💸 Expenses' },
+                      { id: 'reports', label: '📈 Reports & Analytics' },
+                      { id: 'settings', label: '⚙️ System Settings' },
+                    ].map((mod) => {
+                      const isChecked = editAllowedModules.includes(mod.id);
+                      return (
+                        <label key={mod.id} className="flex items-center gap-2 cursor-pointer font-medium text-slate-700 hover:text-slate-900">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setEditAllowedModules([...editAllowedModules, mod.id]);
+                              } else {
+                                setEditAllowedModules(editAllowedModules.filter((m) => m !== mod.id));
+                              }
+                            }}
+                            className="w-3.5 h-3.5 text-teal-600 rounded cursor-pointer"
+                          />
+                          <span>{mod.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
 

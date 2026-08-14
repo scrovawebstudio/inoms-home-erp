@@ -35,6 +35,29 @@ export interface SystemAnnouncement {
   createdBy?: string;
 }
 
+export interface TenantFeatures {
+  allowHomeServerSync?: boolean;
+  allowBarcodeQrTags?: boolean;
+  allowWhatsAppMessaging?: boolean;
+  allowTechnicianAccounts?: boolean;
+  allowOutwardTaxInvoiceButton?: boolean;
+  allowedModules?: string[];
+}
+
+export function getTenantFeatures(tenantOrFeatures?: TenantOrg | TenantFeatures | null): Required<TenantFeatures> {
+  const f = (tenantOrFeatures && 'features' in tenantOrFeatures ? (tenantOrFeatures as TenantOrg).features : tenantOrFeatures) as TenantFeatures || {};
+  return {
+    allowHomeServerSync: f.allowHomeServerSync !== false,
+    allowBarcodeQrTags: f.allowBarcodeQrTags !== false,
+    allowWhatsAppMessaging: f.allowWhatsAppMessaging !== false,
+    allowTechnicianAccounts: f.allowTechnicianAccounts !== false,
+    allowOutwardTaxInvoiceButton: f.allowOutwardTaxInvoiceButton !== false,
+    allowedModules: f.allowedModules && f.allowedModules.length > 0
+      ? f.allowedModules
+      : ['dashboard', 'inwards', 'outwards', 'billing', 'payments', 'inventory', 'expenses', 'reports', 'settings'],
+  };
+}
+
 export interface TenantOrg {
   id: string;
   name: string;
@@ -45,6 +68,7 @@ export interface TenantOrg {
   status: 'active' | 'deactivated';
   createdAt: string;
   secretKey?: string;
+  features?: TenantFeatures;
 }
 
 export const INITIAL_TENANTS: TenantOrg[] = [
@@ -358,6 +382,11 @@ export default function AuthModal({
 
     if (selectedOrg && selectedOrg.status === 'deactivated' && !isAdminOrgSelected) {
       setStaffError(`🔒 ACCOUNT DEACTIVATED: Organization "${selectedOrg.name}" has been deactivated.`);
+      return;
+    }
+
+    if (selectedOrg && selectedOrg.features?.allowTechnicianAccounts === false && !isAdminOrgSelected) {
+      setStaffError(`⚠️ STAFF LOGINS DISABLED: Staff and Technician sub-accounts are disabled for "${selectedOrg.name}" by Master Admin.`);
       return;
     }
 

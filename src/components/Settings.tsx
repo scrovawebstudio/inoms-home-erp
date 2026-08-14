@@ -48,10 +48,14 @@ import {
   Edit
 } from 'lucide-react';
 import { SystemUser, ActivityLog, Equipment, Problem, CompanyConfig, Client, RepairJob, Invoice, Product, Payment, Expense, DEFAULT_THEME_PALETTE, TenantThemePalette } from '../types';
+import { TenantFeatures, getTenantFeatures } from './AuthModal';
 
 interface SettingsProps {
   activeTenantId?: string;
   userRole?: string;
+  currentUser?: SystemUser | null;
+  tenantFeatures?: TenantFeatures;
+  isStaff?: boolean;
   users: SystemUser[];
   logs: ActivityLog[];
   equipments: Equipment[];
@@ -89,6 +93,9 @@ interface SettingsProps {
 export default function SettingsComponent({
   activeTenantId,
   userRole,
+  currentUser,
+  tenantFeatures,
+  isStaff = false,
   users,
   logs,
   equipments,
@@ -108,6 +115,7 @@ export default function SettingsComponent({
   appData,
   onRestoreData
 }: SettingsProps) {
+  const features = getTenantFeatures(tenantFeatures);
   const currentTenantId = activeTenantId || 'org-admin';
   const [activeSubTab, setActiveSubTab] = useState<'profile' | 'theme' | 'backup' | 'masters' | 'admin'>('profile');
   const [showMicrosoftAuthQRModal, setShowMicrosoftAuthQRModal] = useState<boolean>(false);
@@ -505,6 +513,11 @@ export default function SettingsComponent({
 
   // Handler for manual Local Machine Backup (date and time wise JSON file write/download)
   const triggerLocalMachineBackup = async (isScheduled: boolean = false) => {
+    const isOwnerOrMaster = userRole === 'Admin' || userRole === 'Master Admin' || currentTenantId === 'org-admin';
+    if (!isOwnerOrMaster) {
+      setLocalBackupSuccessMsg('⚠️ Local backup downloads are restricted to Organization Owner and Master Admin accounts.');
+      return;
+    }
     const dataToExport = appData ? { tenantId: currentTenantId, orgName: companyConfig.name, ...appData } : {
       tenantId: currentTenantId,
       orgName: companyConfig.name,
@@ -706,6 +719,7 @@ export default function SettingsComponent({
       { 'Setting / User': 'GSTIN', 'Details': companyConfig.gstin },
       { 'Setting / User': 'Phone', 'Details': companyConfig.phone },
       { 'Setting / User': 'Email', 'Details': companyConfig.email },
+      { 'Setting / User': 'Website', 'Details': companyConfig.website || '' },
       { 'Setting / User': 'Address', 'Details': companyConfig.address },
       { 'Setting / User': 'Google Drive Backup Email', 'Details': companyConfig.driveAccountEmail || '' },
       { 'Setting / User': 'Local PC Backup Directory', 'Details': companyConfig.localBackupPath || '' },
@@ -869,6 +883,8 @@ export default function SettingsComponent({
   // Auto-backup interval checking effect for Local Machine Backup
   useEffect(() => {
     if (!localBackupEnabled || !localBackupScheduleTime) return;
+    const isOwnerOrMaster = userRole === 'Admin' || userRole === 'Master Admin' || currentTenantId === 'org-admin';
+    if (!isOwnerOrMaster) return;
 
     const interval = setInterval(() => {
       const now = new Date();
@@ -960,9 +976,9 @@ export default function SettingsComponent({
         
         {/* Horizontal Navigation Menu */}
         <div className="flex border-b border-slate-100 mt-6 gap-2 text-xs font-bold overflow-x-auto pb-1">
-          {((userRole === 'Admin'
-            ? ['profile', 'theme', 'backup']
-            : ['profile', 'theme', 'backup', 'masters', 'admin']
+          {(((userRole === 'Admin' || userRole === 'Master Admin' || !currentUser || currentUser.role === 'Admin' || currentTenantId === 'org-admin')
+            ? ['profile', 'theme', 'backup', 'masters', 'admin']
+            : ['profile', 'theme', 'backup']
           ) as Array<'profile' | 'theme' | 'backup' | 'masters' | 'admin'>).map((tab) => (
             <button
               key={tab}
@@ -987,7 +1003,12 @@ export default function SettingsComponent({
                 </>
               )}
               {tab === 'masters' && 'Masters List'}
-              {tab === 'admin' && 'Admin Control'}
+              {tab === 'admin' && (
+                <>
+                  <UserCheck className="w-3.5 h-3.5" />
+                  <span>Staff Control</span>
+                </>
+              )}
             </button>
           ))}
         </div>
@@ -1082,14 +1103,26 @@ export default function SettingsComponent({
                     />
                   </div>
                 </div>
-                <div className="space-y-1">
-                  <label className="block font-bold text-slate-500 uppercase">GSTIN / Tax Number</label>
-                  <input
-                    type="text"
-                    value={companyConfig.gstin}
-                    onChange={(e) => onChangeCompanyConfig({ ...companyConfig, gstin: e.target.value })}
-                    className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 font-mono text-slate-700"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="block font-bold text-slate-500 uppercase">Website URL</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. www.yourcompany.com"
+                      value={companyConfig.website || ''}
+                      onChange={(e) => onChangeCompanyConfig({ ...companyConfig, website: e.target.value })}
+                      className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-700 font-mono text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block font-bold text-slate-500 uppercase">GSTIN / Tax Number</label>
+                    <input
+                      type="text"
+                      value={companyConfig.gstin}
+                      onChange={(e) => onChangeCompanyConfig({ ...companyConfig, gstin: e.target.value })}
+                      className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 font-mono text-slate-700"
+                    />
+                  </div>
                 </div>
                 <div className="space-y-1">
                   <label className="block font-bold text-slate-500 uppercase">Registered Address</label>
@@ -1737,8 +1770,56 @@ export default function SettingsComponent({
         </div>
       )}
 
-      {/* SUB-TAB: Backup Settings (Local Machine PC & Google Drive Cloud Backup) */}
+      {/* SUB-TAB: Backup Settings (Local Machine PC & Home Server Cloud Backup) */}
       {activeSubTab === 'backup' && (
+        !(userRole === 'Admin' || userRole === 'Master Admin' || !currentUser || currentUser.role === 'Admin' || currentTenantId === 'org-admin') ? (
+          <div className="space-y-6" id="settings-backup-staff">
+            <div className="bg-gradient-to-r from-teal-900 via-slate-900 to-teal-950 text-white p-6 rounded-2xl border border-teal-800 shadow-md space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-teal-500/20 border border-teal-500/40 text-teal-300 flex items-center justify-center font-black shrink-0">
+                  <FolderSync className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white tracking-tight flex items-center gap-2">
+                    <span>Home Server Auto-Sync Active</span>
+                    <span className="bg-emerald-400/20 text-emerald-300 text-[10px] font-black px-2.5 py-0.5 rounded-full border border-emerald-400/30">
+                      ✓ Staff Account Linked
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Your technician/staff account continuously syncs job cards, invoices, client ledgers, and stock logs directly to the Organization Home Server database.
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-white/10 p-4 rounded-xl border border-white/10 text-xs text-slate-200 space-y-2">
+                <p>• <strong>Real-Time Organization Updates:</strong> Everything you enter on your machine automatically updates the Organization Owner account via the Home Server backend.</p>
+                <p>• <strong>Data Security Policy:</strong> Local JSON file downloads are restricted to Organization Owner accounts to prevent unauthorized data leaks from staff machines.</p>
+              </div>
+
+              <div className="pt-2 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLocalBackupSuccessMsg('✓ Synced latest staff entries directly with Home Server database!');
+                    setTimeout(() => setLocalBackupSuccessMsg(''), 5000);
+                  }}
+                  className="bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold px-4 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-2 shadow-xs"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Sync with Home Server Now</span>
+                </button>
+              </div>
+
+              {localBackupSuccessMsg && (
+                <div className="p-3 bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 rounded-xl text-xs font-medium flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{localBackupSuccessMsg}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
         <div className="space-y-6" id="settings-backup">
           {/* Section 1: Local Computer Machine Drive Backup */}
           <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs space-y-5">
@@ -2045,6 +2126,7 @@ export default function SettingsComponent({
             </div>
           </div>
         </div>
+        )
       )}
 
       {/* SUB-TAB 4: Masters List */}
@@ -2284,24 +2366,51 @@ export default function SettingsComponent({
             </div>
           )}
 
-          {/* Technician Login Instructions Banner */}
-          <div className="bg-teal-50 border border-teal-200 p-4 rounded-2xl flex items-start gap-3">
-            <div className="p-2 bg-teal-100 text-teal-700 rounded-xl shrink-0 mt-0.5">
-              <Info className="w-5 h-5" />
-            </div>
-            <div className="text-xs text-teal-950 space-y-1">
-              <h4 className="font-bold text-sm text-teal-900">How Technicians & Staff Log In to the App</h4>
-              <p className="leading-relaxed">
-                1. <strong>Add Profile:</strong> When you add a Technician or Staff member below with a <strong>Username / Mobile Number</strong>, <strong>Password</strong>, and <strong>Role</strong>, their account is activated for your organization.
-              </p>
-              <p className="leading-relaxed">
-                2. <strong>Staff Login Tab:</strong> Technicians go to the main Login window and click the <strong>"Staff & Technician Login"</strong> tab.
-              </p>
-              <p className="leading-relaxed">
-                3. <strong>Access Workspace:</strong> They select your organization workspace, enter their <strong>Mobile/Username</strong> and <strong>Password</strong>, and get instant access to their customized technician dashboard & repair cards.
-              </p>
+          {/* Staff Control Main Section Header */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-teal-50 text-teal-600 rounded-xl border border-teal-100">
+                <UserCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="font-extrabold text-base text-slate-800 tracking-tight">Staff Control &amp; Access Privileges</h2>
+                <p className="text-xs text-slate-400">Manage technician logins, mobile credentials, and granular operational rights for your organization account.</p>
+              </div>
             </div>
           </div>
+
+          {/* Technician Login Instructions Banner */}
+          {!features.allowTechnicianAccounts ? (
+            <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl flex items-start gap-3">
+              <div className="p-2 bg-amber-100 text-amber-800 rounded-xl shrink-0 mt-0.5">
+                <Lock className="w-5 h-5" />
+              </div>
+              <div className="text-xs text-amber-950 space-y-1">
+                <h4 className="font-bold text-sm text-amber-900">Technician &amp; Staff Sub-Accounts Feature Disabled</h4>
+                <p className="leading-relaxed">
+                  Your organization's subscription plan is configured for single-account owner access. Adding or logging into technician and staff sub-accounts is not enabled. If your workshop needs multi-technician logins and granular role privileges, please contact the Platform Master Administrator.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-teal-50 border border-teal-200 p-4 rounded-2xl flex items-start gap-3">
+              <div className="p-2 bg-teal-100 text-teal-700 rounded-xl shrink-0 mt-0.5">
+                <Info className="w-5 h-5" />
+              </div>
+              <div className="text-xs text-teal-950 space-y-1">
+                <h4 className="font-bold text-sm text-teal-900">How Technicians &amp; Staff Log In to the App</h4>
+                <p className="leading-relaxed">
+                  1. <strong>Add Profile:</strong> When you add a Technician or Staff member below with a <strong>Username / Mobile Number</strong>, <strong>Password</strong>, and <strong>Role</strong>, their account is activated for your organization.
+                </p>
+                <p className="leading-relaxed">
+                  2. <strong>Staff Login Tab:</strong> Technicians go to the main Login window and click the <strong>"Staff &amp; Technician Login"</strong> tab.
+                </p>
+                <p className="leading-relaxed">
+                  3. <strong>Access Workspace:</strong> They select your organization workspace, enter their <strong>Mobile/Username</strong> and <strong>Password</strong>, and get instant access to their customized technician dashboard &amp; repair cards.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* User management and activities side-by-side */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 text-xs">
@@ -2309,34 +2418,36 @@ export default function SettingsComponent({
             <div className="lg:col-span-1 bg-white p-6 rounded-2xl border border-slate-100 shadow-xs space-y-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="font-bold text-slate-800 text-sm">Admin & Staff Directory</h3>
+                  <h3 className="font-bold text-slate-800 text-sm">Admin &amp; Staff Directory</h3>
                   <p className="text-[10px] text-slate-400">Manage, deactivate or delete Admin and Staff profiles.</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingUser(null);
-                    setNewUserName('');
-                    setNewUserMobile('');
-                    setNewUserEmail('');
-                    setNewUserUsername('');
-                    setNewUserPassword('');
-                    setNewUserRole('Technician');
-                    setPermissions({
-                      dashboard: true,
-                      operations: true,
-                      accounts: false,
-                      setup: false,
-                      reports: false
-                    });
-                    setShowAddUserModal(true);
-                  }}
-                  className="p-1.5 bg-teal-50 hover:bg-teal-100 text-teal-600 rounded-lg transition cursor-pointer flex items-center gap-1 text-[11px] font-bold"
-                  title="Add New Admin or Staff User"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Add User</span>
-                </button>
+                {features.allowTechnicianAccounts && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingUser(null);
+                      setNewUserName('');
+                      setNewUserMobile('');
+                      setNewUserEmail('');
+                      setNewUserUsername('');
+                      setNewUserPassword('');
+                      setNewUserRole('Technician');
+                      setPermissions({
+                        dashboard: true,
+                        operations: true,
+                        accounts: false,
+                        setup: false,
+                        reports: false
+                      });
+                      setShowAddUserModal(true);
+                    }}
+                    className="p-1.5 bg-teal-50 hover:bg-teal-100 text-teal-600 rounded-lg transition cursor-pointer flex items-center gap-1 text-[11px] font-bold"
+                    title="Add New Admin or Staff User"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add User</span>
+                  </button>
+                )}
               </div>
 
               <div className="space-y-2.5">
@@ -2635,99 +2746,255 @@ export default function SettingsComponent({
                 </div>
               </div>
 
-              {/* Menu permissions checkboxes */}
-              <div className="space-y-1.5 bg-slate-50 p-3 rounded-xl border border-slate-200">
-                <h4 className="font-bold text-slate-700 uppercase text-[9px] tracking-wider">Access Privileges & Module Permissions</h4>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-slate-800 text-[11px] font-semibold">
-                  <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
-                    <input
-                      type="checkbox"
-                      checked={!!permissions.dashboard}
-                      onChange={() => setPermissions({ ...permissions, dashboard: !permissions.dashboard })}
-                      className="rounded text-teal-600 w-3.5 h-3.5"
-                    />
-                    <span>Dashboard</span>
-                  </label>
+              {/* Detailed Granular Access Privileges & Module Permissions */}
+              <div className="space-y-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+                <div className="flex justify-between items-center">
+                  <h4 className="font-bold text-slate-800 uppercase text-[10px] tracking-wider">Granular Staff & Technician Access Privileges</h4>
+                  <span className="text-[10px] text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full font-semibold">In-Depth Permission Control</span>
+                </div>
 
-                  <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
-                    <input
-                      type="checkbox"
-                      checked={!!permissions.operations}
-                      onChange={() => setPermissions({ ...permissions, operations: !permissions.operations })}
-                      className="rounded text-teal-600 w-3.5 h-3.5"
-                    />
-                    <span>Repair Jobs</span>
-                  </label>
+                {/* Section 1: Top-Level Navigation Modules */}
+                <div className="space-y-1">
+                  <span className="text-[9px] font-bold uppercase text-slate-500 tracking-wider">1. Main Navigation Modules</span>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-slate-800 text-[11px] font-semibold">
+                    <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
+                      <input
+                        type="checkbox"
+                        checked={permissions.dashboard !== false}
+                        onChange={() => setPermissions({ ...permissions, dashboard: permissions.dashboard === false })}
+                        className="rounded text-teal-600 w-3.5 h-3.5"
+                      />
+                      <span>Dashboard</span>
+                    </label>
 
-                  <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
-                    <input
-                      type="checkbox"
-                      checked={!!permissions.clientLedger}
-                      onChange={() => setPermissions({ ...permissions, clientLedger: !permissions.clientLedger })}
-                      className="rounded text-teal-600 w-3.5 h-3.5"
-                    />
-                    <span>Client Ledger</span>
-                  </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
+                      <input
+                        type="checkbox"
+                        checked={permissions.operations !== false}
+                        onChange={() => {
+                          const val = permissions.operations === false;
+                          setPermissions({
+                            ...permissions,
+                            operations: val,
+                            inwardView: val,
+                            inwardCreate: val,
+                            inwardEdit: val,
+                            outwardView: val,
+                            outwardEdit: val
+                          });
+                        }}
+                        className="rounded text-teal-600 w-3.5 h-3.5"
+                      />
+                      <span>Repair Jobs (All)</span>
+                    </label>
 
-                  <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
-                    <input
-                      type="checkbox"
-                      checked={!!permissions.billingInvoice}
-                      onChange={() => setPermissions({ ...permissions, billingInvoice: !permissions.billingInvoice })}
-                      className="rounded text-teal-600 w-3.5 h-3.5"
-                    />
-                    <span>Invoices</span>
-                  </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
+                      <input
+                        type="checkbox"
+                        checked={!!permissions.clientLedger}
+                        onChange={() => {
+                          const val = !permissions.clientLedger;
+                          setPermissions({ ...permissions, clientLedger: val, clientView: val, clientCreateEdit: val });
+                        }}
+                        className="rounded text-teal-600 w-3.5 h-3.5"
+                      />
+                      <span>Client Ledger</span>
+                    </label>
 
-                  <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
-                    <input
-                      type="checkbox"
-                      checked={!!permissions.payments}
-                      onChange={() => setPermissions({ ...permissions, payments: !permissions.payments })}
-                      className="rounded text-teal-600 w-3.5 h-3.5"
-                    />
-                    <span>Payments</span>
-                  </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
+                      <input
+                        type="checkbox"
+                        checked={!!permissions.billingInvoice || !!permissions.billing}
+                        onChange={() => {
+                          const val = !(permissions.billingInvoice || permissions.billing);
+                          setPermissions({ ...permissions, billingInvoice: val, billing: val, billingView: val, billingCreate: val, billingEdit: val });
+                        }}
+                        className="rounded text-teal-600 w-3.5 h-3.5"
+                      />
+                      <span>Invoices / Billing</span>
+                    </label>
 
-                  <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
-                    <input
-                      type="checkbox"
-                      checked={!!permissions.inventoryEdit}
-                      onChange={() => setPermissions({ ...permissions, inventoryEdit: !permissions.inventoryEdit })}
-                      className="rounded text-teal-600 w-3.5 h-3.5"
-                    />
-                    <span>Inventory</span>
-                  </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
+                      <input
+                        type="checkbox"
+                        checked={!!permissions.payments}
+                        onChange={() => {
+                          const val = !permissions.payments;
+                          setPermissions({ ...permissions, payments: val, paymentsView: val, paymentsCreate: val });
+                        }}
+                        className="rounded text-teal-600 w-3.5 h-3.5"
+                      />
+                      <span>Payments</span>
+                    </label>
 
-                  <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
-                    <input
-                      type="checkbox"
-                      checked={!!permissions.accounts}
-                      onChange={() => setPermissions({ ...permissions, accounts: !permissions.accounts })}
-                      className="rounded text-teal-600 w-3.5 h-3.5"
-                    />
-                    <span>Accounts</span>
-                  </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
+                      <input
+                        type="checkbox"
+                        checked={!!permissions.inventoryEdit || !!permissions.inventory}
+                        onChange={() => {
+                          const val = !(permissions.inventoryEdit || permissions.inventory);
+                          setPermissions({ ...permissions, inventoryEdit: val, inventory: val, inventoryView: val, inventoryEditStock: val });
+                        }}
+                        className="rounded text-teal-600 w-3.5 h-3.5"
+                      />
+                      <span>Inventory / Stock</span>
+                    </label>
 
-                  <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
-                    <input
-                      type="checkbox"
-                      checked={!!permissions.reports}
-                      onChange={() => setPermissions({ ...permissions, reports: !permissions.reports })}
-                      className="rounded text-teal-600 w-3.5 h-3.5"
-                    />
-                    <span>Reports</span>
-                  </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
+                      <input
+                        type="checkbox"
+                        checked={!!permissions.accounts}
+                        onChange={() => setPermissions({ ...permissions, accounts: !permissions.accounts })}
+                        className="rounded text-teal-600 w-3.5 h-3.5"
+                      />
+                      <span>Expenses Outflow</span>
+                    </label>
 
-                  <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
-                    <input
-                      type="checkbox"
-                      checked={!!permissions.setup}
-                      onChange={() => setPermissions({ ...permissions, setup: !permissions.setup })}
-                      className="rounded text-teal-600 w-3.5 h-3.5"
-                    />
-                    <span>Settings</span>
-                  </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
+                      <input
+                        type="checkbox"
+                        checked={!!permissions.reports}
+                        onChange={() => setPermissions({ ...permissions, reports: !permissions.reports })}
+                        className="rounded text-teal-600 w-3.5 h-3.5"
+                      />
+                      <span>Reports Hub</span>
+                    </label>
+
+                    <label className="flex items-center gap-1.5 cursor-pointer bg-white p-1.5 rounded-lg border border-slate-200 hover:bg-teal-50/50">
+                      <input
+                        type="checkbox"
+                        checked={!!permissions.setup}
+                        onChange={() => setPermissions({ ...permissions, setup: !permissions.setup })}
+                        className="rounded text-teal-600 w-3.5 h-3.5"
+                      />
+                      <span>System Settings</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Section 2: In-Depth Operational Access Controls */}
+                <div className="space-y-2 pt-2 border-t border-slate-200">
+                  <span className="text-[9px] font-bold uppercase text-slate-500 tracking-wider">2. In-Depth Operational Rights (Create / Edit / View)</span>
+                  
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px]">
+                    {/* Inward Intake */}
+                    <div className="bg-white p-2 rounded-lg border border-slate-200 space-y-1">
+                      <span className="font-bold text-teal-800 text-[10px]">Repair Inwards Access:</span>
+                      <div className="flex flex-wrap gap-2 text-slate-700">
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={permissions.inwardView !== false}
+                            onChange={() => setPermissions({ ...permissions, inwardView: permissions.inwardView === false })}
+                            className="rounded text-teal-600 w-3 h-3"
+                          />
+                          <span>View Jobs</span>
+                        </label>
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={permissions.inwardCreate !== false}
+                            onChange={() => setPermissions({ ...permissions, inwardCreate: permissions.inwardCreate === false })}
+                            className="rounded text-teal-600 w-3 h-3"
+                          />
+                          <span>Create Inward</span>
+                        </label>
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={permissions.inwardEdit !== false}
+                            onChange={() => setPermissions({ ...permissions, inwardEdit: permissions.inwardEdit === false })}
+                            className="rounded text-teal-600 w-3 h-3"
+                          />
+                          <span>Edit / Update Job</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Outward Jobs */}
+                    <div className="bg-white p-2 rounded-lg border border-slate-200 space-y-1">
+                      <span className="font-bold text-amber-800 text-[10px]">Outward Delivery Access:</span>
+                      <div className="flex flex-wrap gap-2 text-slate-700">
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={permissions.outwardView !== false}
+                            onChange={() => setPermissions({ ...permissions, outwardView: permissions.outwardView === false })}
+                            className="rounded text-teal-600 w-3 h-3"
+                          />
+                          <span>View Outwards</span>
+                        </label>
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={permissions.outwardEdit !== false}
+                            onChange={() => setPermissions({ ...permissions, outwardEdit: permissions.outwardEdit === false })}
+                            className="rounded text-teal-600 w-3 h-3"
+                          />
+                          <span>Edit / Outward Delivery</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Billing & Invoices */}
+                    <div className="bg-white p-2 rounded-lg border border-slate-200 space-y-1">
+                      <span className="font-bold text-blue-800 text-[10px]">Billing & Invoices Access:</span>
+                      <div className="flex flex-wrap gap-2 text-slate-700">
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={permissions.billingView !== false && (!!permissions.billingInvoice || !!permissions.billing)}
+                            onChange={() => setPermissions({ ...permissions, billingView: permissions.billingView === false })}
+                            className="rounded text-teal-600 w-3 h-3"
+                          />
+                          <span>View Invoices</span>
+                        </label>
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={permissions.billingCreate !== false && (!!permissions.billingInvoice || !!permissions.billing)}
+                            onChange={() => setPermissions({ ...permissions, billingCreate: permissions.billingCreate === false })}
+                            className="rounded text-teal-600 w-3 h-3"
+                          />
+                          <span>Create Invoice</span>
+                        </label>
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={permissions.billingEdit !== false && (!!permissions.billingInvoice || !!permissions.billing)}
+                            onChange={() => setPermissions({ ...permissions, billingEdit: permissions.billingEdit === false })}
+                            className="rounded text-teal-600 w-3 h-3"
+                          />
+                          <span>Edit / Modify Invoice</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Payments & Clients */}
+                    <div className="bg-white p-2 rounded-lg border border-slate-200 space-y-1">
+                      <span className="font-bold text-purple-800 text-[10px]">Clients & Cashbook Rights:</span>
+                      <div className="flex flex-wrap gap-2 text-slate-700">
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={permissions.clientCreateEdit !== false && !!permissions.clientLedger}
+                            onChange={() => setPermissions({ ...permissions, clientCreateEdit: permissions.clientCreateEdit === false })}
+                            className="rounded text-teal-600 w-3 h-3"
+                          />
+                          <span>Add/Edit Clients</span>
+                        </label>
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={permissions.paymentsCreate !== false && !!permissions.payments}
+                            onChange={() => setPermissions({ ...permissions, paymentsCreate: permissions.paymentsCreate === false })}
+                            className="rounded text-teal-600 w-3 h-3"
+                          />
+                          <span>Record Payment Receipts</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 

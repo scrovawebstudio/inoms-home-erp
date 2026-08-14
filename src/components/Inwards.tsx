@@ -36,6 +36,9 @@ import {
 import { RepairJob, Client, Equipment, Problem, Product, JobStatus, CompanyConfig, ClientType, SystemUser, sortJobsByLatest } from '../types';
 import { SHOP_TERMS } from '../data';
 import AddClientModal from './AddClientModal';
+import { TenantFeatures, getTenantFeatures } from './AuthModal';
+import LockedAddonModal, { AddonType } from './LockedAddonModal';
+import { openWhatsAppForJob } from '../lib/whatsappUtils';
 
 const CODE39_MAP: Record<string, string> = {
   '0': '000110100', '1': '100100001', '2': '001100001', '3': '101100000',
@@ -95,6 +98,7 @@ interface InwardsProps {
   users?: SystemUser[];
   currentUser?: SystemUser | null;
   userRole?: string;
+  tenantFeatures?: TenantFeatures;
   initialJobIdToView?: string | null;
   onClearInitialJobIdToView?: () => void;
   onAddJob: (job: Omit<RepairJob, 'id'>) => void;
@@ -120,6 +124,7 @@ export default function Inwards({
   users,
   currentUser,
   userRole,
+  tenantFeatures,
   initialJobIdToView,
   onClearInitialJobIdToView,
   onAddJob,
@@ -129,6 +134,13 @@ export default function Inwards({
   onRecordPayment,
   onOpenOutwardJob
 }: InwardsProps) {
+  const features = getTenantFeatures(tenantFeatures);
+  const isAdmin = userRole === 'Admin' || currentUser?.role === 'Admin';
+  const perms = currentUser?.permissions;
+  const canCreateInward = isAdmin || perms?.inwardCreate !== false;
+  const canEditInward = isAdmin || perms?.inwardEdit !== false;
+  const canDeleteInward = isAdmin || perms?.inwardDelete === true;
+
   const [searchTerm, setSearchTerm] = useState('');
   const [showNewJobModal, setShowNewJobModal] = useState(false);
   const [showManageJobModal, setShowManageJobModal] = useState(false);
@@ -167,6 +179,7 @@ export default function Inwards({
   const [previewDoc, setPreviewDoc] = useState<'inward_slip' | 'qr_label' | 'barcode_label' | null>(null);
   const [previewJob, setPreviewJob] = useState<RepairJob | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [lockedAddon, setLockedAddon] = useState<AddonType | null>(null);
 
   useEffect(() => {
     if (previewJob && previewDoc === 'qr_label') {
@@ -292,7 +305,7 @@ export default function Inwards({
   };
 
   // Form states for Outward / Action
-  const [jobStatus, setJobStatus] = useState<JobStatus>('Received');
+  const [jobStatus, setJobStatus] = useState<JobStatus>('Device Received');
   const [finalBillAmount, setFinalBillAmount] = useState<number>(0);
   const [actionTaken, setActionTaken] = useState('');
   const [deliveryStatus, setDeliveryStatus] = useState('Pending');
@@ -332,7 +345,7 @@ export default function Inwards({
     setInwardPaymentMode('UPI');
     setRemarks('');
     setAssignedTechnician(getDefaultTechnicianName());
-    setJobStatus('Received');
+    setJobStatus('Device Received');
     setShowNewJobModal(true);
   };
 
@@ -412,7 +425,7 @@ export default function Inwards({
       advancePaymentMode: inwardPaymentMode,
       remarks,
       assignedTechnician,
-      status: jobStatus || 'Received'
+      status: jobStatus || 'Device Received'
     });
 
     if (keepOpenAndAddAnother) {
@@ -486,7 +499,7 @@ export default function Inwards({
     setShowManageJobModal(true);
   };
 
-  const handleSaveManagedJob = () => {
+  const handleSaveManagedJob = (sendWhatsApp: boolean = false) => {
     if (!selectedJob) return;
 
     // Explicitly resolve client from clients array using clientId
@@ -512,7 +525,7 @@ export default function Inwards({
       return acc;
     }, {} as { [key: string]: boolean });
 
-    onUpdateJob({
+    const updatedJob: RepairJob = {
       ...selectedJob,
       clientId,
       clientName: resolvedName,
@@ -540,8 +553,14 @@ export default function Inwards({
       courierName,
       trackingNo,
       isReturnCase
-    });
+    };
+
+    onUpdateJob(updatedJob);
     setShowManageJobModal(false);
+
+    if (sendWhatsApp) {
+      handleTriggerWhatsApp(updatedJob);
+    }
 
     if (jobStatus === 'Product Out' && onOpenOutwardJob) {
       onOpenOutwardJob(selectedJob.id);
@@ -582,40 +601,24 @@ export default function Inwards({
     setPreviewDoc(docType);
   };
 
+  const handleTriggerDocPreview = (job: RepairJob, docType: 'inward_slip' | 'qr_label' | 'barcode_label') => {
+    if ((docType === 'qr_label' || docType === 'barcode_label') && !features.allowBarcodeQrTags) {
+      setLockedAddon('barcode_qr');
+      return;
+    }
+    handleOpenDocPreview(job, docType);
+  };
+
+  const handleTriggerWhatsApp = (job: RepairJob) => {
+    if (!features.allowWhatsAppMessaging) {
+      setLockedAddon('whatsapp');
+      return;
+    }
+    handleSendWhatsAppNotification(job);
+  };
+
   const handleSendWhatsAppNotification = (job: RepairJob) => {
-    const cleanMobile = job.clientMobile ? job.clientMobile.replace(/[^0-9]/g, '') : '';
-    const formattedMobile = cleanMobile.length === 10 ? `91${cleanMobile}` : cleanMobile;
-    const issuesList = job.problems && job.problems.length > 0 ? job.problems.join(', ') : job.problemDescription || 'General Service & Inspection';
-    
-    const est = job.estimateAmount !== undefined && job.estimateAmount !== null ? job.estimateAmount : 0;
-    const finalBill = job.finalBillAmount !== undefined && job.finalBillAmount !== null ? job.finalBillAmount : est;
-
-    let msg = `*${companyConfig.name} - Job Card Update*\n\n`;
-    msg += `Dear *${job.clientName}*,\n`;
-    msg += `Your repair job *${job.equipment}* (${job.productName || 'Device'}) [Job ID: *${job.id}*] details:\n\n`;
-    msg += `📌 *Reported Issues:* ${issuesList}\n`;
-    msg += `🏷️ *Serial / IMEI:* ${job.serialNo || 'N/A'}\n`;
-    msg += `📊 *Current Status:* ${job.status}\n`;
-    if (job.actionTaken) {
-      msg += `🛠️ *Repair Action Taken:* ${job.actionTaken}\n`;
-    }
-    msg += `💰 *Estimate Amount:* ₹${est.toLocaleString('en-IN')}\n`;
-    msg += `💵 *Final Bill Amount:* ₹${finalBill.toLocaleString('en-IN')}\n`;
-    if (job.deliveryStatus) {
-      msg += `🚚 *Delivery Status:* ${job.deliveryStatus}\n`;
-    }
-    if (job.courierName) {
-      msg += `📦 *Courier Name:* ${job.courierName} (AWB: ${job.trackingNo || 'N/A'})\n`;
-    }
-    msg += `\nThank you for choosing ${companyConfig.name}!\n`;
-    msg += `📞 Contact: ${companyConfig.phone}`;
-
-    const encoded = encodeURIComponent(msg);
-    if (formattedMobile) {
-      window.open(`https://wa.me/${formattedMobile}?text=${encoded}`, '_blank');
-    } else {
-      window.open(`https://wa.me/?text=${encoded}`, '_blank');
-    }
+    openWhatsAppForJob(job, companyConfig);
   };
 
   return (
@@ -629,14 +632,16 @@ export default function Inwards({
           <p className="text-xs text-slate-400 mt-1">Accept repair cards, run accessory check logs, print QR tags, and assign engineers.</p>
         </div>
         <div>
-          <button
-            onClick={handleOpenNewJob}
-            id="new-job-btn"
-            className="flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition shadow-sm hover:shadow-md cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            New Job Entry
-          </button>
+          {canCreateInward && (
+            <button
+              onClick={handleOpenNewJob}
+              id="new-job-btn"
+              className="flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition shadow-sm hover:shadow-md cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              New Job Entry
+            </button>
+          )}
         </div>
       </div>
 
@@ -677,51 +682,67 @@ export default function Inwards({
                   <tr key={job.id} className="hover:bg-slate-50/60 transition">
                     <td className="py-3.5 px-4 flex items-center gap-1.5">
                       <button
-                        onClick={() => handleSendWhatsAppNotification(job)}
-                        title="Send WhatsApp Update to Client"
-                        className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 rounded-lg transition cursor-pointer"
+                        onClick={() => handleTriggerWhatsApp(job)}
+                        title={features.allowWhatsAppMessaging ? "Send WhatsApp Update to Client" : "WhatsApp Messaging (Add-on Locked)"}
+                        className={`p-1.5 rounded-lg transition cursor-pointer ${
+                          features.allowWhatsAppMessaging
+                            ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-600"
+                            : "bg-slate-100 hover:bg-slate-200 text-slate-400"
+                        }`}
                       >
                         <WhatsAppIcon className="w-3.5 h-3.5" />
                       </button>
+                      {canEditInward && (
+                        <button
+                          onClick={() => handleOpenManageJob(job)}
+                          title="Manage Diagnostics & Delivery"
+                          className="p-1.5 bg-teal-50 hover:bg-teal-100 text-teal-600 rounded-lg transition cursor-pointer"
+                        >
+                          <Edit className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       <button
-                        onClick={() => handleOpenManageJob(job)}
-                        title="Manage Diagnostics & Delivery"
-                        className="p-1.5 bg-teal-50 hover:bg-teal-100 text-teal-600 rounded-lg transition cursor-pointer"
-                      >
-                        <Edit className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleOpenDocPreview(job, 'inward_slip')}
+                        onClick={() => handleTriggerDocPreview(job, 'inward_slip')}
                         title="Inward Job Slip"
                         className="p-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg transition cursor-pointer"
                       >
                         <FileText className="w-3.5 h-3.5" />
                       </button>
                       <button
-                        onClick={() => handleOpenDocPreview(job, 'qr_label')}
-                        title="Print QR Tag Sheet"
-                        className="p-1.5 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded-lg transition cursor-pointer"
+                        onClick={() => handleTriggerDocPreview(job, 'qr_label')}
+                        title={features.allowBarcodeQrTags ? "Print QR Tag Sheet" : "Print QR Tag Sheet (Add-on Locked)"}
+                        className={`p-1.5 rounded-lg transition cursor-pointer ${
+                          features.allowBarcodeQrTags
+                            ? "bg-purple-50 hover:bg-purple-100 text-purple-600"
+                            : "bg-slate-100 hover:bg-slate-200 text-slate-400"
+                        }`}
                       >
                         <QrCode className="w-3.5 h-3.5" />
                       </button>
                       <button
-                        onClick={() => handleOpenDocPreview(job, 'barcode_label')}
-                        title="Print Barcode Tag Sheet"
-                        className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition cursor-pointer"
+                        onClick={() => handleTriggerDocPreview(job, 'barcode_label')}
+                        title={features.allowBarcodeQrTags ? "Print Barcode Tag Sheet" : "Print Barcode Tag Sheet (Add-on Locked)"}
+                        className={`p-1.5 rounded-lg transition cursor-pointer ${
+                          features.allowBarcodeQrTags
+                            ? "bg-slate-100 hover:bg-slate-200 text-slate-600"
+                            : "bg-slate-100 hover:bg-slate-200 text-slate-400"
+                        }`}
                       >
                         <Barcode className="w-3.5 h-3.5" />
                       </button>
-                      <button
-                        onClick={() => {
-                          if (confirm(`Are you sure you want to delete Inward Job #${job.id}? This action cannot be undone.`)) {
-                            onDeleteJob?.(job.id);
-                          }
-                        }}
-                        title="Delete Inward Job"
-                        className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg transition cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {canDeleteInward && (
+                        <button
+                          onClick={() => {
+                            if (confirm(`Are you sure you want to delete Inward Job #${job.id}? This action cannot be undone.`)) {
+                              onDeleteJob?.(job.id);
+                            }
+                          }}
+                          title="Delete Inward Job"
+                          className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg transition cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </td>
 
                     <td className="py-3.5 px-4 font-mono text-xs text-slate-700 whitespace-nowrap">
@@ -761,18 +782,20 @@ export default function Inwards({
                     <td className="py-3.5 px-4">
                       <span
                         className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                          job.status === 'Received'
+                          job.status === 'Received' || job.status === 'Device Received'
                             ? 'bg-blue-50 text-blue-700 border border-blue-200'
                             : job.status === 'Work in Progress' || job.status === 'Pending'
                             ? 'bg-amber-50 text-amber-700 border border-amber-200'
                             : job.status === 'Approval Pending'
                             ? 'bg-orange-50 text-orange-700 border border-orange-200'
-                            : job.status === 'Ready' || job.status === 'Complete & Ready' || job.status === 'Completed'
+                            : job.status === 'Ready' || job.status === 'Complete & Ready' || job.status === 'Completed' || job.status === 'Device Ready'
                             ? 'bg-purple-50 text-purple-700 border border-purple-200'
+                            : (job.status as string) === 'Device Not repairable' || (job.status as string) === 'Not Repaired' || job.repairOutcome === 'Not Repaired'
+                            ? 'bg-rose-50 text-rose-700 border border-rose-200 font-extrabold'
                             : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                         }`}
                       >
-                        {job.status === 'Pending' ? 'Work in Progress' : job.status === 'Completed' || job.status === 'Complete & Ready' ? 'Ready' : job.status}
+                        {job.status === 'Received' ? 'Device Received' : job.status === 'Ready' || job.status === 'Completed' || job.status === 'Complete & Ready' ? 'Device Ready' : job.status === 'Pending' ? 'Work in Progress' : job.status}
                       </span>
                     </td>
                   </tr>
@@ -826,10 +849,11 @@ export default function Inwards({
                     onChange={(e) => setJobStatus(e.target.value as JobStatus)}
                     className="bg-slate-900 text-white font-extrabold text-xs rounded-xl px-3 py-1 border-2 border-teal-500 hover:border-teal-400 focus:outline-none focus:ring-2 focus:ring-teal-400/50 cursor-pointer shadow-sm"
                   >
-                    <option value="Received" className="bg-slate-900 text-blue-400 font-bold">Received</option>
+                    <option value="Device Received" className="bg-slate-900 text-blue-400 font-bold">Device Received</option>
                     <option value="Work in Progress" className="bg-slate-900 text-amber-400 font-bold">Work in Progress</option>
                     <option value="Approval Pending" className="bg-slate-900 text-orange-400 font-bold">Approval Pending</option>
-                    <option value="Ready" className="bg-slate-900 text-purple-400 font-bold">Ready</option>
+                    <option value="Device Ready" className="bg-slate-900 text-purple-400 font-bold">Device Ready</option>
+                    <option value="Device Not repairable" className="bg-slate-900 text-rose-400 font-bold">Device Not repairable</option>
                     <option value="Product Out" className="bg-slate-900 text-emerald-400 font-bold">Product Out (Outward)</option>
                   </select>
                 </div>
@@ -1078,10 +1102,11 @@ export default function Inwards({
                           onChange={(e) => setJobStatus(e.target.value as JobStatus)}
                           className="w-full border border-slate-300 bg-white rounded-lg px-2.5 py-1 text-xs font-bold text-slate-800 focus:ring-1 focus:ring-teal-500"
                         >
-                          <option value="Received">Received</option>
+                          <option value="Device Received">Device Received</option>
                           <option value="Work in Progress">Work in Progress</option>
                           <option value="Approval Pending">Approval Pending</option>
-                          <option value="Ready">Ready</option>
+                          <option value="Device Ready">Device Ready</option>
+                          <option value="Device Not repairable">Device Not repairable</option>
                           <option value="Product Out">Product Out (Move to Outward)</option>
                         </select>
                       </div>
@@ -1350,13 +1375,22 @@ export default function Inwards({
                     </button>
                   </>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={handleSaveManagedJob}
-                    className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs rounded-xl font-bold transition shadow-sm cursor-pointer"
-                  >
-                    Save Changes
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleSaveManagedJob(true)}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded-xl font-bold transition shadow-sm cursor-pointer flex items-center gap-1.5"
+                    >
+                      <WhatsAppIcon className="w-3.5 h-3.5" /> Save & Send WhatsApp
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSaveManagedJob(false)}
+                      className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs rounded-xl font-bold transition shadow-sm cursor-pointer"
+                    >
+                      Save Changes
+                    </button>
+                  </>
                 )}
               </div>
             </div>
@@ -1386,7 +1420,11 @@ export default function Inwards({
               </span>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => handleSendWhatsAppNotification(previewJob)}
+                  onClick={() => {
+                    if (previewJob) {
+                      handleTriggerWhatsApp(previewJob);
+                    }
+                  }}
                   className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer transition"
                 >
                   <WhatsAppIcon className="w-3.5 h-3.5" /> WhatsApp
@@ -1631,6 +1669,14 @@ export default function Inwards({
           </div>
         </div>
       )}
+
+      {/* Locked Add-on Feature Modal */}
+      <LockedAddonModal
+        isOpen={!!lockedAddon}
+        onClose={() => setLockedAddon(null)}
+        addonType={lockedAddon || 'whatsapp'}
+        orgName={companyConfig.name}
+      />
 
     </div>
   );

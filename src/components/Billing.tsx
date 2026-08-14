@@ -20,12 +20,31 @@ import {
   MessageSquare,
   QrCode,
   Pencil,
-  AlertTriangle
+  AlertTriangle,
+  Receipt,
+  Building,
+  Tag,
+  Sparkles
 } from 'lucide-react';
-import { Invoice, Client, RepairJob, Product, InvoiceItem, CompanyConfig, sortJobsByLatest } from '../types';
-import { TenantOrg } from './AuthModal';
+import {
+  Invoice,
+  Client,
+  RepairJob,
+  Product,
+  InvoiceItem,
+  CompanyConfig,
+  SystemUser,
+  sortJobsByLatest,
+  AddonPricingConfig,
+  MasterAdminInvoice,
+  DEFAULT_ADDON_PRICING
+} from '../types';
+import { TenantOrg, TenantFeatures, getTenantFeatures } from './AuthModal';
 import { SHOP_TERMS } from '../data';
 import AddClientModal from './AddClientModal';
+import LockedAddonModal, { AddonType } from './LockedAddonModal';
+import MasterAdminBilling from './MasterAdminBilling';
+import MasterAdminPricing from './MasterAdminPricing';
 
 const WhatsAppIcon = ({ className = "w-3.5 h-3.5" }: { className?: string }) => (
   <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -41,7 +60,9 @@ interface BillingProps {
   products: Product[];
   companyConfig: CompanyConfig;
   tenants?: TenantOrg[];
+  tenantFeatures?: TenantFeatures;
   isAdmin?: boolean;
+  currentUser?: SystemUser | null;
   activeTenantId?: string;
   initialJobForInvoice?: RepairJob | null;
   onClearInitialJobForInvoice?: () => void;
@@ -51,6 +72,15 @@ interface BillingProps {
   onUpdateInvoice?: (invoice: Invoice) => void;
   onDeleteInvoice: (id: string) => void;
   onAddClient?: (client: Omit<Client, 'id'>) => Client;
+  // SaaS Master Admin Billing & Pricing Integration Props
+  pricingConfig?: AddonPricingConfig;
+  onSavePricing?: (newConfig: AddonPricingConfig) => void;
+  saasInvoices?: MasterAdminInvoice[];
+  onAddSaasInvoice?: (inv: MasterAdminInvoice) => void;
+  onUpdateSaasInvoice?: (inv: MasterAdminInvoice) => void;
+  onDeleteSaasInvoice?: (id: string) => void;
+  initialSaasBillingTenantId?: string | null;
+  onClearInitialSaasBillingTenantId?: () => void;
 }
 
 export default function Billing({
@@ -60,7 +90,9 @@ export default function Billing({
   products,
   companyConfig,
   tenants = [],
+  tenantFeatures,
   isAdmin = false,
+  currentUser,
   activeTenantId = 'org-admin',
   initialJobForInvoice,
   onClearInitialJobForInvoice,
@@ -69,12 +101,145 @@ export default function Billing({
   onAddInvoice,
   onUpdateInvoice,
   onDeleteInvoice,
-  onAddClient
+  onAddClient,
+  pricingConfig: propPricingConfig,
+  onSavePricing: propOnSavePricing,
+  saasInvoices: propSaasInvoices,
+  onAddSaasInvoice: propOnAddSaasInvoice,
+  onUpdateSaasInvoice: propOnUpdateSaasInvoice,
+  onDeleteSaasInvoice: propOnDeleteSaasInvoice,
+  initialSaasBillingTenantId,
+  onClearInitialSaasBillingTenantId
 }: BillingProps) {
+  const isMasterAdminRole = isAdmin || activeTenantId === 'org-admin' || currentUser?.role === 'Admin';
+  
+  // Section Navigation: 'customer' | 'saas' | 'pricing'
+  const [billingSection, setBillingSection] = useState<'customer' | 'saas' | 'pricing'>(() => {
+    if (initialSaasBillingTenantId) return 'saas';
+    if (activeTenantId === 'org-admin') return 'saas';
+    return 'customer';
+  });
+
+  const [selectedSaasTenantId, setSelectedSaasTenantId] = useState<string | null>(initialSaasBillingTenantId || null);
+
+  // Synchronize when initialSaasBillingTenantId changes from outside navigation
+  React.useEffect(() => {
+    if (initialSaasBillingTenantId) {
+      setBillingSection('saas');
+      setSelectedSaasTenantId(initialSaasBillingTenantId);
+      onClearInitialSaasBillingTenantId?.();
+    }
+  }, [initialSaasBillingTenantId, onClearInitialSaasBillingTenantId]);
+
+  // Local fallback state if not passed from top-level
+  const [localPricingConfig, setLocalPricingConfig] = useState<AddonPricingConfig>(() => {
+    try {
+      const saved = localStorage.getItem('master_admin_addon_pricing_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_ADDON_PRICING;
+  });
+
+  const activePricingConfig = propPricingConfig || localPricingConfig;
+  const handleSavePricingConfig = (newConfig: AddonPricingConfig) => {
+    if (propOnSavePricing) {
+      propOnSavePricing(newConfig);
+    } else {
+      setLocalPricingConfig(newConfig);
+      try {
+        localStorage.setItem('master_admin_addon_pricing_v1', JSON.stringify(newConfig));
+      } catch {}
+    }
+  };
+
+  const [localSaasInvoices, setLocalSaasInvoices] = useState<MasterAdminInvoice[]>(() => {
+    try {
+      const saved = localStorage.getItem('master_admin_saas_invoices_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [
+      {
+        id: 'SAAS-1001',
+        tenantId: 'org-1',
+        tenantName: 'Dev Infotech',
+        tenantCode: 'DEV-10',
+        ownerMobile: '+91 9876543210',
+        ownerName: 'Devendra Patel',
+        date: '2026-07-01',
+        dueDate: '2026-07-08',
+        billingPeriod: 'Monthly',
+        items: [
+          { id: 'it-1', description: 'Core Enterprise ERP Platform License (Monthly)', addonKey: 'basePlatform', qty: 1, rate: 999, amount: 999 },
+          { id: 'it-2', description: 'WhatsApp Automated Cloud Messaging Integration (1 Mo)', addonKey: 'whatsAppMessaging', qty: 1, rate: 499, amount: 499 },
+          { id: 'it-3', description: 'Thermal Barcode & QR Code Tag Generation (1 Mo)', addonKey: 'barcodeQrTags', qty: 1, rate: 299, amount: 299 }
+        ],
+        subtotal: 1797,
+        discount: 0,
+        gstPercent: 18,
+        gstAmount: 323,
+        grandTotal: 2120,
+        paymentStatus: 'Paid',
+        paymentMode: 'UPI',
+        notes: 'Monthly SaaS subscription active.',
+        createdAt: '2026-07-01T10:00:00.000Z'
+      }
+    ];
+  });
+
+  const activeSaasInvoices = propSaasInvoices || localSaasInvoices;
+
+  const handleAddSaasInv = (inv: MasterAdminInvoice) => {
+    if (propOnAddSaasInvoice) {
+      propOnAddSaasInvoice(inv);
+    } else {
+      const next = [inv, ...localSaasInvoices];
+      setLocalSaasInvoices(next);
+      try {
+        localStorage.setItem('master_admin_saas_invoices_v1', JSON.stringify(next));
+      } catch {}
+    }
+  };
+
+  const handleUpdateSaasInv = (inv: MasterAdminInvoice) => {
+    if (propOnUpdateSaasInvoice) {
+      propOnUpdateSaasInvoice(inv);
+    } else {
+      const next = localSaasInvoices.map(i => i.id === inv.id ? inv : i);
+      setLocalSaasInvoices(next);
+      try {
+        localStorage.setItem('master_admin_saas_invoices_v1', JSON.stringify(next));
+      } catch {}
+    }
+  };
+
+  const handleDeleteSaasInv = (id: string) => {
+    if (propOnDeleteSaasInvoice) {
+      propOnDeleteSaasInvoice(id);
+    } else {
+      const next = localSaasInvoices.filter(i => i.id !== id);
+      setLocalSaasInvoices(next);
+      try {
+        localStorage.setItem('master_admin_saas_invoices_v1', JSON.stringify(next));
+      } catch {}
+    }
+  };
+
+  const features = getTenantFeatures(tenantFeatures);
+  const canCreateInvoice = isAdmin || currentUser?.permissions?.billingCreate !== false;
+  const canEditInvoice = isAdmin || currentUser?.permissions?.billingEdit !== false;
   const [searchTerm, setSearchTerm] = useState('');
   const [showCreateInvoice, setShowCreateInvoice] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
+  const [lockedAddon, setLockedAddon] = useState<AddonType | null>(null);
+
+  const handleTriggerWhatsAppInvoice = (inv: Invoice) => {
+    if (!features.allowWhatsAppMessaging) {
+      setLockedAddon('whatsapp');
+      return;
+    }
+    handleSendWhatsAppInvoice(inv);
+  };
 
   React.useEffect(() => {
     if (initialInvoiceIdToView) {
@@ -448,33 +613,89 @@ export default function Billing({
 
   return (
     <div className="space-y-6">
-      {/* Header action panel */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-            Billing & Invoices <span className="text-xs font-semibold bg-teal-50 text-teal-600 px-2 py-0.5 rounded-full">{filteredInvoices.length} Registered Bills</span>
-          </h1>
-          <p className="text-xs text-slate-400 mt-1">Generate official GST-compliant tax invoices, track drafts, and view sales ledgers.</p>
-        </div>
-        <div className="flex items-center gap-2">
+      {/* Top Sub-Navigation Tabs for Master / Organization Admins */}
+      {isMasterAdminRole && (
+        <div className="flex flex-wrap bg-slate-200/80 p-1.5 rounded-2xl gap-2 text-xs font-bold w-fit shadow-inner">
           <button
             type="button"
-            onClick={() => setShowQuickAddClient(true)}
-            className="flex items-center gap-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 text-xs font-semibold px-3 py-2.5 rounded-xl transition cursor-pointer"
+            onClick={() => setBillingSection('customer')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl transition cursor-pointer ${
+              billingSection === 'customer'
+                ? 'bg-white text-slate-900 shadow-xs font-extrabold'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
           >
-            <Plus className="w-4 h-4" />
-            Add Client
+            <Receipt className="w-4 h-4 text-teal-600" />
+            <span>Customer Repair & Retail Invoices</span>
+            <span className="bg-slate-100 text-slate-700 text-[10px] px-2 py-0.5 rounded-full border border-slate-200">
+              {filteredInvoices.length} Bills
+            </span>
           </button>
+
           <button
-            onClick={handleOpenCreateInvoice}
-            id="create-bill-btn"
-            className="flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition shadow-sm hover:shadow-md cursor-pointer"
+            type="button"
+            onClick={() => setBillingSection('saas')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl transition cursor-pointer ${
+              billingSection === 'saas'
+                ? 'bg-white text-slate-900 shadow-xs font-extrabold'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
           >
-            <Plus className="w-4 h-4" />
-            Create New Bill
+            <Building className="w-4 h-4 text-teal-600" />
+            <span>SaaS Organization Subscriptions</span>
+            <span className="bg-emerald-50 text-emerald-700 text-[10px] px-2 py-0.5 rounded-full border border-emerald-200">
+              {activeSaasInvoices.length} SaaS Invoices
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setBillingSection('pricing')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl transition cursor-pointer ${
+              billingSection === 'pricing'
+                ? 'bg-white text-slate-900 shadow-xs font-extrabold'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Tag className="w-4 h-4 text-teal-600" />
+            <span>Add-on Price Set Matrix</span>
+            <span className="bg-teal-50 text-teal-700 text-[10px] px-2 py-0.5 rounded-full border border-teal-200">
+              Rates Matrix
+            </span>
           </button>
         </div>
-      </div>
+      )}
+
+      {/* 1. Customer Repair & Retail Invoices View */}
+      {billingSection === 'customer' && (
+        <>
+          {/* Header action panel */}
+          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h1 className="text-xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
+                Customer Invoices & Billing <span className="text-xs font-semibold bg-teal-50 text-teal-600 px-2 py-0.5 rounded-full">{filteredInvoices.length} Registered Bills</span>
+              </h1>
+              <p className="text-xs text-slate-400 mt-1">Generate official GST-compliant tax invoices for repair jobs and retail parts sales.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowQuickAddClient(true)}
+                className="flex items-center gap-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 text-xs font-semibold px-3 py-2.5 rounded-xl transition cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                Add Client
+              </button>
+              <button
+                onClick={handleOpenCreateInvoice}
+                id="create-bill-btn"
+                className="flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition shadow-sm hover:shadow-md cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                Create New Bill
+              </button>
+            </div>
+          </div>
 
       {/* Main Billing Table */}
       {!showCreateInvoice ? (
@@ -514,9 +735,13 @@ export default function Billing({
                     <tr key={inv.id} className="hover:bg-slate-50/60 transition">
                       <td className="py-3.5 px-6 flex items-center gap-2">
                         <button
-                          onClick={() => handleSendWhatsAppInvoice(inv)}
-                          title="Send Invoice on WhatsApp"
-                          className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 rounded-lg transition cursor-pointer"
+                          onClick={() => handleTriggerWhatsAppInvoice(inv)}
+                          title={features.allowWhatsAppMessaging ? "Send Invoice on WhatsApp" : "WhatsApp Messaging (Add-on Locked)"}
+                          className={`p-1.5 rounded-lg transition cursor-pointer ${
+                            features.allowWhatsAppMessaging
+                              ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-600"
+                              : "bg-slate-100 hover:bg-slate-200 text-slate-400"
+                          }`}
                         >
                           <WhatsAppIcon className="w-3.5 h-3.5" />
                         </button>
@@ -1101,7 +1326,11 @@ export default function Billing({
               </span>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => handleSendWhatsAppInvoice(previewInvoice)}
+                  onClick={() => {
+                    if (previewInvoice) {
+                      handleTriggerWhatsAppInvoice(previewInvoice);
+                    }
+                  }}
                   className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer transition shadow-xs"
                 >
                   <WhatsAppIcon className="w-3.5 h-3.5" /> WhatsApp Share (PDF)
@@ -1290,6 +1519,30 @@ export default function Billing({
           </div>
         </div>
       )}
+    </>
+  )}
+
+  {/* 2. SaaS Organization Subscription Invoices View */}
+  {billingSection === 'saas' && (
+    <MasterAdminBilling
+      tenants={tenants}
+      pricingConfig={activePricingConfig}
+      invoices={activeSaasInvoices}
+      onAddInvoice={handleAddSaasInv}
+      onUpdateInvoice={handleUpdateSaasInv}
+      onDeleteInvoice={handleDeleteSaasInv}
+      preSelectedTenantId={selectedSaasTenantId}
+      onClearPreSelectedTenant={() => setSelectedSaasTenantId(null)}
+    />
+  )}
+
+  {/* 3. Add-on Price Set Matrix View */}
+  {billingSection === 'pricing' && (
+    <MasterAdminPricing
+      pricingConfig={activePricingConfig}
+      onSavePricing={handleSavePricingConfig}
+    />
+  )}
 
       {/* Reusable Unified Add Client Modal */}
       <AddClientModal
@@ -1304,6 +1557,14 @@ export default function Billing({
             return created;
           }
         }}
+      />
+
+      {/* Locked Add-on Feature Modal */}
+      <LockedAddonModal
+        isOpen={!!lockedAddon}
+        onClose={() => setLockedAddon(null)}
+        addonType={lockedAddon || 'whatsapp'}
+        orgName={companyConfig.name}
       />
 
     </div>

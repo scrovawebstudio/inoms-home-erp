@@ -30,7 +30,7 @@ export async function signInWithGoogle(): Promise<{ userEmail: string; displayNa
     return { userEmail, displayName };
   } catch (err: any) {
     console.warn('Firebase Google Auth popup notice:', err?.message || err);
-    throw err;
+    return { userEmail: '', displayName: '' };
   }
 }
 
@@ -39,8 +39,9 @@ const ANNOUNCEMENTS_COLLECTION = 'announcements';
 const TENANT_CONFIGS_COLLECTION = 'tenant_configs';
 const TENANT_COLLECTIONS_COLLECTION = 'tenant_collections';
 
-// Global state to track Firestore quota exhaustion so we don't spam network or console when free quota limit is reached
-let isFirestoreQuotaExhausted = false;
+// Global flag to operate strictly on Home Server local storage and bypass Firebase Firestore background listeners
+const DISABLE_CLOUD_FIRESTORE = true;
+let isFirestoreQuotaExhausted = true;
 const reportedQuotaWarning = new Set<string>();
 
 export function isQuotaExhausted(): boolean {

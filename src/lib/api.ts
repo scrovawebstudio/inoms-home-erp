@@ -75,6 +75,46 @@ export async function registerOrgViaApi(name: string, ownerMobile: string, owner
   }
 }
 
+export async function registerHomeServerSession(
+  tenantId: string,
+  sessionUserId: string,
+  sessionId: string,
+  deviceInfo?: string
+): Promise<boolean> {
+  try {
+    const res = await fetch('/api/auth/register-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenantId, sessionUserId, sessionId, deviceInfo })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return !!data.success;
+    }
+  } catch (err) {
+    console.warn('API register-session call error:', err);
+  }
+  return false;
+}
+
+export async function checkHomeServerSession(
+  tenantId: string,
+  sessionUserId: string
+): Promise<{ activeSessionId: string | null; deviceInfo?: string } | null> {
+  try {
+    const res = await fetch(`/api/auth/check-session?tenantId=${encodeURIComponent(tenantId)}&sessionUserId=${encodeURIComponent(sessionUserId)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success) {
+        return { activeSessionId: data.activeSessionId || null, deviceInfo: data.deviceInfo };
+      }
+    }
+  } catch (err) {
+    console.warn('API check-session call error:', err);
+  }
+  return null;
+}
+
 // Home Server Database API Client Helpers
 export async function getHomeServerDbKey<T = any>(key: string): Promise<T | null> {
   try {
