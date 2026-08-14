@@ -3044,26 +3044,26 @@ export default function App() {
       <main className="flex-1 flex flex-col overflow-hidden h-full">
         {/* Top Header Bar */}
         <header 
-          className="h-16 border-b border-slate-100 flex items-center justify-between px-4 sm:px-6 shrink-0 z-30 transition-colors duration-200"
+          className="h-16 border-b border-slate-100 flex items-center justify-between px-3 sm:px-6 shrink-0 z-30 transition-colors duration-200 gap-2"
           style={{ backgroundColor: activeThemePalette.topHeaderBg }}
         >
           
           {/* Company Title & Org Selector */}
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
             {/* Mobile Hamburger Toggle */}
             <button
               type="button"
               onClick={() => setIsMobileMenuOpen(true)}
-              className="lg:hidden p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition cursor-pointer"
+              className="lg:hidden p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition cursor-pointer shrink-0"
               title="Open Navigation Menu"
             >
               <Menu className="w-5 h-5 text-teal-700" />
             </button>
 
             {/* Single Consolidated Organisation Info Badge */}
-            <div className="flex items-center gap-2.5 bg-slate-50/80 px-3 py-1.5 rounded-xl border border-slate-200/80">
+            <div className="flex items-center gap-2 bg-slate-50/80 px-2.5 py-1.5 rounded-xl border border-slate-200/80 min-w-0 max-w-[175px] xs:max-w-[220px] sm:max-w-none">
               {/* Organisation Logo / Badge */}
-              <div className="w-7 h-7 rounded-lg bg-teal-600 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-2xs">
+              <div className="w-7 h-7 rounded-lg bg-teal-600 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-2xs overflow-hidden">
                 {companyConfig.logoUrl ? (
                   <img src={companyConfig.logoUrl} alt="Logo" className="w-full h-full object-cover rounded-lg" />
                 ) : (
@@ -3072,18 +3072,18 @@ export default function App() {
               </div>
 
               {/* Organisation Details: Name, Number, and Role */}
-              <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 text-left">
-                <span className="text-xs font-bold text-slate-800 leading-none">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-2 text-left min-w-0">
+                <span className="text-xs font-bold text-slate-800 leading-none truncate max-w-[110px] sm:max-w-[180px] md:max-w-none">
                   {activeTenant?.name || activeCompany}
                 </span>
                 
                 {activeTenant?.ownerMobile && (
-                  <span className="text-[10px] font-mono font-bold bg-teal-50 text-teal-700 px-1.5 py-0.5 rounded border border-teal-200/80">
+                  <span className="text-[10px] font-mono font-bold bg-teal-50 text-teal-700 px-1.5 py-0.5 rounded border border-teal-200/80 hidden sm:inline-block">
                     {activeTenant.ownerMobile}
                   </span>
                 )}
 
-                <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
+                <span className="text-[9px] sm:text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 sm:px-2 py-0.5 rounded-full border border-slate-200 hidden md:inline-block">
                   Role: {currentUser?.role || (activeTenant?.id === 'org-admin' || activeTenant?.code === 'ADMIN-00' ? 'System Admin' : 'Organization Owner')}
                 </span>
               </div>
@@ -3091,7 +3091,7 @@ export default function App() {
           </div>
 
           {/* Sync icons / Notifications / Lock App button */}
-          <div className="flex items-center gap-3 text-xs font-semibold text-slate-600">
+          <div className="flex items-center gap-1.5 sm:gap-3 text-xs font-semibold text-slate-600 shrink-0">
             {/* Real-time sync notifier */}
             <button
               onClick={handleSyncData}
@@ -3103,7 +3103,7 @@ export default function App() {
                   ? 'Synchronizing changes with Cloud Firestore & backing up local JSON files...'
                   : 'Data synchronized in real-time with Cloud Firestore & Local Storage. Click to trigger manual sync.'
               }
-              className={`px-2.5 py-1.5 rounded-xl border transition-all cursor-pointer flex items-center gap-1.5 font-bold text-xs ${
+              className={`px-2 sm:px-2.5 py-1.5 rounded-xl border transition-all cursor-pointer flex items-center gap-1 sm:gap-1.5 font-bold text-xs ${
                 !isOnline
                   ? 'bg-amber-50/90 border-amber-200/90 text-amber-800 hover:bg-amber-100 shadow-2xs'
                   : isSyncing
@@ -3128,7 +3128,7 @@ export default function App() {
                     Syncing...
                   </span>
                   <span className="text-[10px] font-black uppercase tracking-wide sm:hidden text-teal-800">
-                    Syncing
+                    Sync
                   </span>
                 </>
               ) : (
@@ -3138,7 +3138,7 @@ export default function App() {
                     Synced
                   </span>
                   <span className="text-[10px] font-black uppercase tracking-wide sm:hidden text-emerald-800">
-                    Synced
+                    OK
                   </span>
                 </>
               )}
@@ -3148,7 +3148,7 @@ export default function App() {
             <div className="relative">
               <button
                 onClick={() => setShowNotifications(!showNotifications)}
-                className="p-2 hover:bg-slate-50 rounded-xl border border-slate-100 text-slate-500 cursor-pointer relative"
+                className="p-1.5 sm:p-2 hover:bg-slate-50 rounded-xl border border-slate-100 text-slate-500 cursor-pointer relative"
               >
                 <Bell className="w-4 h-4" />
                 <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
@@ -3156,7 +3156,7 @@ export default function App() {
               </button>
 
               {showNotifications && (
-                <div className="absolute right-0 top-10 bg-white border border-slate-200/90 rounded-2xl shadow-2xl w-80 p-4 space-y-3 z-50 animate-in fade-in zoom-in-95 duration-150">
+                <div className="absolute right-0 top-11 bg-white border border-slate-200/90 rounded-2xl shadow-2xl w-[calc(100vw-32px)] sm:w-80 max-w-sm p-4 space-y-3 z-50 animate-in fade-in zoom-in-95 duration-150">
                   <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                     <h4 className="font-bold text-slate-800 uppercase text-[10px] tracking-wider flex items-center gap-1.5">
                       <Bell className="w-3.5 h-3.5 text-teal-600" /> Notifications & Broadcasts
@@ -3212,9 +3212,10 @@ export default function App() {
             <button
               onClick={handleLockSession}
               title="Lock Session / Switch Organization"
-              className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 rounded-xl cursor-pointer transition flex items-center gap-1 font-bold text-xs shadow-2xs"
+              className="px-2.5 sm:px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 rounded-xl cursor-pointer transition flex items-center gap-1 font-bold text-xs shadow-2xs"
             >
-              <LogOut className="w-3.5 h-3.5" /> Lock App
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden xs:inline">Lock</span>
             </button>
           </div>
 
@@ -3302,7 +3303,7 @@ export default function App() {
 
         {/* 3. Screen stage area */}
         <div 
-          className="flex-1 overflow-y-auto p-6 transition-colors duration-200" 
+          className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 pb-20 sm:pb-24 lg:pb-6 transition-colors duration-200" 
           id="applet-workstage"
           style={{ backgroundColor: activeThemePalette.appBg }}
         >
@@ -3582,6 +3583,91 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {/* Mobile Native Bottom Navigation Bar */}
+      <div 
+        id="mobile-bottom-nav"
+        className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 px-2 py-1.5 flex items-center justify-around shadow-lg lg:hidden"
+      >
+        <button
+          type="button"
+          onClick={() => setActiveTab(activeTenant.id === 'org-admin' ? 'master_admin' : 'dashboard')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all cursor-pointer ${
+            activeTab === 'dashboard' || activeTab === 'master_admin'
+              ? 'text-teal-700 font-extrabold bg-teal-50/70'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <LayoutDashboard className="w-5 h-5 mb-0.5" />
+          <span className="text-[10px] leading-tight">Overview</span>
+        </button>
+
+        {activeTenant.id !== 'org-admin' && (
+          <>
+            <button
+              type="button"
+              onClick={() => setActiveTab('inwards')}
+              className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all cursor-pointer relative ${
+                activeTab === 'inwards'
+                  ? 'text-teal-700 font-extrabold bg-teal-50/70'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <div className="relative">
+                <Briefcase className="w-5 h-5 mb-0.5" />
+                {jobs.filter(j => j.status === 'Received' || j.status === 'Under Diagnosis').length > 0 && (
+                  <span className="absolute -top-1 -right-2 bg-rose-500 text-white text-[9px] font-black w-4 h-4 rounded-full flex items-center justify-center shadow-xs">
+                    {jobs.filter(j => j.status === 'Received' || j.status === 'Under Diagnosis').length}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] leading-tight">Inwards</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('live_queue')}
+              className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all cursor-pointer relative ${
+                activeTab === 'live_queue'
+                  ? 'text-teal-700 font-extrabold bg-teal-50/70'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <div className="relative">
+                <Kanban className="w-5 h-5 mb-0.5" />
+                {jobs.filter(j => j.status === 'Under Repair' || j.status === 'Parts Required' || j.status === 'Ready for Delivery').length > 0 && (
+                  <span className="absolute -top-1 -right-2 bg-teal-600 text-white text-[9px] font-black w-4 h-4 rounded-full flex items-center justify-center shadow-xs">
+                    {jobs.filter(j => j.status === 'Under Repair' || j.status === 'Parts Required' || j.status === 'Ready for Delivery').length}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] leading-tight">Queue</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('outwards')}
+              className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all cursor-pointer ${
+                activeTab === 'outwards'
+                  ? 'text-teal-700 font-extrabold bg-teal-50/70'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Truck className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] leading-tight">Outwards</span>
+            </button>
+          </>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setIsMobileMenuOpen(true)}
+          className="flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-xl transition-all cursor-pointer text-slate-500 hover:text-slate-800"
+        >
+          <Menu className="w-5 h-5 mb-0.5 text-teal-600" />
+          <span className="text-[10px] leading-tight font-medium">Menu</span>
+        </button>
+      </div>
 
       {/* Security & Authenticator Modal */}
       <AuthModal

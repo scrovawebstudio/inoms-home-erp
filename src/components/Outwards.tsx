@@ -259,8 +259,150 @@ export default function Outwards({
           </div>
         </div>
 
-        {/* Jobs Table */}
-        <div className="overflow-x-auto">
+        {/* Mobile Cards List View */}
+        <div className="md:hidden divide-y divide-slate-100">
+          {filteredJobs.length > 0 ? (
+            filteredJobs.map((job) => {
+              const existingInv = (invoices || []).find(inv => inv.linkedJobId === job.id);
+              return (
+                <div key={job.id} className="p-4 space-y-3 bg-white hover:bg-slate-50/50 transition">
+                  {/* Top: Job ID, Date, Amount */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-black text-xs text-slate-800 bg-slate-100 px-2 py-0.5 rounded-lg border border-slate-200">
+                          #{job.id}
+                        </span>
+                        <span className="text-[11px] font-mono text-slate-500 flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-emerald-600 shrink-0" />
+                          {formatDisplayDateTime(job.outwardedDate || job.createdAt || job.date).date}
+                        </span>
+                      </div>
+                      <div className="font-bold text-slate-900 text-sm mt-1 flex items-center gap-1.5 flex-wrap">
+                        <span>{job.clientName}</span>
+                        {job.clientMobile && (
+                          <a
+                            href={`tel:${job.clientMobile}`}
+                            className="text-[10px] font-mono text-teal-700 font-bold bg-teal-50 px-1.5 py-0.5 rounded border border-teal-200"
+                          >
+                            {job.clientMobile}
+                          </a>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="text-right">
+                      <div className="font-mono font-black text-base text-emerald-600">
+                        ₹{getEffectiveBillAmount(job).toLocaleString('en-IN')}
+                      </div>
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded text-[9px] font-black ${
+                          job.paymentStatus === 'Unpaid'
+                            ? 'bg-rose-100 text-rose-700 border border-rose-200'
+                            : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                        }`}
+                      >
+                        {job.paymentStatus === 'Unpaid' ? '✕ UNPAID' : `✓ PAID ${job.advancePaymentMode ? `(${job.advancePaymentMode})` : ''}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Device Specs & Outcome */}
+                  <div className="bg-slate-50/80 p-2.5 rounded-xl border border-slate-100 text-xs space-y-1">
+                    <div className="flex items-center justify-between text-slate-800 font-semibold">
+                      <span className="truncate">{job.productName || job.equipment || 'Device'}</span>
+                      {job.repairOutcome === 'Not Repaired' ? (
+                        <span className="text-[9px] font-black bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded border border-rose-200 shrink-0">
+                          ✕ NOT REPAIRED
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-bold bg-teal-50 text-teal-700 px-1.5 py-0.5 rounded border border-teal-200 shrink-0">
+                          ✓ REPAIRED
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
+                      {job.serialNo && <span>S/N: <span className="font-mono text-slate-700">{job.serialNo}</span></span>}
+                      {job.deliveryType && <span>Delivery: <span className="font-medium text-slate-700">{job.deliveryType}</span></span>}
+                    </div>
+                    {job.courierName && (
+                      <div className="text-[10px] text-teal-700 font-mono">
+                        Courier: {job.courierName} {job.trackingNo ? `(TRK: ${job.trackingNo})` : ''}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Action Buttons Row */}
+                  <div className="flex items-center justify-between gap-1.5 pt-1">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <button
+                        onClick={() => handleTriggerWhatsApp(job)}
+                        title="Send WhatsApp Update"
+                        className={`p-2 rounded-xl transition cursor-pointer ${
+                          features.allowWhatsAppMessaging
+                            ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-600"
+                            : "bg-slate-100 text-slate-400"
+                        }`}
+                      >
+                        <WhatsAppIcon className="w-4 h-4" />
+                      </button>
+
+                      <button
+                        onClick={() => handleTriggerInvoice(job)}
+                        title={existingInv ? `Bill #${existingInv.id}` : "Generate Invoice"}
+                        className={`p-2 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-bold ${
+                          existingInv
+                            ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200"
+                            : "bg-purple-50 hover:bg-purple-100 text-purple-600"
+                        }`}
+                      >
+                        <Receipt className="w-4 h-4" />
+                        {existingInv && <span className="text-[10px]">#{existingInv.id}</span>}
+                      </button>
+
+                      <button
+                        onClick={() => setPreviewJob(job)}
+                        title="View Outward / Inward Slip"
+                        className="p-2 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-xl transition cursor-pointer"
+                      >
+                        <FileText className="w-4 h-4" />
+                      </button>
+
+                      {onDeleteJob && (
+                        <button
+                          onClick={() => {
+                            if (confirm(`Are you sure you want to delete Outward Job #${job.id}? This action cannot be undone.`)) {
+                              onDeleteJob?.(job.id);
+                            }
+                          }}
+                          title="Delete Outward Job"
+                          className="p-2 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl transition cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+
+                    <button
+                      onClick={() => handleOpenEditModal(job)}
+                      className="flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition shadow-xs cursor-pointer shrink-0"
+                    >
+                      <Edit className="w-3.5 h-3.5" />
+                      <span>Edit</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div className="p-8 text-center text-slate-400 italic text-xs">
+              No outward or complete & ready jobs found matching search criteria.
+            </div>
+          )}
+        </div>
+
+        {/* Desktop Jobs Table */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-500">

@@ -56,6 +56,7 @@ export default function LiveRepairQueue({
   const [selectedTechFilter, setSelectedTechFilter] = useState('all');
   const [selectedPriorityFilter, setSelectedPriorityFilter] = useState('all');
   const [movingJobId, setMovingJobId] = useState<string | null>(null);
+  const [mobileTab, setMobileTab] = useState<'all' | 'diagnosis' | 'in_progress' | 'ready' | 'delivered'>('all');
 
   // Outward Delivery Modal State
   const [outwardModalJob, setOutwardModalJob] = useState<RepairJob | null>(null);
@@ -288,11 +289,76 @@ export default function LiveRepairQueue({
         )}
       </div>
 
+      {/* Mobile Stage Selector Tabs (Phone only) */}
+      <div className="flex md:hidden items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+        <button
+          type="button"
+          onClick={() => setMobileTab('all')}
+          className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer ${
+            mobileTab === 'all'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          All ({diagnosisJobs.length + inProgressJobs.length + readyJobs.length + deliveredJobs.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobileTab('diagnosis')}
+          className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer flex items-center gap-1.5 ${
+            mobileTab === 'diagnosis'
+              ? 'bg-amber-600 text-white shadow-xs'
+              : 'bg-white border border-slate-200 text-amber-700 hover:bg-amber-50'
+          }`}
+        >
+          <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+          Diagnosis ({diagnosisJobs.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobileTab('in_progress')}
+          className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer flex items-center gap-1.5 ${
+            mobileTab === 'in_progress'
+              ? 'bg-teal-600 text-white shadow-xs'
+              : 'bg-white border border-slate-200 text-teal-700 hover:bg-teal-50'
+          }`}
+        >
+          <span className="w-2 h-2 rounded-full bg-teal-400"></span>
+          Workbench ({inProgressJobs.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobileTab('ready')}
+          className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer flex items-center gap-1.5 ${
+            mobileTab === 'ready'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'bg-white border border-slate-200 text-emerald-700 hover:bg-emerald-50'
+          }`}
+        >
+          <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+          Ready ({readyJobs.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobileTab('delivered')}
+          className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer flex items-center gap-1.5 ${
+            mobileTab === 'delivered'
+              ? 'bg-purple-600 text-white shadow-xs'
+              : 'bg-white border border-slate-200 text-purple-700 hover:bg-purple-50'
+          }`}
+        >
+          <span className="w-2 h-2 rounded-full bg-purple-400"></span>
+          Delivered ({deliveredJobs.length})
+        </button>
+      </div>
+
       {/* Kanban Columns (4 Stages) */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5 items-start">
         
         {/* COLUMN 1: Diagnosis & Inspection */}
-        <div className="bg-slate-100/70 p-3.5 rounded-2xl border border-slate-200/90 space-y-3 min-h-[500px]">
+        <div className={`bg-slate-100/70 p-3.5 rounded-2xl border border-slate-200/90 space-y-3 min-h-[300px] md:min-h-[500px] ${
+          mobileTab !== 'all' && mobileTab !== 'diagnosis' ? 'hidden md:block' : ''
+        }`}>
           <div className="flex items-center justify-between px-1 pb-1">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
@@ -326,7 +392,9 @@ export default function LiveRepairQueue({
         </div>
 
         {/* COLUMN 2: In Progress / Workbench */}
-        <div className="bg-slate-100/70 p-3.5 rounded-2xl border border-slate-200/90 space-y-3 min-h-[500px]">
+        <div className={`bg-slate-100/70 p-3.5 rounded-2xl border border-slate-200/90 space-y-3 min-h-[300px] md:min-h-[500px] ${
+          mobileTab !== 'all' && mobileTab !== 'in_progress' ? 'hidden md:block' : ''
+        }`}>
           <div className="flex items-center justify-between px-1 pb-1">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-teal-500"></span>
@@ -361,7 +429,9 @@ export default function LiveRepairQueue({
         </div>
 
         {/* COLUMN 3: Ready for Pickup / Tested OK */}
-        <div className="bg-slate-100/70 p-3.5 rounded-2xl border border-slate-200/90 space-y-3 min-h-[500px]">
+        <div className={`bg-slate-100/70 p-3.5 rounded-2xl border border-slate-200/90 space-y-3 min-h-[300px] md:min-h-[500px] ${
+          mobileTab !== 'all' && mobileTab !== 'ready' ? 'hidden md:block' : ''
+        }`}>
           <div className="flex items-center justify-between px-1 pb-1">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
@@ -396,7 +466,9 @@ export default function LiveRepairQueue({
         </div>
 
         {/* COLUMN 4: Outwarded / Delivered */}
-        <div className="bg-slate-100/70 p-3.5 rounded-2xl border border-slate-200/90 space-y-3 min-h-[500px]">
+        <div className={`bg-slate-100/70 p-3.5 rounded-2xl border border-slate-200/90 space-y-3 min-h-[300px] md:min-h-[500px] ${
+          mobileTab !== 'all' && mobileTab !== 'delivered' ? 'hidden md:block' : ''
+        }`}>
           <div className="flex items-center justify-between px-1 pb-1">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-purple-500"></span>
