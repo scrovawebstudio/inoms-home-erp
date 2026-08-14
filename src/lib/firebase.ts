@@ -40,8 +40,8 @@ const TENANT_CONFIGS_COLLECTION = 'tenant_configs';
 const TENANT_COLLECTIONS_COLLECTION = 'tenant_collections';
 
 // Global flag to operate strictly on Home Server local storage and bypass Firebase Firestore background listeners
-const DISABLE_CLOUD_FIRESTORE = true;
-let isFirestoreQuotaExhausted = true;
+const DISABLE_CLOUD_FIRESTORE = false;
+let isFirestoreQuotaExhausted = false;
 const reportedQuotaWarning = new Set<string>();
 
 export function isQuotaExhausted(): boolean {
@@ -71,6 +71,15 @@ export function getPendingQueue(): PendingSyncItem[] {
   } catch (e) {
     return [];
   }
+}
+
+export function clearPendingQueue(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(PENDING_QUEUE_KEY);
+    isFirestoreQuotaExhausted = false;
+    notifyQueueChanged();
+  } catch (e) {}
 }
 
 export function getPendingQueueCount(): number {

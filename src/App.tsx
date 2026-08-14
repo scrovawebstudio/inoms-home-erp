@@ -79,6 +79,7 @@ import {
   subscribeUserSession,
   isQuotaExhausted,
   getPendingQueueCount,
+  clearPendingQueue,
   retryPendingCloudSync
 } from './lib/firebase';
 
@@ -838,6 +839,7 @@ export default function App() {
   const [pendingQueueCount, setPendingQueueCount] = useState<number>(() => getPendingQueueCount());
   const [isQuotaExhaustedState, setIsQuotaExhaustedState] = useState<boolean>(() => isQuotaExhausted());
   const [isSyncRetrying, setIsSyncRetrying] = useState<boolean>(false);
+  const [isOfflineBannerDismissed, setIsOfflineBannerDismissed] = useState<boolean>(false);
 
   React.useEffect(() => {
     const handleQueueChange = () => {
@@ -3140,8 +3142,8 @@ export default function App() {
 
         </header>
 
-        {/* Offline Local-First / Network Connection Banner */}
-        {(isQuotaExhaustedState || pendingQueueCount > 0 || !navigator.onLine) && (
+        {/* Offline / Network Disconnection Banner */}
+        {!isOfflineBannerDismissed && !navigator.onLine && (
           <div className="bg-amber-500 text-slate-950 px-4 py-2.5 text-xs font-semibold border-b border-amber-600 flex flex-wrap items-center justify-between gap-3 shadow-md shrink-0">
             <div className="flex items-center gap-2.5">
               <div className="p-1.5 bg-amber-950/20 rounded-lg text-slate-950 font-bold shrink-0">
@@ -3149,13 +3151,13 @@ export default function App() {
               </div>
               <div>
                 <p className="font-bold text-slate-950 flex items-center gap-2">
-                  <span>🌐 Offline Mode Active — Disconnected from Home Server</span>
+                  <span>🌐 Offline Mode Active — Disconnected from Network</span>
                   <span className="bg-amber-950/20 text-slate-950 px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider">
                     Saved Locally
                   </span>
                 </p>
                 <p className="text-[11px] text-slate-900 opacity-90 mt-0.5">
-                  Your machine is currently offline or unable to connect to the Home Server. {pendingQueueCount > 0 ? `${pendingQueueCount} pending update(s) saved locally, ready to auto-sync when network is restored.` : 'All work is safely stored locally and will sync automatically when reconnected.'}
+                  Your device is currently offline. All changes are being recorded in local storage and will sync to your Home Server once reconnected.
                 </p>
               </div>
             </div>
@@ -3165,17 +3167,20 @@ export default function App() {
                 type="button"
                 onClick={async () => {
                   setIsSyncRetrying(true);
-                  const res = await retryPendingCloudSync();
-                  alert(res.message);
-                  setPendingQueueCount(getPendingQueueCount());
-                  setIsQuotaExhaustedState(isQuotaExhausted());
-                  setIsSyncRetrying(false);
+                  try {
+                    await handleSyncData();
+                    triggerSaveNotification('✓ Connection checked & synced');
+                  } catch (err) {
+                    console.error('Manual sync retry failed:', err);
+                  } finally {
+                    setIsSyncRetrying(false);
+                  }
                 }}
                 disabled={isSyncRetrying}
                 className="px-3 py-1.5 bg-slate-950 text-amber-300 hover:bg-slate-900 rounded-lg font-bold text-xs transition flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncRetrying ? 'animate-spin' : ''}`} />
-                <span>{isSyncRetrying ? 'Connecting...' : 'Retry Home Server Sync'}</span>
+                <span>{isSyncRetrying ? 'Checking...' : 'Check Connection'}</span>
               </button>
 
               {(userRole === 'Admin' || userRole === 'Master Admin' || activeTenant?.id === 'org-admin') && (
@@ -3201,9 +3206,18 @@ export default function App() {
                   className="px-3 py-1.5 bg-white/95 text-slate-900 hover:bg-white rounded-lg font-bold text-xs transition flex items-center gap-1.5 cursor-pointer shadow-xs"
                 >
                   <BookOpen className="w-3.5 h-3.5 text-teal-700" />
-                  <span>Download Local JSON Backup</span>
+                  <span>Download JSON</span>
                 </button>
               )}
+
+              <button
+                type="button"
+                onClick={() => setIsOfflineBannerDismissed(true)}
+                className="p-1.5 text-slate-950/70 hover:text-slate-950 hover:bg-amber-600/40 rounded-lg transition cursor-pointer"
+                title="Dismiss Banner"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           </div>
         )}
