@@ -576,6 +576,10 @@ export default function AuthModal({
   const handleFinalizeRegistration = async () => {
     if (!regOrgName || !regOrgMobile) return;
 
+    const now = new Date();
+    const startDate = now.toISOString().split('T')[0];
+    const end7d = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
     const apiRes = await registerOrgViaApi(regOrgName, regOrgMobile, regOrgOwner, regOrgPin);
     const newOrg: TenantOrg = (apiRes.success && apiRes.org) ? apiRes.org : {
       id: `org-${Date.now()}`,
@@ -585,8 +589,13 @@ export default function AuthModal({
       ownerMobile: regOrgMobile.trim(),
       ownerName: regOrgOwner.trim() || 'Owner',
       status: 'active',
-      createdAt: new Date().toISOString().split('T')[0],
-      secretKey: regSecretKey
+      createdAt: startDate,
+      secretKey: regSecretKey,
+      subscriptionPlan: 'trial',
+      subscriptionStartDate: startDate,
+      subscriptionEndDate: end7d,
+      trialDays: 7,
+      isTrial: true
     };
 
     onRegisterOrg(newOrg);

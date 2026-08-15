@@ -203,56 +203,135 @@ export default function App() {
 
   // Helper to accurately calculate remaining subscription time for the active organization
   const getSubscriptionTimeLeft = (tenant: TenantOrg) => {
-    if (tenant.id === 'org-admin') {
-      return { text: 'Lifetime', type: 'lifetime', isUrgent: false, isExpired: false, days: 9999 };
+    if (tenant.id === 'org-admin' || tenant.code?.toUpperCase() === 'ADMIN-00' || tenant.ownerMobile?.includes('8149862034') || tenant.subscriptionPlan === 'lifetime') {
+      return {
+        text: 'Lifetime',
+        planLabel: 'Lifetime Unlimited Access',
+        validUntil: 'Never Expires (Permanent)',
+        type: 'lifetime',
+        isUrgent: false,
+        isExpired: false,
+        days: 9999
+      };
     }
 
-    if (tenant.subscriptionPlan === 'lifetime') {
-      return { text: 'Lifetime', type: 'lifetime', isUrgent: false, isExpired: false, days: 9999 };
-    }
+    const plan = (tenant.subscriptionPlan as string || '').toLowerCase();
+    const isTrial = Boolean(tenant.isTrial || plan === 'trial');
+    let planLabel = isTrial ? '7-Day Free Trial' : 'Monthly Subscription';
+    if (plan === 'quarterly') planLabel = 'Quarterly Subscription';
+    else if (plan === 'annual') planLabel = 'Annual Subscription';
+    else if (plan === 'lifetime') planLabel = 'Lifetime License';
+    else if (plan === 'monthly') planLabel = 'Monthly Subscription';
 
     let endDate: Date | null = null;
 
     if (tenant.subscriptionEndDate) {
-      endDate = new Date(tenant.subscriptionEndDate);
+      // Handle string format or ISO date
+      const raw = tenant.subscriptionEndDate.includes('T') ? tenant.subscriptionEndDate.split('T')[0] : tenant.subscriptionEndDate;
+      const parts = raw.split('-');
+      if (parts.length === 3) {
+        endDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+      } else {
+        endDate = new Date(tenant.subscriptionEndDate);
+      }
     } else if (tenant.createdAt) {
       const created = new Date(tenant.createdAt);
-      const daysToAdd = tenant.isTrial ? (tenant.trialDays || 7) : 30;
+      const daysToAdd = isTrial ? (tenant.trialDays || 7) : 30;
       endDate = new Date(created.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
     }
 
     if (!endDate || isNaN(endDate.getTime())) {
-      return { text: 'Active', type: 'active', isUrgent: false, isExpired: false, days: 30 };
+      // Default to 7 days from now for new/unconfigured trial orgs
+      const now = new Date();
+      endDate = new Date(now.getTime() + (isTrial ? (tenant.trialDays || 7) : 30) * 24 * 60 * 60 * 1000);
     }
 
-    // Set end date to end of day
+    // Set end date to end of that calendar day
     endDate.setHours(23, 59, 59, 999);
     const now = new Date();
     const diffMs = endDate.getTime() - now.getTime();
     const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 
-    if (diffDays <= 0) {
-      return { text: 'Expired', type: 'expired', isUrgent: true, isExpired: true, days: 0 };
+    // Formatted date (e.g., "22 Aug 2026")
+    const validUntil = endDate.toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
+
+    if (diffDays < 0) {
+      const ago = Math.abs(diffDays);
+      return {
+        text: ago === 1 ? 'Expired (1d ago)' : ago <= 30 ? `Expired (${ago}d ago)` : 'Expired',
+        planLabel,
+        validUntil,
+        type: 'expired',
+        isUrgent: true,
+        isExpired: true,
+        days: diffDays
+      };
     }
 
-    if (diffDays > 365) {
-      const years = Math.floor(diffDays / 365);
-      const remMonths = Math.floor((diffDays % 365) / 30);
-      const text = remMonths > 0 ? `${years}y ${remMonths}m left` : `${years}y left`;
-      return { text, type: 'year', isUrgent: false, isExpired: false, days: diffDays };
+    if (diffDays === 0) {
+      return {
+        text: 'Expires today',
+        planLabel,
+        validUntil,
+        type: 'day',
+        isUrgent: true,
+        isExpired: false,
+        days: 0
+      };
     }
 
-    if (diffDays > 30) {
+    if (diffDays === 1) {
+      return {
+        text: '1 day left',
+        planLabel,
+        validUntil,
+        type: 'day',
+        isUrgent: true,
+        isExpired: false,
+        days: 1
+      };
+    }
+
+    if (diffDays <= 30) {
+      return {
+        text: `${diffDays} days left`,
+        planLabel,
+        validUntil,
+        type: 'day',
+        isUrgent: diffDays <= 5,
+        isExpired: false,
+        days: diffDays
+      };
+    }
+
+    if (diffDays <= 365) {
       const months = Math.floor(diffDays / 30);
       const remDays = diffDays % 30;
-      const text = remDays > 0 ? `${months}m ${remDays}d left` : `${months}m left`;
-      return { text, type: 'month', isUrgent: false, isExpired: false, days: diffDays };
+      const text = remDays > 0 ? `${months}m ${remDays}d left` : (months === 1 ? '1 month left' : `${months} months left`);
+      return {
+        text,
+        planLabel,
+        validUntil,
+        type: 'month',
+        isUrgent: false,
+        isExpired: false,
+        days: diffDays
+      };
     }
 
+    const years = Math.floor(diffDays / 365);
+    const remMonths = Math.floor((diffDays % 365) / 30);
+    const text = remMonths > 0 ? `${years}y ${remMonths}m left` : (years === 1 ? '1 year left' : `${years} years left`);
     return {
-      text: `${diffDays}d left`,
-      type: 'day',
-      isUrgent: diffDays <= 5,
+      text,
+      planLabel,
+      validUntil,
+      type: 'year',
+      isUrgent: false,
       isExpired: false,
       days: diffDays
     };
@@ -620,6 +699,27 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  // Synchronize activeTenant with latest tenants list so subscription/plan updates propagate immediately
+  React.useEffect(() => {
+    if (!activeTenant?.id) return;
+    const latest = tenants.find(t => t.id === activeTenant.id);
+    if (latest) {
+      if (
+        latest.subscriptionEndDate !== activeTenant.subscriptionEndDate ||
+        latest.subscriptionPlan !== activeTenant.subscriptionPlan ||
+        latest.isTrial !== activeTenant.isTrial ||
+        latest.trialDays !== activeTenant.trialDays ||
+        latest.status !== activeTenant.status ||
+        latest.name !== activeTenant.name ||
+        latest.code !== activeTenant.code ||
+        latest.ownerMobile !== activeTenant.ownerMobile
+      ) {
+        setActiveTenant(latest);
+        setAppStorageItem('active_tenant_v3', JSON.stringify(latest));
+      }
+    }
+  }, [tenants, activeTenant]);
 
   const handleRegisterOrg = async (newTenant: TenantOrg) => {
     // Immediately seed and store isolated company config for the new tenant
@@ -3016,11 +3116,7 @@ export default function App() {
                   const sub = getSubscriptionTimeLeft(activeTenant);
                   return (
                     <div
-                      title={
-                        activeTenant.id === 'org-admin'
-                          ? 'Master Admin: Lifetime Unlimited Access'
-                          : `Organization: ${activeTenant.name}\nPlan: ${activeTenant.subscriptionPlan || (activeTenant.isTrial ? 'Trial' : 'Standard')}\nValid Until: ${activeTenant.subscriptionEndDate || 'Standard validity'}\nTime Remaining: ${sub.text}`
-                      }
+                      title={`🏢 Organization: ${activeTenant.name} (${activeTenant.code})\n⭐ Plan: ${sub.planLabel}\n📅 Valid Until: ${sub.validUntil}\n⏳ Time Remaining: ${sub.text}`}
                       className={`flex-1 px-2.5 py-1.5 rounded-xl border transition-all flex items-center justify-center gap-1.5 text-[11px] font-extrabold shadow-xs truncate ${
                         sub.isExpired
                           ? 'bg-rose-500/25 border-rose-400/50 text-rose-300 animate-pulse'
@@ -3146,11 +3242,7 @@ export default function App() {
               const sub = getSubscriptionTimeLeft(activeTenant);
               return (
                 <div
-                  title={
-                    activeTenant.id === 'org-admin'
-                      ? 'Master Admin: Lifetime Unlimited Access'
-                      : `Organization: ${activeTenant.name}\nPlan: ${activeTenant.subscriptionPlan || (activeTenant.isTrial ? 'Trial' : 'Standard')}\nValid Until: ${activeTenant.subscriptionEndDate || 'Standard validity'}\nTime Remaining: ${sub.text}`
-                  }
+                  title={`🏢 Organization: ${activeTenant.name} (${activeTenant.code})\n⭐ Plan: ${sub.planLabel}\n📅 Valid Until: ${sub.validUntil}\n⏳ Time Remaining: ${sub.text}`}
                   className={`flex-1 px-2.5 py-1.5 rounded-xl border transition-all flex items-center justify-center gap-1.5 text-[11px] font-extrabold shadow-xs truncate ${
                     sub.isExpired
                       ? 'bg-rose-500/25 border-rose-400/50 text-rose-300 animate-pulse'

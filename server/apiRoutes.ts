@@ -123,7 +123,7 @@ apiRouter.post('/auth/lookup-mobile', (req, res) => {
     }
 
     const db = getDatabase();
-    const orgStmt = db.prepare('SELECT id, name, code, owner_mobile, owner_name, status, secret_key, pin, pin_hash, features_json FROM organizations WHERE status != "deleted"');
+    const orgStmt = db.prepare('SELECT id, name, code, owner_mobile, owner_name, status, secret_key, pin, pin_hash, subscription_plan, subscription_start_date, subscription_end_date, trial_days, is_trial, features_json, created_at FROM organizations WHERE status != "deleted"');
     
     let matchedOrg: any = null;
     while (orgStmt.step()) {
@@ -170,6 +170,12 @@ apiRouter.post('/auth/lookup-mobile', (req, res) => {
         status: matchedOrg.status,
         hasPin, // indicates if PIN is set or Authenticator 2FA is required
         secretKey: matchedOrg.secret_key || undefined,
+        subscriptionPlan: matchedOrg.subscription_plan || (matchedOrg.is_trial ? 'trial' : 'monthly'),
+        subscriptionStartDate: matchedOrg.subscription_start_date || undefined,
+        subscriptionEndDate: matchedOrg.subscription_end_date || undefined,
+        trialDays: matchedOrg.trial_days !== undefined ? Number(matchedOrg.trial_days) : undefined,
+        isTrial: Boolean(matchedOrg.is_trial),
+        createdAt: matchedOrg.created_at || undefined,
         features: features || undefined
       }
     });
@@ -334,6 +340,13 @@ apiRouter.post('/auth/login', (req, res) => {
         details: { method: 'org_pin', deviceInfo }
       });
 
+      let features: any = null;
+      if (org.features_json) {
+        try {
+          features = JSON.parse(org.features_json as string);
+        } catch (e) {}
+      }
+
       return res.json({
         success: true,
         token,
@@ -350,7 +363,15 @@ apiRouter.post('/auth/login', (req, res) => {
           code: org.code,
           ownerMobile: org.owner_mobile,
           ownerName: org.owner_name,
-          status: org.status
+          status: org.status,
+          secretKey: org.secret_key || undefined,
+          subscriptionPlan: org.subscription_plan || (org.is_trial ? 'trial' : 'monthly'),
+          subscriptionStartDate: org.subscription_start_date || undefined,
+          subscriptionEndDate: org.subscription_end_date || undefined,
+          trialDays: org.trial_days !== undefined ? Number(org.trial_days) : undefined,
+          isTrial: Boolean(org.is_trial),
+          createdAt: org.created_at || undefined,
+          features: features || undefined
         }
       });
     }
@@ -785,11 +806,26 @@ apiRouter.post('/auth/register-org', (req, res) => {
     }
 
     const featuresJson = features ? JSON.stringify(features) : null;
-    const subPlan = subscriptionPlan || 'monthly';
+    const isTr = isTrial !== undefined ? (isTrial ? 1 : 0) : (subscriptionPlan === 'trial' || !subscriptionPlan ? 1 : 0);
+    const subPlan = subscriptionPlan || (isTr ? 'trial' : 'monthly');
     const subStart = subscriptionStartDate || now.split('T')[0];
-    const subEnd = subscriptionEndDate || '';
-    const tDays = trialDays !== undefined ? Number(trialDays) : (subPlan === 'trial' ? 7 : 0);
-    const isTr = isTrial !== undefined ? (isTrial ? 1 : 0) : (subPlan === 'trial' ? 1 : 0);
+    const tDays = trialDays !== undefined ? Number(trialDays) : (isTr ? 7 : 30);
+    let subEnd = subscriptionEndDate || '';
+    if (!subEnd) {
+      const d = new Date();
+      if (subPlan === 'lifetime') {
+        d.setFullYear(d.getFullYear() + 10);
+      } else if (subPlan === 'annual') {
+        d.setFullYear(d.getFullYear() + 1);
+      } else if (subPlan === 'quarterly') {
+        d.setDate(d.getDate() + 90);
+      } else if (isTr || subPlan === 'trial') {
+        d.setDate(d.getDate() + (tDays || 7));
+      } else {
+        d.setDate(d.getDate() + 30);
+      }
+      subEnd = d.toISOString().split('T')[0];
+    }
 
     db.run(
       `INSERT INTO organizations (
