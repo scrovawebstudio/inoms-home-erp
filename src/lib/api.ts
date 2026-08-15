@@ -67,14 +67,19 @@ export async function logoutViaApi(): Promise<void> {
   clearAuthToken();
 }
 
-export async function verifyTOTPViaApi(secretKey: string, code: string): Promise<boolean> {
+export async function verifyTOTPViaApi(
+  tenantIdOrMobile: string,
+  code: string,
+  secretKey?: string
+): Promise<boolean> {
   try {
-    const res = await fetch('/api/auth/login', {
+    const res = await fetch('/api/auth/verify-totp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        tenantId: 'org-admin',
-        pin: code
+        tenantId: tenantIdOrMobile,
+        code,
+        secretKey
       })
     });
     const data = await res.json();
@@ -86,18 +91,51 @@ export async function verifyTOTPViaApi(secretKey: string, code: string): Promise
 
 export async function verifyMasterPinViaApi(codeOrPin: string): Promise<boolean> {
   try {
-    const res = await fetch('/api/auth/login', {
+    const res = await fetch('/api/auth/verify-master-pin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        tenantId: 'org-admin',
-        pin: codeOrPin
+        code: codeOrPin
       })
     });
     const data = await res.json();
     return !!data.success;
   } catch (err) {
     return false;
+  }
+}
+
+export async function verifyOrgPinViaApi(tenantId: string, pin: string): Promise<boolean> {
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tenantId,
+        pin
+      })
+    });
+    const data = await res.json();
+    if (data.success && data.token) {
+      setAuthToken(data.token);
+    }
+    return !!data.success;
+  } catch (err) {
+    return false;
+  }
+}
+
+export async function fetchAdminOrganizationsViaApi(): Promise<{ success: boolean; organizations?: any[]; message?: string }> {
+  try {
+    const token = getAuthToken();
+    const res = await fetch('/api/admin/organizations', {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, message: 'Could not fetch admin organizations' };
   }
 }
 
@@ -132,6 +170,21 @@ export async function registerOrgViaApi(
     return await res.json();
   } catch (err: any) {
     return { success: false, message: 'Server connection error' };
+  }
+}
+
+export async function lookupOrgByMobileViaApi(
+  mobileOrCode: string
+): Promise<{ success: boolean; org?: any; message?: string }> {
+  try {
+    const res = await fetch('/api/auth/lookup-mobile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mobile: mobileOrCode, code: mobileOrCode })
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, message: 'Could not connect to server during organization lookup' };
   }
 }
 

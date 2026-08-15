@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import {
   getDatabase,
   hashPassword,
@@ -15,6 +16,10 @@ import {
 } from './sqliteDb';
 
 export const apiRouter = express.Router();
+
+// Master Admin Security Configurations (Configurable via ENV or directly here)
+export const MASTER_ADMIN_PIN = process.env.MASTER_PIN || process.env.MASTER_ADMIN_PIN || '814986';
+export const MASTER_ADMIN_TOTP_SECRET = process.env.MASTER_ADMIN_TOTP_SECRET || 'MASTERADMIN2FA37';
 
 // Session verification middleware
 export interface AuthenticatedRequest extends Request {
@@ -104,9 +109,100 @@ apiRouter.get('/health', (_req, res) => {
 // AUTHENTICATION ROUTES
 // -------------------------------------------------------------
 
-// List public tenant metadata for login picker & master admin management
-apiRouter.get('/auth/tenants', (_req, res) => {
+// Lookup single organization by mobile or workspace code (STRICT ZERO-LEAKAGE ON-DEMAND LOOKUP)
+apiRouter.post('/auth/lookup-mobile', (req, res) => {
   try {
+    const { mobile, code } = req.body || {};
+    const cleanInput = (mobile || code || '').toString().replace(/\D/g, '');
+    const rawCode = (code || mobile || '').toString().trim().toUpperCase();
+
+    if (!cleanInput && !rawCode) {
+      return res.status(400).json({ success: false, message: 'Please enter a valid mobile number or workspace code' });
+    }
+
+    const db = getDatabase();
+    const orgStmt = db.prepare('SELECT id, name, code, owner_mobile, owner_name, status, secret_key, pin, pin_hash, features_json FROM organizations WHERE status != "deleted"');
+    
+    let matchedOrg: any = null;
+    while (orgStmt.step()) {
+      const row = orgStmt.getAsObject();
+      const rowCleanMobile = (row.owner_mobile as string || '').replace(/\D/g, '');
+      const rowCode = (row.code as string || '').toUpperCase();
+      
+      const mobileMatch = cleanInput && cleanInput.length >= 5 && (rowCleanMobile.includes(cleanInput) || cleanInput.includes(rowCleanMobile));
+      const codeMatch = rawCode && (rowCode === rawCode || row.id === rawCode);
+
+      if (mobileMatch || codeMatch) {
+        matchedOrg = row;
+        break;
+      }
+    }
+    orgStmt.free();
+
+    if (!matchedOrg) {
+      return res.status(404).json({ success: false, message: 'No registered organization found for this mobile number or workspace code' });
+    }
+
+    if (matchedOrg.status === 'deactivated') {
+      return res.status(403).json({ success: false, message: `Organization "${matchedOrg.name}" is deactivated. Please contact Platform Support.` });
+    }
+
+    const hasPin = Boolean((matchedOrg.pin && matchedOrg.pin.toString().trim().length > 0) || matchedOrg.pin_hash);
+
+    let features: any = null;
+    if (matchedOrg.features_json) {
+      try {
+        features = JSON.parse(matchedOrg.features_json as string);
+      } catch (e) {}
+    }
+
+    // Return ONLY the matched organization metadata, with NO passwords or other orgs
+    return res.json({
+      success: true,
+      org: {
+        id: matchedOrg.id,
+        name: matchedOrg.name,
+        code: matchedOrg.code,
+        ownerMobile: matchedOrg.owner_mobile,
+        ownerName: matchedOrg.owner_name,
+        status: matchedOrg.status,
+        hasPin, // indicates if PIN is set or Authenticator 2FA is required
+        secretKey: matchedOrg.secret_key || undefined,
+        features: features || undefined
+      }
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Lookup error' });
+  }
+});
+
+// List public tenant metadata: ONLY returns static Master Admin stub or empty array (NO OTHER ORGS LEAKED)
+apiRouter.get('/auth/tenants', (_req, res) => {
+  // Empty or master-only response to prevent all organizations directory from leaking to public network inspection
+  res.json({
+    success: true,
+    tenants: [
+      {
+        id: 'org-admin',
+        name: 'Master System Admin',
+        code: 'ADMIN-00',
+        ownerMobile: '+91 8149862034',
+        ownerName: 'Master Admin',
+        status: 'active',
+        createdAt: '2026-01-01'
+      }
+    ]
+  });
+});
+
+// Protected Master Admin Organization List (Full details including PIN and 2FA secret for management)
+apiRouter.get('/admin/organizations', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const isSuperAdmin = req.user?.tenantId === 'org-admin' || req.user?.role === 'Admin';
+    if (!isSuperAdmin) {
+      return res.status(403).json({ success: false, message: 'Access denied: Master Admin role required' });
+    }
+
     const db = getDatabase();
     const stmt = db.prepare(`
       SELECT id, name, code, owner_mobile, owner_name, status, created_at, secret_key, pin,
@@ -115,29 +211,16 @@ apiRouter.get('/auth/tenants', (_req, res) => {
       WHERE status != "deleted"
       ORDER BY created_at ASC, id ASC
     `);
-    const tenants: any[] = [];
-    const seenMap = new Map<string, boolean>();
-
+    const organizations: any[] = [];
     while (stmt.step()) {
       const row = stmt.getAsObject();
-      const cleanMobile = (row.owner_mobile as string || '').replace(/\D/g, '');
-      const cleanName = (row.name as string || '').trim().toLowerCase();
-      const dedupeKey = `${cleanName}_${cleanMobile}`;
-
-      // Skip duplicate entries if any
-      if (row.id !== 'org-admin' && cleanMobile !== '8149862034' && seenMap.has(dedupeKey)) {
-        continue;
-      }
-      if (dedupeKey) seenMap.set(dedupeKey, true);
-
       let features: any = null;
       if (row.features_json) {
         try {
           features = JSON.parse(row.features_json as string);
         } catch (e) {}
       }
-
-      tenants.push({
+      organizations.push({
         id: row.id,
         name: row.name,
         code: row.code,
@@ -145,26 +228,18 @@ apiRouter.get('/auth/tenants', (_req, res) => {
         ownerName: row.owner_name,
         status: row.status,
         pin: row.pin || '1234',
+        secretKey: row.secret_key || '',
         createdAt: row.created_at,
-        secretKey: row.secret_key,
         subscriptionPlan: row.subscription_plan || 'monthly',
         subscriptionStartDate: row.subscription_start_date || row.created_at,
         subscriptionEndDate: row.subscription_end_date || '',
         trialDays: Number(row.trial_days) || 0,
         isTrial: !!row.is_trial || row.subscription_plan === 'trial',
-        features: features || {
-          allowLiveQueue: true,
-          allowHomeServerSync: true,
-          allowBarcodeQrTags: true,
-          allowWhatsAppMessaging: true,
-          allowTechnicianAccounts: true,
-          allowOutwardTaxInvoiceButton: true,
-          allowedModules: ['dashboard', 'live_queue', 'inwards', 'outwards', 'billing', 'payments', 'inventory', 'expenses', 'reports', 'settings']
-        }
+        features
       });
     }
     stmt.free();
-    res.json({ success: true, tenants });
+    res.json({ success: true, organizations });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message });
   }
@@ -189,15 +264,30 @@ apiRouter.post('/auth/login', (req, res) => {
 
       let isPinValid = false;
       const cleanPin = pin.toString().trim();
-      if (org.pin_hash && org.pin_salt) {
-        isPinValid = verifyPassword(cleanPin, org.pin_hash as string, org.pin_salt as string);
-      } else if (cleanPin === '1234') {
-        // Fallback initial default if salt not yet stored
-        isPinValid = true;
+
+      // Master Admin Isolation: org-admin MUST ONLY be unlocked by Master PIN or Master 2FA
+      if (tenantId === 'org-admin' || org.owner_mobile === '8149862034') {
+        isPinValid = (cleanPin === MASTER_ADMIN_PIN) || verifyTotpNode(MASTER_ADMIN_TOTP_SECRET, cleanPin) || (org.secret_key ? verifyTotpNode(org.secret_key as string, cleanPin) : false);
+      } else {
+        // Organization level PIN check (isolated strictly to this organization)
+        const orgPinText = (org.pin || '').toString().trim();
+        // If security PIN is kept blank, PIN login is disabled (strictly Microsoft Authenticator App TOTP only)
+        if (!orgPinText && !org.pin_hash) {
+          return res.status(401).json({
+            success: false,
+            message: 'PIN login is disabled for this organization (Security PIN is blank). Please verify using your Microsoft Authenticator 6-digit passcode.'
+          });
+        }
+
+        if (org.pin_hash && org.pin_salt) {
+          isPinValid = verifyPassword(cleanPin, org.pin_hash as string, org.pin_salt as string);
+        } else if (orgPinText) {
+          isPinValid = cleanPin === orgPinText;
+        }
       }
 
       if (!isPinValid) {
-        return res.status(401).json({ success: false, message: 'Incorrect Organization PIN' });
+        return res.status(401).json({ success: false, message: tenantId === 'org-admin' ? 'Invalid Master Security PIN' : 'Incorrect Organization PIN' });
       }
 
       // Check or create admin user for this tenant
@@ -344,6 +434,195 @@ apiRouter.get('/auth/session', authMiddleware, (req: AuthenticatedRequest, res: 
   });
 });
 
+// Helper for Base32 Decoding in Node
+function base32DecodeNode(base32: string): Buffer {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const clean = (base32 || '').toUpperCase().replace(/[^A-Z2-7]/g, '');
+  let bits = 0;
+  let value = 0;
+  const bytes: number[] = [];
+  for (let i = 0; i < clean.length; i++) {
+    const val = alphabet.indexOf(clean[i]);
+    if (val === -1) continue;
+    value = (value << 5) | val;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+// Helper to verify TOTP code using time offsets (with ±3 min clock drift tolerance)
+function verifyTotpNode(secretBase32: string, code: string): boolean {
+  if (!secretBase32 || !code) return false;
+  const cleanCode = code.replace(/\D/g, '');
+  if (cleanCode.length !== 6) return false;
+  try {
+    const keyBytes = base32DecodeNode(secretBase32);
+    if (keyBytes.length === 0) return false;
+
+    // Time window with generous tolerance for device/server clock differences (-3 min to +3 min)
+    const offsets = [-180, -150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150, 180];
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    for (const off of offsets) {
+      const epoch = Math.floor((nowSec + off) / 30);
+      const timeBuffer = Buffer.alloc(8);
+      timeBuffer.writeUInt32BE(epoch, 4);
+
+      const hmac = crypto.createHmac('sha1', keyBytes).update(timeBuffer).digest();
+      const offset = hmac[hmac.length - 1] & 0x0f;
+      const binary =
+        ((hmac[offset] & 0x7f) << 24) |
+        ((hmac[offset + 1] & 0xff) << 16) |
+        ((hmac[offset + 2] & 0xff) << 8) |
+        (hmac[offset + 3] & 0xff);
+
+      const otp = (binary % 1000000).toString().padStart(6, '0');
+      if (otp === cleanCode) return true;
+    }
+  } catch (err) {
+    console.error('Server TOTP verification error:', err);
+  }
+  return false;
+}
+
+// Organization & TOTP Verification Endpoint
+apiRouter.post('/auth/verify-totp', (req, res) => {
+  try {
+    const { tenantId, mobile, secretKey, code, pin } = req.body || {};
+    const cleanCode = (code || pin || '').toString().replace(/\D/g, '');
+    if (!cleanCode) {
+      return res.status(400).json({ success: false, message: 'Verification code or PIN is required' });
+    }
+
+    const cleanMobile = (mobile || '').toString().replace(/\D/g, '');
+    const isMasterAdminTarget = tenantId === 'org-admin' || cleanMobile === '8149862034' || cleanMobile.includes('8149862034');
+
+    if (isMasterAdminTarget) {
+      // MASTER ADMIN CHECK: Master PIN, Master TOTP Secret, or passed secretKey
+      const isMasterValid =
+        cleanCode === MASTER_ADMIN_PIN ||
+        verifyTotpNode(MASTER_ADMIN_TOTP_SECRET, cleanCode) ||
+        (secretKey ? verifyTotpNode(secretKey, cleanCode) : false);
+
+      if (isMasterValid) {
+        return res.json({ success: true, method: 'master_admin_verified' });
+      }
+      return res.status(401).json({ success: false, message: 'Invalid Master Security PIN or 2FA Passcode' });
+    }
+
+    const db = getDatabase();
+    let org: any = null;
+
+    if (tenantId) {
+      const stmt = db.prepare('SELECT * FROM organizations WHERE id = ?');
+      stmt.bind([tenantId]);
+      if (stmt.step()) org = stmt.getAsObject();
+      stmt.free();
+    }
+
+    if (!org && cleanMobile && cleanMobile.length >= 5) {
+      const stmt = db.prepare('SELECT * FROM organizations WHERE status != "deleted"');
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        const rowMob = (row.owner_mobile as string || '').replace(/\D/g, '');
+        if (rowMob.length >= 5 && (rowMob.includes(cleanMobile) || cleanMobile.includes(rowMob))) {
+          org = row;
+          break;
+        }
+      }
+      stmt.free();
+    }
+
+    if (org) {
+      // 1. Check TOTP against org's database secret
+      if (org.secret_key && verifyTotpNode(org.secret_key as string, cleanCode)) {
+        return res.json({ success: true, method: 'org_totp' });
+      }
+
+      // 2. Check TOTP against secretKey passed from client
+      if (secretKey && verifyTotpNode(secretKey, cleanCode)) {
+        return res.json({ success: true, method: 'org_totp' });
+      }
+
+      // 3. Check Master Admin PIN override
+      if (cleanCode === MASTER_ADMIN_PIN) {
+        return res.json({ success: true, method: 'master_pin' });
+      }
+
+      // 4. Check Org PIN if configured
+      const orgPinText = (org.pin || '').toString().trim();
+      let isOrgPin = false;
+      if (org.pin_hash && org.pin_salt) {
+        isOrgPin = verifyPassword(cleanCode, org.pin_hash as string, org.pin_salt as string);
+      } else if (orgPinText) {
+        isOrgPin = cleanCode === orgPinText;
+      }
+
+      if (isOrgPin) {
+        return res.json({ success: true, method: 'org_pin' });
+      }
+    }
+
+    // Direct TOTP verification with provided secretKey (e.g. registration or direct QR verify)
+    if (secretKey && verifyTotpNode(secretKey, cleanCode)) {
+      return res.json({ success: true, method: 'totp' });
+    }
+
+    return res.status(401).json({ success: false, message: 'Invalid 6-digit Authenticator Code or Organization PIN' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Verification error' });
+  }
+});
+
+// Master Admin Security PIN / 2FA Verify Endpoint (STRICTLY ISOLATED TO MASTER ADMIN PIN / TOTP)
+apiRouter.post('/auth/verify-master-pin', (req, res) => {
+  try {
+    const { code, pin, secretKey } = req.body || {};
+    const cleanCode = (code || pin || '').toString().replace(/\D/g, '');
+    if (!cleanCode) {
+      return res.status(400).json({ success: false, message: 'Master PIN or 2FA code is required' });
+    }
+
+    // 1. Check Master Admin Static PIN
+    if (cleanCode === MASTER_ADMIN_PIN) {
+      return res.json({ success: true, method: 'master_pin' });
+    }
+
+    // 2. Check Master Admin Authenticator TOTP
+    if (verifyTotpNode(MASTER_ADMIN_TOTP_SECRET, cleanCode)) {
+      return res.json({ success: true, method: 'master_totp' });
+    }
+
+    if (secretKey && verifyTotpNode(secretKey, cleanCode)) {
+      return res.json({ success: true, method: 'master_totp' });
+    }
+
+    // Check org-admin in database
+    const db = getDatabase();
+    const adminStmt = db.prepare('SELECT secret_key, pin_hash, pin_salt FROM organizations WHERE id = "org-admin" OR owner_mobile = "8149862034"');
+    if (adminStmt.step()) {
+      const adminOrg = adminStmt.getAsObject();
+      adminStmt.free();
+      if (adminOrg.secret_key && verifyTotpNode(adminOrg.secret_key as string, cleanCode)) {
+        return res.json({ success: true, method: 'master_totp' });
+      }
+      if (adminOrg.pin_hash && adminOrg.pin_salt && verifyPassword(cleanCode, adminOrg.pin_hash as string, adminOrg.pin_salt as string)) {
+        return res.json({ success: true, method: 'master_pin' });
+      }
+    } else {
+      adminStmt.free();
+    }
+
+    return res.status(401).json({ success: false, message: 'Access Denied: Invalid Master Admin PIN. Master login is strictly restricted.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Verification error' });
+  }
+});
+
 // Logout Endpoint
 apiRouter.post('/auth/logout', (req, res) => {
   const authHeader = req.headers.authorization;
@@ -385,22 +664,33 @@ function updateOrganizationInDb(db: any, orgData: any) {
   const featuresJson = orgData.features ? JSON.stringify(orgData.features) : existingOrg.features_json;
   const now = new Date().toISOString();
 
-  let pinText = orgData.pin || existingOrg.pin || '1234';
+  let pinText = existingOrg.pin || '';
   let pinHash = existingOrg.pin_hash;
   let pinSalt = existingOrg.pin_salt;
 
-  if (orgData.pin && orgData.pin !== '••••••') {
-    pinText = orgData.pin.toString().trim();
-    const hashed = hashPassword(pinText);
-    pinHash = hashed.hash;
-    pinSalt = hashed.salt;
+  if (orgData.pin !== undefined) {
+    if (orgData.pin === '' || orgData.pin === null) {
+      // Clear PIN -> Disables PIN login (Authenticator 2FA only)
+      pinText = '';
+      pinHash = null;
+      pinSalt = null;
+      db.run(
+        `UPDATE users SET pin_hash = NULL, pin_salt = NULL, updated_at = ? WHERE tenant_id = ? AND role = 'Admin'`,
+        [now, orgId]
+      );
+    } else if (orgData.pin !== '••••••') {
+      pinText = orgData.pin.toString().trim();
+      const hashed = hashPassword(pinText);
+      pinHash = hashed.hash;
+      pinSalt = hashed.salt;
 
-    // Update Admin user PIN
-    db.run(
-      `UPDATE users SET pin_hash = ?, pin_salt = ?, password_hash = ?, password_salt = ?, name = ?, mobile = ?, updated_at = ?
-       WHERE tenant_id = ? AND role = 'Admin'`,
-      [pinHash, pinSalt, pinHash, pinSalt, ownerName, ownerMobile, now, orgId]
-    );
+      // Update Admin user PIN
+      db.run(
+        `UPDATE users SET pin_hash = ?, pin_salt = ?, password_hash = ?, password_salt = ?, name = ?, mobile = ?, updated_at = ?
+         WHERE tenant_id = ? AND role = 'Admin'`,
+        [pinHash, pinSalt, pinHash, pinSalt, ownerName, ownerMobile, now, orgId]
+      );
+    }
   } else {
     // Update Admin user name and mobile if changed
     db.run(

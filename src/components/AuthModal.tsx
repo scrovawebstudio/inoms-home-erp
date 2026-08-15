@@ -23,7 +23,7 @@ import {
 import { SystemUser } from '../types';
 import { INITIAL_USERS, MASTER_ADMIN_USER, INITIAL_ORG_USERS } from '../data';
 import { getAppStorageItem } from '../lib/storage';
-import { verifyTOTPViaApi, verifyMasterPinViaApi, staffLoginViaApi, registerOrgViaApi } from '../lib/api';
+import { verifyTOTPViaApi, verifyMasterPinViaApi, verifyOrgPinViaApi, staffLoginViaApi, registerOrgViaApi, lookupOrgByMobileViaApi, fetchAdminOrganizationsViaApi } from '../lib/api';
 
 export interface SystemAnnouncement {
   id: string;
@@ -183,6 +183,7 @@ export default function AuthModal({
   const [adminUnlocked, setAdminUnlocked] = useState<boolean>(false);
   const [adminPinInput, setAdminPinInput] = useState<string>('');
   const [adminPinError, setAdminPinError] = useState<string>('');
+  const [adminOrgsList, setAdminOrgsList] = useState<TenantOrg[]>([]);
 
   useEffect(() => {
     if (isOpen) {
@@ -204,11 +205,11 @@ export default function AuthModal({
             setRememberMeMobile(true);
             const cleanInput = normalizePhone(parsed.mobileInput);
             if (cleanInput.length >= 5) {
-              const match = tenants.find(t => {
-                const cleanOwner = normalizePhone(t.ownerMobile);
-                return cleanOwner.length >= 5 && (cleanOwner.includes(cleanInput) || cleanInput.includes(cleanOwner));
-              });
-              setDetectedTenant(match || null);
+              lookupOrgByMobileViaApi(cleanInput).then(res => {
+                if (res.success && res.org) {
+                  setDetectedTenant(res.org);
+                }
+              }).catch(() => {});
             }
           }
         } else {
@@ -230,12 +231,12 @@ export default function AuthModal({
               setStaffOwnerMobile(parsed.ownerMobile);
               const cleanInput = normalizePhone(parsed.ownerMobile);
               if (cleanInput.length >= 5) {
-                const match = tenants.find(t => {
-                  const cleanOwner = normalizePhone(t.ownerMobile);
-                  return cleanOwner.length >= 5 && (cleanOwner.includes(cleanInput) || cleanInput.includes(cleanOwner));
-                });
-                setStaffDetectedOrg(match || null);
-                if (match) setStaffTenantId(match.id);
+                lookupOrgByMobileViaApi(cleanInput).then(res => {
+                  if (res.success && res.org) {
+                    setStaffDetectedOrg(res.org);
+                    setStaffTenantId(res.org.id);
+                  }
+                }).catch(() => {});
               }
             }
             if (parsed.username) {
@@ -258,19 +259,21 @@ export default function AuthModal({
     setTotpError('');
 
     const cleanInput = normalizePhone(value);
-    if (cleanInput.length >= 5) {
-      const match = tenants.find(t => {
-        const cleanOwner = normalizePhone(t.ownerMobile);
-        return cleanOwner.length >= 5 && (cleanOwner.includes(cleanInput) || cleanInput.includes(cleanOwner));
-      });
-      setDetectedTenant(match || null);
+    if (cleanInput.length >= 10) {
+      lookupOrgByMobileViaApi(cleanInput).then(res => {
+        if (res.success && res.org) {
+          setDetectedTenant(res.org);
+        } else {
+          setDetectedTenant(null);
+        }
+      }).catch(() => {});
     } else {
       setDetectedTenant(null);
     }
   };
 
   // Handle Mobile Number Verification
-  const handleRequestApproval = (e: React.FormEvent) => {
+  const handleRequestApproval = async (e: React.FormEvent) => {
     e.preventDefault();
     setMobileError('');
     setTotpError('');
@@ -283,30 +286,32 @@ export default function AuthModal({
       return;
     }
 
-    // Find organization matching this mobile number
-    const match = tenants.find(t => {
-      const cleanOwner = normalizePhone(t.ownerMobile);
-      return cleanOwner.length >= 5 && (cleanOwner.includes(cleanInput) || cleanInput.includes(cleanOwner));
-    });
-
-    if (match) {
-      if (match.status === 'deactivated') {
+    try {
+      const lookupRes = await lookupOrgByMobileViaApi(cleanInput);
+      if (lookupRes.success && lookupRes.org) {
+        const match = lookupRes.org;
+        if (match.status === 'deactivated') {
+          setDetectedTenant(match);
+          setMobileSubmitted(false);
+          setMobileError(`🔒 ACCOUNT DEACTIVATED: Organization "${match.name}" has been deactivated by Platform Master Admin. Login access is blocked.`);
+          return;
+        }
+        if (rememberMeMobile) {
+          localStorage.setItem('remembered_login_mobile', JSON.stringify({ mobileInput }));
+        } else {
+          localStorage.removeItem('remembered_login_mobile');
+        }
         setDetectedTenant(match);
-        setMobileSubmitted(false);
-        setMobileError(`🔒 ACCOUNT DEACTIVATED: Organization "${match.name}" has been deactivated by Platform Master Admin. Login access is blocked.`);
-        return;
-      }
-      if (rememberMeMobile) {
-        localStorage.setItem('remembered_login_mobile', JSON.stringify({ mobileInput }));
+        setMobileSubmitted(true);
       } else {
-        localStorage.removeItem('remembered_login_mobile');
+        setDetectedTenant(null);
+        setMobileSubmitted(false);
+        setMobileError(lookupRes.message || `Mobile number "${mobileInput}" is not registered with any organization. Please verify mobile or contact administrator.`);
       }
-      setDetectedTenant(match);
-      setMobileSubmitted(true);
-    } else {
+    } catch (err) {
       setDetectedTenant(null);
       setMobileSubmitted(false);
-      setMobileError(`Mobile number "${mobileInput}" is not registered with any organization. Please verify mobile or contact administrator.`);
+      setMobileError('Error communicating with authentication server. Please try again.');
     }
   };
 
@@ -328,9 +333,9 @@ export default function AuthModal({
     }
 
     setIsVerifyingTotp(true);
-    let isValid = await verifyTOTPViaApi(detectedTenant.secretKey || 'INOMSSECRET2FAKEY', cleanCode);
-    if (!isValid) {
-      isValid = await verifyTOTP(detectedTenant.secretKey || 'INOMSSECRET2FAKEY', cleanCode);
+    let isValid = await verifyTOTPViaApi(detectedTenant.id, cleanCode, detectedTenant.secretKey);
+    if (!isValid && detectedTenant.secretKey) {
+      isValid = await verifyTOTP(detectedTenant.secretKey, cleanCode);
     }
 
     if (isValid) {
@@ -351,7 +356,7 @@ export default function AuthModal({
   };
 
   // Handle Organization PIN Login Submit (Organization-Specific PIN)
-  const handleOwnerPinSubmit = (e: React.FormEvent) => {
+  const handleOwnerPinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setOwnerPinError('');
     setOwnerPinSuccess(false);
@@ -367,8 +372,10 @@ export default function AuthModal({
       return;
     }
 
-    const orgPin = (detectedTenant.pin || '1234').trim();
-    if (cleanPin === orgPin || (detectedTenant.id === 'org-admin' && cleanPin === '1234')) {
+    // Call server API for organization-specific PIN verification
+    const isValid = await verifyOrgPinViaApi(detectedTenant.id, cleanPin);
+
+    if (isValid) {
       if (rememberMeMobile) {
         localStorage.setItem('remembered_login_mobile', JSON.stringify({ mobileInput }));
       } else {
@@ -395,10 +402,16 @@ export default function AuthModal({
       return;
     }
 
-    const selectedOrg = staffDetectedOrg || tenants.find(t => {
-      const cleanOwner = normalizePhone(t.ownerMobile);
-      return cleanOwner.length >= 5 && (cleanOwner.includes(cleanOwnerPhone) || cleanOwnerPhone.includes(cleanOwner));
-    }) || tenants.find(t => t.id === staffTenantId) || tenants[0] || INITIAL_TENANTS[0];
+    let selectedOrg = staffDetectedOrg;
+    if (!selectedOrg) {
+      try {
+        const lookup = await lookupOrgByMobileViaApi(cleanOwnerPhone);
+        if (lookup.success && lookup.org) {
+          selectedOrg = lookup.org;
+          setStaffDetectedOrg(lookup.org);
+        }
+      } catch (e) {}
+    }
 
     if (!selectedOrg) {
       setStaffError(`No organization found for Owner Mobile "${staffOwnerMobile}". Please check the phone number.`);
@@ -805,6 +818,10 @@ export default function AuthModal({
                         if (isValid) {
                           setAdminUnlocked(true);
                           setAdminPinError('');
+                          const res = await fetchAdminOrganizationsViaApi();
+                          if (res.success && res.organizations && res.organizations.length > 0) {
+                            setAdminOrgsList(res.organizations);
+                          }
                         } else {
                           setAdminPinError('Invalid 6-digit Microsoft Authenticator passcode.');
                         }
@@ -823,8 +840,8 @@ export default function AuthModal({
                   <p className="text-[11px] text-slate-300">
                     Select an organization workspace below to switch directly as Master System Admin:
                   </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                    {tenants.map(t => (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 max-h-60 overflow-y-auto">
+                    {(adminOrgsList.length > 0 ? adminOrgsList : tenants).map(t => (
                       <button
                         key={t.id}
                         type="button"

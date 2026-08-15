@@ -39,37 +39,79 @@ export async function signInWithGoogle(): Promise<{ userEmail: string; displayNa
 // HOME SERVER MULTI-TENANT & CONFIGURATION SYNC
 // -------------------------------------------------------------
 
-export function subscribeTenants(onUpdate: (tenants: TenantOrg[]) => void) {
-  // Fetch from Home Server API with deduplication
-  const fetchTenants = () => {
-    fetch('/api/auth/tenants')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && Array.isArray(data.tenants)) {
-          const list: TenantOrg[] = data.tenants;
-          const seen = new Map<string, boolean>();
-          const deduped: TenantOrg[] = [];
-          for (const t of list) {
-            if (!t || !t.id) continue;
-            const cleanMobile = (t.ownerMobile || '').replace(/\D/g, '');
-            const cleanName = (t.name || '').trim().toLowerCase();
-            const dedupeKey = t.id === 'org-admin' ? 'org-admin' : `${cleanName}_${cleanMobile}`;
-            if (!seen.has(t.id) && !seen.has(dedupeKey)) {
-              seen.set(t.id, true);
-              seen.set(dedupeKey, true);
-              deduped.push(t);
-            }
+let cachedTenants: TenantOrg[] | null = null;
+let isFetchingTenants = false;
+const tenantListeners = new Set<(tenants: TenantOrg[]) => void>();
+let tenantPollTimer: any = null;
+
+export async function fetchTenantsOnce(force = false): Promise<TenantOrg[]> {
+  if (cachedTenants && !force && !isFetchingTenants) {
+    return cachedTenants;
+  }
+  if (isFetchingTenants) {
+    return cachedTenants || [];
+  }
+
+  isFetchingTenants = true;
+  try {
+    const res = await fetch('/api/auth/tenants');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && Array.isArray(data.tenants)) {
+        const list: TenantOrg[] = data.tenants;
+        const seen = new Map<string, boolean>();
+        const deduped: TenantOrg[] = [];
+        for (const t of list) {
+          if (!t || !t.id) continue;
+          const cleanMobile = (t.ownerMobile || '').replace(/\D/g, '');
+          const cleanName = (t.name || '').trim().toLowerCase();
+          const dedupeKey = t.id === 'org-admin' ? 'org-admin' : `${cleanName}_${cleanMobile}`;
+          if (!seen.has(t.id) && !seen.has(dedupeKey)) {
+            seen.set(t.id, true);
+            seen.set(dedupeKey, true);
+            deduped.push(t);
           }
-          onUpdate(deduped);
         }
-      })
-      .catch(() => {});
+        cachedTenants = deduped;
+        tenantListeners.forEach(cb => {
+          try { cb(deduped); } catch (e) {}
+        });
+      }
+    }
+  } catch (err) {
+    // Graceful offline fallback
+  } finally {
+    isFetchingTenants = false;
+  }
+  return cachedTenants || [];
+}
+
+export function subscribeTenants(onUpdate: (tenants: TenantOrg[]) => void) {
+  tenantListeners.add(onUpdate);
+
+  // If we already have cached data, deliver immediately
+  if (cachedTenants && cachedTenants.length > 0) {
+    onUpdate(cachedTenants);
+  } else {
+    fetchTenantsOnce();
+  }
+
+  // Set up gentle shared polling only once across all subscribers (every 60s, paused if hidden)
+  if (!tenantPollTimer) {
+    tenantPollTimer = setInterval(() => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        fetchTenantsOnce(true);
+      }
+    }, 60000);
+  }
+
+  return () => {
+    tenantListeners.delete(onUpdate);
+    if (tenantListeners.size === 0 && tenantPollTimer) {
+      clearInterval(tenantPollTimer);
+      tenantPollTimer = null;
+    }
   };
-
-  fetchTenants();
-  const interval = setInterval(fetchTenants, 15000); // 15s gentle polling for organization list
-
-  return () => clearInterval(interval);
 }
 
 export async function saveTenantToFirestore(tenant: TenantOrg): Promise<void> {
@@ -91,6 +133,8 @@ export async function saveTenantToFirestore(tenant: TenantOrg): Promise<void> {
         body: JSON.stringify(tenant)
       });
     }
+    // Refresh cached list immediately on update
+    await fetchTenantsOnce(true);
   } catch (err) {
     console.warn('Error saving tenant to Home Server:', err);
   }
@@ -107,6 +151,8 @@ export async function deleteTenantFromFirestore(tenantId: string): Promise<void>
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: tenantId })
     });
+    // Refresh cached list immediately on delete
+    await fetchTenantsOnce(true);
   } catch (err) {
     console.warn('Error deleting tenant from Home Server:', err);
   }

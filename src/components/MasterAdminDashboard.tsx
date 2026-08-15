@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import MicrosoftAuthQR, { generateBase32Secret } from './MicrosoftAuthQR';
 import { TenantOrg, SystemAnnouncement, getTenantFeatures, TenantFeatures } from './AuthModal';
+import { fetchAdminOrganizationsViaApi } from '../lib/api';
 import {
   Building,
   Plus,
@@ -182,6 +183,21 @@ export default function MasterAdminDashboard({
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'deactivated'>('all');
   const [showSensitiveKeys, setShowSensitiveKeys] = useState<boolean>(false);
+  const [adminOrgDetails, setAdminOrgDetails] = useState<Record<string, { pin?: string; secretKey?: string }>>({});
+
+  useEffect(() => {
+    fetchAdminOrganizationsViaApi().then(res => {
+      if (res.success && Array.isArray(res.organizations)) {
+        const details: Record<string, { pin?: string; secretKey?: string }> = {};
+        res.organizations.forEach(o => {
+          if (o && o.id) {
+            details[o.id] = { pin: o.pin, secretKey: o.secretKey };
+          }
+        });
+        setAdminOrgDetails(details);
+      }
+    }).catch(() => {});
+  }, []);
 
   // Register New Org Modal state
   const [showRegisterModal, setShowRegisterModal] = useState<boolean>(false);
@@ -216,13 +232,14 @@ export default function MasterAdminDashboard({
   ]);
 
   const handleOpenEditModal = (org: TenantOrg) => {
+    const adminDetails = adminOrgDetails[org.id] || {};
     setEditingOrg(org);
     setEditName(org.name);
     setEditCode(org.code);
     setEditOwnerName(org.ownerName || '');
     setEditOwnerMobile(org.ownerMobile);
-    setEditPin(org.pin);
-    setEditSecretKey(org.secretKey || '');
+    setEditPin(adminDetails.pin || org.pin || '1234');
+    setEditSecretKey(adminDetails.secretKey || org.secretKey || '');
     setEditStatus(org.status);
     setEditSubPlan(org.subscriptionPlan || (org.isTrial ? 'trial' : 'monthly'));
     
@@ -247,8 +264,8 @@ export default function MasterAdminDashboard({
   const handleSaveEditOrg = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingOrg) return;
-    if (!editName.trim() || !editCode.trim() || !editOwnerMobile.trim() || !editPin.trim()) {
-      alert('Please fill in all required organization fields.');
+    if (!editName.trim() || !editCode.trim() || !editOwnerMobile.trim()) {
+      alert('Please fill in required organization fields (Name, Code, and Owner Mobile).');
       return;
     }
 
@@ -258,7 +275,7 @@ export default function MasterAdminDashboard({
       code: editCode.trim().toUpperCase(),
       ownerName: editOwnerName.trim() || 'Org Admin',
       ownerMobile: editOwnerMobile.trim(),
-      pin: editPin.trim(),
+      pin: editPin.trim(), // Can be blank ('') to enforce Microsoft Authenticator TOTP only
       secretKey: editSecretKey.trim() || generateBase32Secret(),
       status: editStatus,
       subscriptionPlan: editSubPlan,
@@ -404,14 +421,15 @@ export default function MasterAdminDashboard({
   };
 
   const handleCopyAccessDetails = (org: TenantOrg) => {
+    const adminDetails = adminOrgDetails[org.id] || {};
     const text = `🔑 *SAAS WORKSPACE ACCESS CREDENTIALS*
 ---------------------------------------
 🏢 Organization: ${org.name}
 🆔 Workspace Code: ${org.code}
 📱 Owner Mobile: ${org.ownerMobile}
 👤 Owner Name: ${org.ownerName || 'Admin'}
-🔑 PIN: ${org.pin}
-🔐 2FA Secret Key: ${org.secretKey || 'Standard TOTP'}
+🔑 PIN: ${adminDetails.pin || org.pin || '1234'}
+🔐 2FA Secret Key: ${adminDetails.secretKey || org.secretKey || 'Standard TOTP'}
 ---------------------------------------
 Login Page: Access with registered mobile and PIN on the portal.`;
 
@@ -1352,17 +1370,16 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">Organization Login PIN *</label>
+                    <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">Organization Login PIN (Optional)</label>
                     <input
                       type="text"
-                      required
                       maxLength={6}
-                      placeholder="e.g. 1234"
+                      placeholder="Leave blank for Authenticator 2FA Only"
                       value={regPin}
                       onChange={e => setRegPin(e.target.value)}
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-800 outline-none focus:ring-2 focus:ring-teal-500"
                     />
-                    <p className="text-[10px] text-slate-400 mt-1">Specific login PIN for this organization</p>
+                    <p className="text-[9.5px] text-slate-500 mt-1">Leave blank to enforce Microsoft Authenticator 6-digit code only</p>
                   </div>
                 </div>
 
@@ -1536,8 +1553,16 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                 <p>👤 Owner Name: <strong className="text-slate-100 font-sans">{selectedShareOrg.ownerName || 'Admin'}</strong></p>
                 <div className="flex items-center justify-between bg-slate-950 p-2 rounded-xl border border-slate-800">
                   <div className="space-y-0.5">
-                    <p>🔑 Master PIN: <strong className="text-teal-300">{showSensitiveKeys ? selectedShareOrg.pin : '••••••••'}</strong></p>
-                    <p>🔐 2FA Secret Key: <strong className="text-amber-300">{showSensitiveKeys ? (selectedShareOrg.secretKey || 'Standard TOTP') : '••••••••••••••••'}</strong></p>
+                    <p>🔑 Security PIN: <strong className="text-teal-300">{
+                      showSensitiveKeys 
+                        ? ((adminOrgDetails[selectedShareOrg.id]?.pin !== undefined ? adminOrgDetails[selectedShareOrg.id]?.pin : selectedShareOrg.pin) || 'None (Authenticator 2FA Only)') 
+                        : '••••••••'
+                    }</strong></p>
+                    <p>🔐 2FA Secret Key: <strong className="text-amber-300">{
+                      showSensitiveKeys 
+                        ? ((adminOrgDetails[selectedShareOrg.id]?.secretKey !== undefined ? adminOrgDetails[selectedShareOrg.id]?.secretKey : selectedShareOrg.secretKey) || 'Standard TOTP') 
+                        : '••••••••••••••••'
+                    }</strong></p>
                   </div>
                   <button
                     type="button"
@@ -1634,15 +1659,16 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-500 uppercase mb-1">Access PIN *</label>
+                  <label className="block font-bold text-slate-500 uppercase mb-1">Access PIN (Optional)</label>
                   <input
                     type="text"
-                    required
                     maxLength={6}
+                    placeholder="Leave blank for Authenticator 2FA Only"
                     value={editPin}
                     onChange={(e) => setEditPin(e.target.value)}
                     className="w-full border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono"
                   />
+                  <p className="text-[9.5px] text-slate-400 mt-1">Leave blank to enforce Microsoft Authenticator 6-digit code only</p>
                 </div>
               </div>
 

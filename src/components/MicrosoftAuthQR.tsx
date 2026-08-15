@@ -138,9 +138,9 @@ export async function verifyTOTP(secretBase32: string, inputCode: string): Promi
     console.warn('API verify-totp call error in client:', err);
   }
 
-  // Local TOTP check using provided secretBase32 only
+  // Local TOTP check using provided secretBase32 only (with ±3 min clock drift tolerance)
   if (secretBase32) {
-    const timeOffsets = [-90, -60, -30, 0, 30, 60, 90];
+    const timeOffsets = [-180, -150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150, 180];
     try {
       for (const off of timeOffsets) {
         const code = await generateTOTP(secretBase32, off);

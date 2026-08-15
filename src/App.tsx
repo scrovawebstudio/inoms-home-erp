@@ -3542,6 +3542,8 @@ export default function App() {
           {activeTab === 'settings' && (
             <SettingsComponent
               activeTenantId={activeTenant.id}
+              activeTenant={activeTenant}
+              onUpdateTenant={(updated) => setActiveTenant(updated)}
               userRole={userRole}
               currentUser={currentUser}
               tenantFeatures={activeTenant?.features}

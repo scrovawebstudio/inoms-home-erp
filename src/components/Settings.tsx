@@ -45,13 +45,19 @@ import {
   ArrowRight,
   FileSpreadsheet,
   Info,
-  Edit
+  Edit,
+  Eye,
+  EyeOff,
+  Copy
 } from 'lucide-react';
 import { SystemUser, ActivityLog, Equipment, Problem, CompanyConfig, Client, RepairJob, Invoice, Product, Payment, Expense, DEFAULT_THEME_PALETTE, TenantThemePalette } from '../types';
-import { TenantFeatures, getTenantFeatures } from './AuthModal';
+import { TenantFeatures, getTenantFeatures, TenantOrg } from './AuthModal';
+import { updateOrgViaApi } from '../lib/api';
 
 interface SettingsProps {
   activeTenantId?: string;
+  activeTenant?: TenantOrg;
+  onUpdateTenant?: (updatedOrg: TenantOrg) => void;
   userRole?: string;
   currentUser?: SystemUser | null;
   tenantFeatures?: TenantFeatures;
@@ -92,6 +98,8 @@ interface SettingsProps {
 
 export default function SettingsComponent({
   activeTenantId,
+  activeTenant,
+  onUpdateTenant,
   userRole,
   currentUser,
   tenantFeatures,
@@ -119,6 +127,52 @@ export default function SettingsComponent({
   const currentTenantId = activeTenantId || 'org-admin';
   const [activeSubTab, setActiveSubTab] = useState<'profile' | 'theme' | 'backup' | 'masters' | 'admin'>('profile');
   const [showMicrosoftAuthQRModal, setShowMicrosoftAuthQRModal] = useState<boolean>(false);
+
+  // Organization Security PIN & 2FA state
+  const [orgPinInput, setOrgPinInput] = useState<string>(activeTenant?.pin || '');
+  const [showOrgPin, setShowOrgPin] = useState<boolean>(false);
+  const [isSavingOrgPin, setIsSavingOrgPin] = useState<boolean>(false);
+  const [orgPinStatusMsg, setOrgPinStatusMsg] = useState<{ text: string; isError?: boolean } | null>(null);
+  const [copiedSecret, setCopiedSecret] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (activeTenant?.pin !== undefined) {
+      setOrgPinInput(activeTenant.pin || '');
+    }
+  }, [activeTenant?.pin]);
+
+  const handleSaveOrgPin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsSavingOrgPin(true);
+    setOrgPinStatusMsg(null);
+    try {
+      const cleanPin = orgPinInput.trim();
+      const res = await updateOrgViaApi({
+        id: currentTenantId,
+        pin: cleanPin // Blank/empty string clears PIN and enforces Microsoft Authenticator TOTP
+      });
+      if (res.success) {
+        if (activeTenant && onUpdateTenant) {
+          onUpdateTenant({
+            ...activeTenant,
+            pin: cleanPin
+          });
+        }
+        setOrgPinStatusMsg({
+          text: cleanPin
+            ? `✓ Security PIN successfully updated to ${cleanPin.length} digits!`
+            : '✓ Security PIN cleared! Workspace now requires 6-digit dynamic passcode from Microsoft Authenticator on login.'
+        });
+        setTimeout(() => setOrgPinStatusMsg(null), 6000);
+      } else {
+        setOrgPinStatusMsg({ text: res.message || 'Failed to update PIN', isError: true });
+      }
+    } catch (err: any) {
+      setOrgPinStatusMsg({ text: err.message || 'Failed to update PIN', isError: true });
+    } finally {
+      setIsSavingOrgPin(false);
+    }
+  };
 
   const activePalette: TenantThemePalette = companyConfig.themePalette || DEFAULT_THEME_PALETTE;
 
@@ -2365,6 +2419,185 @@ export default function SettingsComponent({
               </div>
             </div>
           )}
+
+          {/* Organization Security PIN & 2FA Access Management Card */}
+          <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs space-y-5">
+            <div className="flex items-center justify-between flex-wrap gap-3 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-teal-50 text-teal-600 rounded-xl border border-teal-100">
+                  <Key className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-slate-800 tracking-tight flex items-center gap-2">
+                    <span>Organization Security PIN &amp; 2FA Access</span>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                      orgPinInput.trim().length > 0
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                    }`}>
+                      {orgPinInput.trim().length > 0 ? `● PIN Active (${orgPinInput.trim().length} digits)` : '🛡️ TOTP 2FA Only (PIN Blank)'}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Configure your workspace security PIN and Microsoft Authenticator two-factor authentication for owner logins.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono font-bold bg-slate-100 text-slate-700 px-2.5 py-1 rounded-lg border border-slate-200">
+                  Workspace: {activeTenant?.code || companyConfig.name || 'ORG'}
+                </span>
+              </div>
+            </div>
+
+            {orgPinStatusMsg && (
+              <div className={`p-3.5 rounded-xl text-xs font-medium flex items-center gap-2 ${
+                orgPinStatusMsg.isError
+                  ? 'bg-rose-50 text-rose-800 border border-rose-200'
+                  : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+              }`}>
+                {orgPinStatusMsg.isError ? <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" /> : <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />}
+                <span>{orgPinStatusMsg.text}</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Left Column: Security PIN Configuration */}
+              <form onSubmit={handleSaveOrgPin} className="bg-slate-50/80 p-5 rounded-2xl border border-slate-200/80 space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Security PIN (Access Code)
+                  </label>
+                  <p className="text-[11px] text-slate-500 mb-2.5">
+                    Used to quickly unlock this workspace during owner mobile login.
+                  </p>
+                  
+                  <div className="relative flex items-center">
+                    <input
+                      type={showOrgPin ? 'text' : 'password'}
+                      value={orgPinInput}
+                      onChange={(e) => setOrgPinInput(e.target.value)}
+                      placeholder="Enter 4 to 6 digit security PIN (or leave blank)"
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 pr-11 text-slate-800 font-mono text-sm tracking-widest outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-100 transition"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowOrgPin(!showOrgPin)}
+                      title={showOrgPin ? 'Hide PIN (Mask as *)' : 'Show PIN'}
+                      className="absolute right-2.5 p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                    >
+                      {showOrgPin ? <EyeOff className="w-4 h-4 text-teal-600" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-white p-3 rounded-xl border border-slate-200/70 text-[11px] space-y-1 text-slate-600">
+                  <div className="font-semibold text-slate-700 flex items-center gap-1.5">
+                    <Info className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                    <span>How PIN &amp; 2FA Work:</span>
+                  </div>
+                  <p className="leading-relaxed">
+                    • <strong>Static PIN Set:</strong> You can log in using either your Security PIN or your Microsoft Authenticator 6-digit passcode.
+                  </p>
+                  <p className="leading-relaxed">
+                    • <strong>Blank PIN:</strong> If kept blank, static PIN login is disabled and the workspace <strong>only accepts the 6-digit dynamic passcode from Microsoft Authenticator app</strong>.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="submit"
+                    disabled={isSavingOrgPin}
+                    className="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs py-2.5 px-4 rounded-xl transition shadow-xs hover:shadow flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  >
+                    {isSavingOrgPin ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Save Security PIN</span>
+                      </>
+                    )}
+                  </button>
+
+                  {orgPinInput.trim().length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOrgPinInput('');
+                        setTimeout(() => handleSaveOrgPin(), 50);
+                      }}
+                      disabled={isSavingOrgPin}
+                      className="bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold text-xs py-2.5 px-3 rounded-xl transition cursor-pointer"
+                    >
+                      Clear PIN (TOTP Only)
+                    </button>
+                  )}
+                </div>
+              </form>
+
+              {/* Right Column: Microsoft Authenticator 2FA Card */}
+              <div className="bg-slate-900 text-white p-5 rounded-2xl border border-slate-800 space-y-4 flex flex-col justify-between">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-teal-500/20 text-teal-400 border border-teal-500/30 flex items-center justify-center">
+                        <QrCode className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-sm text-white">Microsoft Authenticator 2FA</h4>
+                        <p className="text-[10px] text-slate-400">Standard RFC 6238 TOTP (30-second rotating code)</p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] bg-teal-500/20 text-teal-300 border border-teal-500/30 font-bold px-2 py-0.5 rounded-full">
+                      ✓ Supported
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Link your smartphone's <strong>Microsoft Authenticator</strong> or <strong>Google Authenticator</strong> app to scan this organization's QR code. You can use dynamic 6-digit codes to authenticate securely from any device.
+                  </p>
+
+                  {activeTenant?.secretKey && (
+                    <div className="bg-slate-800/90 p-3 rounded-xl border border-slate-700/80 space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] text-slate-400">
+                        <span>Secret Key (Manual Entry):</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (activeTenant?.secretKey) {
+                              navigator.clipboard.writeText(activeTenant.secretKey);
+                              setCopiedSecret(true);
+                              setTimeout(() => setCopiedSecret(false), 3000);
+                            }
+                          }}
+                          className="text-teal-400 hover:text-teal-300 font-bold flex items-center gap-1 cursor-pointer"
+                        >
+                          <Copy className="w-3 h-3" />
+                          <span>{copiedSecret ? 'Copied!' : 'Copy'}</span>
+                        </button>
+                      </div>
+                      <div className="font-mono text-xs font-bold text-amber-300 tracking-wider break-all select-all">
+                        {activeTenant.secretKey}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowMicrosoftAuthQRModal(true)}
+                  className="w-full bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs py-2.5 px-4 rounded-xl transition flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                >
+                  <QrCode className="w-4 h-4" />
+                  <span>View Microsoft Authenticator QR Code</span>
+                </button>
+              </div>
+            </div>
+          </div>
 
           {/* Staff Control Main Section Header */}
           <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex items-center justify-between gap-3">
