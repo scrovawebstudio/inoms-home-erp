@@ -267,21 +267,21 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
   companyConfig: any;
   collections: Record<string, any[]>;
 } | null> {
+  if (!tenantId) return null;
   const token = getAuthToken();
-  if (!token) {
-    // If no token exists yet, avoid sending unauthenticated requests that return 401
-    return null;
-  }
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`
+    'x-tenant-id': tenantId
   };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
 
   try {
-    const res = await fetch('/api/sync/bootstrap', { headers });
+    const res = await fetch(`/api/sync/bootstrap?tenantId=${encodeURIComponent(tenantId)}`, { headers });
     if (!res.ok) {
-      if (res.status === 401) {
+      if (res.status === 401 && token) {
         clearAuthToken();
       }
       return null;
@@ -355,8 +355,8 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
 
 // 2. Incremental Delta Pull
 export async function pullDeltaFromHomeServer(tenantId: string): Promise<number> {
+  if (!tenantId) return 0;
   const token = getAuthToken();
-  if (!token) return 0;
 
   try {
     const db = await getLocalDB();
@@ -365,12 +365,15 @@ export async function pullDeltaFromHomeServer(tenantId: string): Promise<number>
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
+      'x-tenant-id': tenantId
     };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
 
-    const res = await fetch(`/api/sync/pull?sinceRevision=${sinceRevision}`, { headers });
+    const res = await fetch(`/api/sync/pull?sinceRevision=${sinceRevision}&tenantId=${encodeURIComponent(tenantId)}`, { headers });
     if (!res.ok) {
-      if (res.status === 401) clearAuthToken();
+      if (res.status === 401 && token) clearAuthToken();
       return sinceRevision;
     }
 
@@ -436,10 +439,8 @@ export async function pushPendingOperations(tenantId: string): Promise<{
   committedCount: number;
   remainingCount: number;
 }> {
+  if (!tenantId) return { success: false, committedCount: 0, remainingCount: 0 };
   const token = getAuthToken();
-  if (!token) {
-    return { success: false, committedCount: 0, remainingCount: 0 };
-  }
 
   if (isPushing) return { success: true, committedCount: 0, remainingCount: 0 };
   isPushing = true;
@@ -464,17 +465,20 @@ export async function pushPendingOperations(tenantId: string): Promise<{
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
+      'x-tenant-id': tenantId
     };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
 
     const res = await fetch('/api/sync/push', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ operations: deduplicatedOps })
+      body: JSON.stringify({ tenantId, operations: deduplicatedOps })
     });
 
     if (!res.ok) {
-      if (res.status === 401) clearAuthToken();
+      if (res.status === 401 && token) clearAuthToken();
       return { success: false, committedCount: 0, remainingCount: ops.length };
     }
 

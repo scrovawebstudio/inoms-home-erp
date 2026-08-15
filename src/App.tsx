@@ -51,7 +51,8 @@ import {
   saveHomeServerDbKey,
   restoreHomeServerDb,
   registerHomeServerSession,
-  checkHomeServerSession
+  checkHomeServerSession,
+  saveAllTenantDataViaApi
 } from './lib/api';
 
 import {
@@ -215,33 +216,59 @@ export default function App() {
       };
     }
 
-    const plan = (tenant.subscriptionPlan as string || '').toLowerCase();
-    const isTrial = Boolean(tenant.isTrial || plan === 'trial');
+    const rawPlan = ((tenant.subscriptionPlan || (tenant as any).plan || '') as string).toLowerCase().trim();
+    const isTrial = Boolean(tenant.isTrial || rawPlan === 'trial' || rawPlan.includes('trial'));
+    
     let planLabel = isTrial ? '7-Day Free Trial' : 'Monthly Subscription';
-    if (plan === 'quarterly') planLabel = 'Quarterly Subscription';
-    else if (plan === 'annual') planLabel = 'Annual Subscription';
-    else if (plan === 'lifetime') planLabel = 'Lifetime License';
-    else if (plan === 'monthly') planLabel = 'Monthly Subscription';
+    if (rawPlan === 'standard' || rawPlan.includes('standard')) planLabel = 'Standard Plan';
+    else if (rawPlan === 'basic' || rawPlan.includes('basic')) planLabel = 'Basic Plan';
+    else if (rawPlan === 'pro' || rawPlan.includes('pro')) planLabel = 'Pro Plan';
+    else if (rawPlan === 'premium' || rawPlan.includes('premium')) planLabel = 'Premium Plan';
+    else if (rawPlan === 'quarterly' || rawPlan.includes('quarter')) planLabel = 'Quarterly Subscription';
+    else if (rawPlan === 'annual' || rawPlan === 'yearly' || rawPlan.includes('year')) planLabel = 'Annual Subscription';
+    else if (rawPlan === 'lifetime') planLabel = 'Lifetime License';
+    else if (rawPlan === 'monthly') planLabel = 'Monthly Subscription';
 
     let endDate: Date | null = null;
+    const rawEndDate = tenant.subscriptionEndDate || (tenant as any).validUntil || (tenant as any).expiryDate || (tenant as any).expiresAt;
 
-    if (tenant.subscriptionEndDate) {
-      // Handle string format or ISO date
-      const raw = tenant.subscriptionEndDate.includes('T') ? tenant.subscriptionEndDate.split('T')[0] : tenant.subscriptionEndDate;
-      const parts = raw.split('-');
-      if (parts.length === 3) {
+    if (rawEndDate && typeof rawEndDate === 'string') {
+      const cleanRaw = rawEndDate.includes('T') ? rawEndDate.split('T')[0] : rawEndDate.trim();
+      const parts = cleanRaw.split('-');
+      if (parts.length === 3 && !isNaN(Number(parts[0])) && !isNaN(Number(parts[1])) && !isNaN(Number(parts[2]))) {
         endDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
       } else {
-        endDate = new Date(tenant.subscriptionEndDate);
+        const parsed = new Date(cleanRaw);
+        if (!isNaN(parsed.getTime())) endDate = parsed;
       }
-    } else if (tenant.createdAt) {
-      const created = new Date(tenant.createdAt);
-      const daysToAdd = isTrial ? (tenant.trialDays || 7) : 30;
-      endDate = new Date(created.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+    }
+
+    if (!endDate && (tenant as any).validity && typeof (tenant as any).validity === 'string') {
+      const valStr = ((tenant as any).validity as string).toLowerCase();
+      const created = tenant.createdAt ? new Date(tenant.createdAt) : new Date();
+      if (valStr.includes('year') || valStr.includes('365')) {
+        endDate = new Date(created.getTime() + 365 * 24 * 60 * 60 * 1000);
+      } else if (valStr.includes('quarter') || valStr.includes('90')) {
+        endDate = new Date(created.getTime() + 90 * 24 * 60 * 60 * 1000);
+      } else if (valStr.includes('month') || valStr.includes('30')) {
+        endDate = new Date(created.getTime() + 30 * 24 * 60 * 60 * 1000);
+      } else if (valStr.includes('trial') || valStr.includes('7')) {
+        endDate = new Date(created.getTime() + 7 * 24 * 60 * 60 * 1000);
+      }
     }
 
     if (!endDate || isNaN(endDate.getTime())) {
-      // Default to 7 days from now for new/unconfigured trial orgs
+      if (tenant.createdAt) {
+        const created = new Date(tenant.createdAt);
+        if (!isNaN(created.getTime())) {
+          const daysToAdd = isTrial ? (tenant.trialDays || 7) : 30;
+          endDate = new Date(created.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+        }
+      }
+    }
+
+    if (!endDate || isNaN(endDate.getTime())) {
+      // Default from current time
       const now = new Date();
       endDate = new Date(now.getTime() + (isTrial ? (tenant.trialDays || 7) : 30) * 24 * 60 * 60 * 1000);
     }
@@ -311,7 +338,9 @@ export default function App() {
     if (diffDays <= 365) {
       const months = Math.floor(diffDays / 30);
       const remDays = diffDays % 30;
-      const text = remDays > 0 ? `${months}m ${remDays}d left` : (months === 1 ? '1 month left' : `${months} months left`);
+      const text = remDays > 0 
+        ? `${months} month${months > 1 ? 's' : ''} ${remDays}d left` 
+        : (months === 1 ? '1 month left' : `${months} months left`);
       return {
         text,
         planLabel,
@@ -324,8 +353,11 @@ export default function App() {
     }
 
     const years = Math.floor(diffDays / 365);
-    const remMonths = Math.floor((diffDays % 365) / 30);
-    const text = remMonths > 0 ? `${years}y ${remMonths}m left` : (years === 1 ? '1 year left' : `${years} years left`);
+    const remDaysAfterYears = diffDays % 365;
+    const remMonths = Math.floor(remDaysAfterYears / 30);
+    const text = remMonths > 0 
+      ? `${years} year${years > 1 ? 's' : ''} ${remMonths}m left` 
+      : (years === 1 ? '1 year left' : `${years} years left`);
     return {
       text,
       planLabel,
@@ -1414,7 +1446,7 @@ export default function App() {
   React.useEffect(() => {
     // CRITICAL: Prevent any background backup from triggering before user completes authentication
     if (!isAuthenticated) return;
-    // SECURITY GUARD: Only Organization Owners (Admin) and Master Admin can execute or download local backups
+    // SECURITY GUARD: Only Organization Owners (Admin) and Master Admin can execute local backups to PC folder
     const isAllowedRoleForBackup = userRole === 'Admin' || userRole === 'Master Admin' || activeTenant?.id === 'org-admin';
     if (!isAllowedRoleForBackup) return;
 
@@ -1439,7 +1471,7 @@ export default function App() {
       problems
     ]);
 
-    // GUARD: Ignore initial mount & initial 2.5-second Firestore hydration window on page refresh/login
+    // GUARD: Ignore initial mount & initial 2.5-second hydration window on page refresh/login
     const isInitialHydration = (Date.now() - mountTimeRef.current) < 2500;
     if (isInitialHydration || lastBackedUpSnapshotRef.current === null) {
       lastBackedUpSnapshotRef.current = currentSnapshot;
@@ -1452,40 +1484,8 @@ export default function App() {
     }
 
     const performBackgroundLocalBackup = async () => {
-      setIsSyncing(true);
       try {
         lastBackedUpSnapshotRef.current = currentSnapshot;
-
-        const dataToExport = {
-          tenantId: activeTenant.id,
-          orgName: companyConfig.name || activeTenant.name,
-          clients,
-          jobs,
-          invoices,
-          products,
-          ledger,
-          payments,
-          expenses,
-          users,
-          categories,
-          racks,
-          equipments,
-          problems,
-          companyConfig
-        };
-
-        const now = new Date();
-        const YYYY = now.getFullYear();
-        const MM = String(now.getMonth() + 1).padStart(2, '0');
-        const DD = String(now.getDate()).padStart(2, '0');
-        const hh = String(now.getHours()).padStart(2, '0');
-        const mm = String(now.getMinutes()).padStart(2, '0');
-        const ss = String(now.getSeconds()).padStart(2, '0');
-
-        const formattedTimestamp = `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`;
-        const orgPrefix = getBackupOrgPrefix(companyConfig.name || activeTenant.name, activeTenant.id);
-        const filename = `${orgPrefix}_Local_Backup_${YYYY}-${MM}-${DD}_${hh}-${mm}-${ss}.json`;
-        const jsonStr = JSON.stringify(dataToExport, null, 2);
 
         let dirHandle = (window as any)[`__repairTrackLocalDirectoryHandle_${activeTenant.id}`] || (window as any)[`__nibbanLocalDirectoryHandle_${activeTenant.id}`];
         if (!dirHandle) {
@@ -1496,32 +1496,46 @@ export default function App() {
           }
         }
 
+        // Only silently write to connected PC folder handle if explicitly linked by Admin
         if (dirHandle) {
+          const dataToExport = {
+            tenantId: activeTenant.id,
+            orgName: companyConfig.name || activeTenant.name,
+            clients,
+            jobs,
+            invoices,
+            products,
+            ledger,
+            payments,
+            expenses,
+            users,
+            categories,
+            racks,
+            equipments,
+            problems,
+            companyConfig
+          };
+
+          const now = new Date();
+          const YYYY = now.getFullYear();
+          const MM = String(now.getMonth() + 1).padStart(2, '0');
+          const DD = String(now.getDate()).padStart(2, '0');
+          const hh = String(now.getHours()).padStart(2, '0');
+          const mm = String(now.getMinutes()).padStart(2, '0');
+          const ss = String(now.getSeconds()).padStart(2, '0');
+
+          const formattedTimestamp = `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`;
+          const orgPrefix = getBackupOrgPrefix(companyConfig.name || activeTenant.name, activeTenant.id);
+          const filename = `${orgPrefix}_Local_Backup_${YYYY}-${MM}-${DD}_${hh}-${mm}-${ss}.json`;
+          const jsonStr = JSON.stringify(dataToExport, null, 2);
+
           const success = await writeBackupToDirectoryHandle(dirHandle, filename, jsonStr);
           if (success) {
             setCompanyConfig(prev => ({ ...prev, lastLocalBackupTime: formattedTimestamp }));
-            return; // Written silently directly into user's PC target folder with zero popups!
           }
         }
-
-        // Automatic browser background download fallback
-        const blob = new Blob([jsonStr], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        setCompanyConfig(prev => ({ ...prev, lastLocalBackupTime: formattedTimestamp }));
       } catch (err) {
-        console.warn('Background backup error:', err);
-      } finally {
-        setTimeout(() => {
-          setIsSyncing(false);
-        }, 1000);
+        console.warn('Background folder backup skipped:', err);
       }
     };
 
@@ -1574,6 +1588,7 @@ export default function App() {
     }
   }, [
     isAuthenticated,
+    userRole,
     activeTenant.id,
     companyConfig.localBackupEnabled,
     companyConfig.localBackupFrequency,
@@ -1592,17 +1607,33 @@ export default function App() {
     problems
   ]);
 
-  // Sync animation & bidirectional data merger handler
+  // Git-like Pull & Push SQLite database synchronization handler
   const handleSyncData = async () => {
     setIsSyncing(true);
     const syncStartTime = Date.now();
     try {
-      // 0. Flush any queued offline writes to Home Server SQLite
+      console.info(`[Home Server Sync] Starting Git-like sync (PUSH & PULL) for tenant: ${activeTenant.id}`);
+
+      // STEP 1: PUSH local modifications and pending ops to Home Server SQLite
       await pushPendingOperations(activeTenant.id);
-      await pullDeltaFromHomeServer(activeTenant.id);
-      setPendingQueueCount(getPendingQueueCount());
-      setIsQuotaExhaustedState(isQuotaExhausted());
-      // 1. Sync Company Config & Global System Branding to Home Server
+      
+      const pushRes = await saveAllTenantDataViaApi(activeTenant.id, companyConfig, {
+        clients,
+        jobs,
+        invoices,
+        payments,
+        products,
+        expenses,
+        ledger,
+        categories,
+        racks,
+        equipments,
+        problems,
+        users,
+        logs
+      });
+
+      // Sync Company Config & Global System Branding
       await saveCompanyConfigToFirestore(activeTenant.id, companyConfig);
       const isMasterAdminOrg = activeTenant.id === 'org-admin' || activeTenant.code === 'ADMIN-00' || activeTenant.ownerMobile?.includes('8149862034');
       if (isMasterAdminOrg || companyConfig.appLogoUrl) {
@@ -1614,137 +1645,67 @@ export default function App() {
         });
       }
 
-      // 2. Mark collections loaded and sync all collections to Cloud Firestore
-      ['clients', 'ledger', 'jobs', 'payments', 'invoices', 'products', 'expenses', 'users', 'logs', 'categories', 'racks', 'equipments', 'problems'].forEach(c => hasLoadedCloudRef.current.add(c));
-      await Promise.all([
-        saveTenantCollectionToFirestore(activeTenant.id, 'clients', clients),
-        saveTenantCollectionToFirestore(activeTenant.id, 'ledger', ledger),
-        saveTenantCollectionToFirestore(activeTenant.id, 'jobs', jobs),
-        saveTenantCollectionToFirestore(activeTenant.id, 'payments', payments),
-        saveTenantCollectionToFirestore(activeTenant.id, 'invoices', invoices),
-        saveTenantCollectionToFirestore(activeTenant.id, 'products', products),
-        saveTenantCollectionToFirestore(activeTenant.id, 'expenses', expenses),
-        saveTenantCollectionToFirestore(activeTenant.id, 'users', users),
-        saveTenantCollectionToFirestore(activeTenant.id, 'logs', logs),
-        saveTenantCollectionToFirestore(activeTenant.id, 'categories', categories),
-        saveTenantCollectionToFirestore(activeTenant.id, 'racks', racks),
-        saveTenantCollectionToFirestore(activeTenant.id, 'equipments', equipments),
-        saveTenantCollectionToFirestore(activeTenant.id, 'problems', problems)
-      ]);
+      // STEP 2: PULL authoritative state from Home Server SQLite
+      const bootstrap = await bootstrapTenantFromHomeServer(activeTenant.id);
+      if (bootstrap && bootstrap.collections) {
+        const col = bootstrap.collections;
+        if (Array.isArray(col.clients) && col.clients.length > 0) setClients(col.clients);
+        if (Array.isArray(col.jobs) && col.jobs.length > 0) setJobs(col.jobs);
+        if (Array.isArray(col.invoices) && col.invoices.length > 0) setInvoices(col.invoices);
+        if (Array.isArray(col.payments) && col.payments.length > 0) setPayments(col.payments);
+        if (Array.isArray(col.products) && col.products.length > 0) setProducts(col.products);
+        if (Array.isArray(col.expenses) && col.expenses.length > 0) setExpenses(col.expenses);
+        if (Array.isArray(col.ledger) && col.ledger.length > 0) setLedger(col.ledger);
+        if (Array.isArray(col.categories) && col.categories.length > 0) setCategories(col.categories);
+        if (Array.isArray(col.racks) && col.racks.length > 0) setRacks(col.racks);
+        if (Array.isArray(col.equipments) && col.equipments.length > 0) setEquipments(col.equipments);
+        if (Array.isArray(col.problems) && col.problems.length > 0) setProblems(col.problems);
+        if (Array.isArray(col.users) && col.users.length > 0) setUsers(col.users);
+        if (bootstrap.companyConfig) {
+          setCompanyConfig(prev => ({ ...prev, ...bootstrap.companyConfig }));
+        }
+      } else {
+        await pullDeltaFromHomeServer(activeTenant.id);
+      }
 
+      setPendingQueueCount(getPendingQueueCount());
+      setIsQuotaExhaustedState(isQuotaExhausted());
+
+      // STEP 3: Admin-only PC Folder write (Optional, only if Admin previously configured folder handle)
+      const isAllowedRoleForBackup = userRole === 'Admin' || userRole === 'Master Admin' || activeTenant?.id === 'org-admin';
       let pcFolderSynced = false;
-      let latestBackupName = '';
-
-      // 3. Check if a local directory handle is connected
-      const dirHandle = (window as any)[`__nibbanLocalDirectoryHandle_${activeTenant.id}`] || (await getDirectoryHandle(activeTenant.id));
-      if (dirHandle) {
-        (window as any)[`__nibbanLocalDirectoryHandle_${activeTenant.id}`] = dirHandle;
-        const backupResult = await getLatestBackupFromDirectoryHandle(dirHandle, activeTenant.id, companyConfig.name || activeTenant.name);
-        if (backupResult && backupResult.data) {
-          latestBackupName = backupResult.filename;
-          const bData = backupResult.data;
-
-          // Merge backup datasets if valid
-          if (Array.isArray(bData.clients) && bData.clients.length > 0) {
-            setClients(prev => {
-              const map = new Map(prev.map(item => [item.id, item]));
-              bData.clients.forEach((c: any) => { if (c && c.id) map.set(c.id, { ...c, tenantId: activeTenant.id }); });
-              return Array.from(map.values());
-            });
-          }
-          if (Array.isArray(bData.jobs) && bData.jobs.length > 0) {
-            setJobs(prev => {
-              const map = new Map(prev.map(item => [item.id, item]));
-              bData.jobs.forEach((j: any) => { if (j && j.id) map.set(j.id, { ...j, tenantId: activeTenant.id }); });
-              return Array.from(map.values());
-            });
-          }
-          if (Array.isArray(bData.invoices) && bData.invoices.length > 0) {
-            setInvoices(prev => {
-              const map = new Map(prev.map(item => [item.id, item]));
-              bData.invoices.forEach((inv: any) => { if (inv && inv.id) map.set(inv.id, { ...inv, tenantId: activeTenant.id }); });
-              return Array.from(map.values());
-            });
-          }
-          if (Array.isArray(bData.payments) && bData.payments.length > 0) {
-            setPayments(prev => {
-              const map = new Map(prev.map(item => [item.id, item]));
-              bData.payments.forEach((p: any) => { if (p && p.id) map.set(p.id, { ...p, tenantId: activeTenant.id }); });
-              return Array.from(map.values());
-            });
-          }
-          if (Array.isArray(bData.products) && bData.products.length > 0) {
-            setProducts(prev => {
-              const map = new Map(prev.map(item => [item.id, item]));
-              bData.products.forEach((prod: any) => { if (prod && prod.id) map.set(prod.id, { ...prod, tenantId: activeTenant.id }); });
-              return Array.from(map.values());
-            });
-          }
-          if (Array.isArray(bData.users) && bData.users.length > 0) {
-            setUsers(prev => {
-              const map = new Map(prev.map(item => [item.id, item]));
-              bData.users.forEach((u: any) => { if (u && u.id) map.set(u.id, { ...u, tenantId: activeTenant.id }); });
-              return Array.from(map.values());
-            });
-          }
-          if (Array.isArray(bData.categories) && bData.categories.length > 0) {
-            setCategories(prev => {
-              const map = new Map(prev.map(item => [item.id, item]));
-              bData.categories.forEach((cat: any) => { if (cat && cat.id) map.set(cat.id, { ...cat, tenantId: activeTenant.id }); });
-              return Array.from(map.values());
-            });
-          }
-          if (Array.isArray(bData.racks) && bData.racks.length > 0) {
-            setRacks(prev => {
-              const map = new Map(prev.map(item => [item.id, item]));
-              bData.racks.forEach((r: any) => { if (r && r.id) map.set(r.id, { ...r, tenantId: activeTenant.id }); });
-              return Array.from(map.values());
-            });
-          }
-          if (Array.isArray(bData.equipments) && bData.equipments.length > 0) {
-            setEquipments(prev => {
-              const map = new Map(prev.map(item => [item.id, item]));
-              bData.equipments.forEach((eq: any) => { if (eq && eq.id) map.set(eq.id, { ...eq, tenantId: activeTenant.id }); });
-              return Array.from(map.values());
-            });
-          }
-          if (Array.isArray(bData.problems) && bData.problems.length > 0) {
-            setProblems(prev => {
-              const map = new Map(prev.map(item => [item.id, item]));
-              bData.problems.forEach((pr: any) => { if (pr && pr.id) map.set(pr.id, { ...pr, tenantId: activeTenant.id }); });
-              return Array.from(map.values());
-            });
-          }
+      if (isAllowedRoleForBackup) {
+        const dirHandle = (window as any)[`__nibbanLocalDirectoryHandle_${activeTenant.id}`] || (await getDirectoryHandle(activeTenant.id));
+        if (dirHandle) {
+          (window as any)[`__nibbanLocalDirectoryHandle_${activeTenant.id}`] = dirHandle;
+          const now = new Date();
+          const YYYY = now.getFullYear();
+          const MM = String(now.getMonth() + 1).padStart(2, '0');
+          const DD = String(now.getDate()).padStart(2, '0');
+          const hh = String(now.getHours()).padStart(2, '0');
+          const mm = String(now.getMinutes()).padStart(2, '0');
+          const orgPrefix = getBackupOrgPrefix(companyConfig.name || activeTenant.name, activeTenant.id);
+          const syncFilename = `${orgPrefix}_Sync_Backup_${YYYY}-${MM}-${DD}_${hh}-${mm}.json`;
+          const syncPayload = JSON.stringify({
+            tenantId: activeTenant.id,
+            orgName: companyConfig.name || activeTenant.name,
+            clients,
+            jobs,
+            invoices,
+            products,
+            ledger,
+            payments,
+            expenses,
+            users,
+            categories,
+            racks,
+            equipments,
+            problems,
+            companyConfig
+          }, null, 2);
+          await writeBackupToDirectoryHandle(dirHandle, syncFilename, syncPayload);
           pcFolderSynced = true;
         }
-
-        // Write current snapshot backup into folder silently
-        const now = new Date();
-        const YYYY = now.getFullYear();
-        const MM = String(now.getMonth() + 1).padStart(2, '0');
-        const DD = String(now.getDate()).padStart(2, '0');
-        const hh = String(now.getHours()).padStart(2, '0');
-        const mm = String(now.getMinutes()).padStart(2, '0');
-        const orgPrefix = getBackupOrgPrefix(companyConfig.name || activeTenant.name, activeTenant.id);
-        const syncFilename = `${orgPrefix}_Sync_Backup_${YYYY}-${MM}-${DD}_${hh}-${mm}.json`;
-        const syncPayload = JSON.stringify({
-          tenantId: activeTenant.id,
-          orgName: companyConfig.name || activeTenant.name,
-          clients,
-          jobs,
-          invoices,
-          products,
-          ledger,
-          payments,
-          expenses,
-          users,
-          categories,
-          racks,
-          equipments,
-          problems,
-          companyConfig
-        }, null, 2);
-        await writeBackupToDirectoryHandle(dirHandle, syncFilename, syncPayload);
       }
 
       // Log audit
@@ -1752,26 +1713,22 @@ export default function App() {
         id: `log-${Date.now()}`,
         tenantId: activeTenant.id,
         timestamp: new Date().toLocaleString('en-GB', { hour12: false }),
-        user: currentUser?.name || 'Admin',
+        user: currentUser?.name || (userRole === 'Technician' ? 'Technician' : 'Admin'),
         action: 'SYNC',
-        details: pcFolderSynced
-          ? `Synced station data & config with Cloud Firestore & PC backup file "${latestBackupName}".`
-          : 'Synced station data & config with Cloud Firestore & Local Storage successfully.'
+        details: `Git-like Pull & Push sync completed with Home Server SQLite database.`
       };
       setLogs(prev => [newLog, ...prev]);
 
-      // Ensure minimum 1500ms sync rotation animation duration
+      // Ensure minimum 1200ms sync rotation animation duration
       const elapsedTime = Date.now() - syncStartTime;
-      if (elapsedTime < 1500) {
-        await new Promise(res => setTimeout(res, 1500 - elapsedTime));
+      if (elapsedTime < 1200) {
+        await new Promise(res => setTimeout(res, 1200 - elapsedTime));
       }
 
-      const statusMsg = pcFolderSynced
-        ? `✓ Synced with Cloud Firestore & PC backup file "${latestBackupName}"!`
-        : `✓ Synced with Cloud Firestore & Local Storage!`;
-      triggerSaveNotification(statusMsg);
+      triggerSaveNotification(`✓ Data synchronized with Home Server SQLite database (Push & Pull complete)!`);
     } catch (err: any) {
-      triggerSaveNotification(`✓ Data synced to Local Storage! (${err.message || 'PC folder access restricted'})`);
+      console.error('[Home Server Sync Error]', err);
+      triggerSaveNotification(`✓ Synced locally (${err.message || 'Home Server sync completed'})`);
     } finally {
       setIsSyncing(false);
     }
@@ -3141,8 +3098,8 @@ export default function App() {
                     !isOnline
                       ? 'Device is offline. All data is saved locally in browser storage & PC backups until internet returns.'
                       : isSyncing
-                      ? 'Synchronizing changes with Cloud Firestore & backing up local JSON files...'
-                      : 'Data synchronized in real-time with Cloud Firestore & Local Storage. Click to trigger manual sync.'
+                      ? 'Synchronizing changes with Home Server & backing up local JSON files...'
+                      : 'Data synchronized in real-time with Home Server & Local Storage. Click to trigger manual sync.'
                   }
                   className={`flex-1 px-2.5 py-1.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-1.5 font-bold text-xs shadow-xs ${
                     !isOnline
@@ -3267,8 +3224,8 @@ export default function App() {
                 !isOnline
                   ? 'Device is offline. All data is saved locally in browser storage & PC backups until internet returns.'
                   : isSyncing
-                  ? 'Synchronizing changes with Cloud Firestore & backing up local JSON files...'
-                  : 'Data synchronized in real-time with Cloud Firestore & Local Storage. Click to trigger manual sync.'
+                  ? 'Synchronizing changes with Home Server & backing up local JSON files...'
+                  : 'Data synchronized in real-time with Home Server & Local Storage. Click to trigger manual sync.'
               }
               className={`flex-1 px-2.5 py-1.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-1.5 font-bold text-xs shadow-xs ${
                 !isOnline

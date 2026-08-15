@@ -1,97 +1,155 @@
-# 🚀 Home Server Setup Guide for INOMS RepairTrack ERP
+# 🚀 INOMS Home Server Guide — PostgreSQL Multi-Tenant Architecture
 
-This guide walks you through deploying your INOMS RepairTrack ERP application on your spare Windows machine using Docker Desktop, bypassing Firestore quota limits forever while keeping your organization's live data safe.
+This guide walks you through deploying **INOMS (Inward Outward Management System)** on your Windows Home Server using **Docker Desktop, PostgreSQL 16, and Cloudflare Tunnel**.
 
 ---
 
-## 📋 Overview of the Architecture
+## 🏗️ 1. Architecture Overview
 
+```text
+               User Web Browser / INOMS Client
+                             │
+                             │ HTTPS (Encrypted)
+                             ▼
+               Cloudflare Edge / Tunnel
+                             │
+                             │ Docker Internal Bridge Network (inoms-network)
+                             ▼
+┌───────────────────────────────────────────────────────────────┐
+│ Windows Home Server (Docker Desktop Engine)                   │
+│                                                               │
+│   ┌─────────────────────────┐     ┌────────────────────────┐  │
+│   │ inoms-home (Port 3000)  │────▶│ inoms-postgres         │  │
+│   │ Node.js/Express Backend │     │ PostgreSQL 16 Engine   │  │
+│   │ React SPA Web App       │     │ (Internal port 5432)   │  │
+│   └─────────────────────────┘     └───────────┬────────────┘  │
+│                                               │               │
+│                                     ┌─────────▼────────────┐  │
+│                                     │ postgres_data Volume │  │
+│                                     │ (Persistent Storage) │  │
+│                                     └──────────────────────┘  │
+└───────────────────────────────────────────────────────────────┘
 ```
-[ Your Windows Home Server ]
-   ├── Docker Desktop (WSL2 Engine)
-   │     └── Container: repairtrack-erp (Port 3000)
-   └── Cloudflare Tunnel (Free & Secure)
-         └── https://your-domain.com or trycloudflare URL
-               └── Access from any phone/PC anywhere in the world!
+
+- **Zero Direct PostgreSQL Exposure**: PostgreSQL runs entirely inside the private Docker network (`inoms-network`). Port `5432` is **NOT** exposed to the host or internet.
+- **Client Security**: The React frontend connects **only** to the backend API (`/api/*`). Database credentials remain server-side.
+- **Tenant Isolation**: Every query enforces `WHERE tenant_id = $1` verified from authenticated session tokens.
+
+---
+
+## 🛠️ 2. Step-by-Step Setup on Windows Home Server
+
+### Step A: Prerequisites
+1. Install [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/) with WSL2 enabled.
+2. Clone or extract the INOMS project to a directory (e.g. `C:\inoms` or `D:\inoms`).
+
+### Step B: Configure Environment Variables
+Create a `.env` file in the project root (or copy `.env.example` to `.env`):
+
+```env
+NODE_ENV=production
+PORT=3000
+MASTER_PIN=814986
+
+# PostgreSQL Configuration
+DB_HOST=postgres
+DB_PORT=5432
+DB_NAME=inoms
+DB_USER=inoms_admin
+DB_PASSWORD=your_super_secret_strong_password_here
 ```
 
+### Step C: Start Services with Docker Compose
+Open **PowerShell** or **Command Prompt** as Administrator:
+
+```powershell
+cd C:\inoms
+
+# Build and start all services in detached mode
+docker compose up -d --build
+```
+
+Docker Compose will automatically:
+1. Provision the **PostgreSQL 16** container (`inoms-postgres`).
+2. Run database health checks.
+3. Build and launch the **INOMS Backend Server** (`inoms-home`).
+4. Execute initial schema migrations (`server/migrations/001_initial_schema.sql`).
+5. Migrate existing SQLite / JSON data into PostgreSQL seamlessly with zero data loss.
+
+### Step D: Verify Service Health
+1. Open your browser on the home server and navigate to:
+   `http://localhost:3000/api/health`
+2. You will receive:
+   ```json
+   {
+     "status": "ok",
+     "database": "connected",
+     "engine": "postgresql",
+     "version": "3.0.0",
+     "organizations": 2,
+     "timestamp": "2026-08-15T05:00:00.000Z"
+   }
+   ```
+
 ---
 
-## 🛠️ Step 1: Export Code & Download Live Data
+## 🌐 3. Expose Securely via Cloudflare Tunnel (HTTPS)
 
-### A. Download Code from AI Studio
-1. In AI Studio, click **Settings / Export** (or export to ZIP / GitHub).
-2. Save the repository files to a folder on your Windows machine (e.g., `C:\repairtrack-erp`).
-
-### B. Download Live Data Backup
-1. Open your live app (`repairtrack.ai.studio`).
-2. Log in as Master Admin or Organization Owner.
-3. Click **Download Local JSON Backup** (or go to System Master -> Database Backup).
-4. Save the `.json` file containing all your live clients, jobs, invoices, products, and ledger data.
-
----
-
-## 🐳 Step 2: Build & Start the Docker Container
-
-1. Open **PowerShell** or **Command Prompt** as Administrator on your Windows Home Server.
-2. Navigate to your project folder:
-   ```cmd
-   cd C:\repairtrack-erp
-   ```
-3. Run Docker Compose to build and start the application:
-   ```cmd
-   docker compose up -d --build
-   ```
-4. Verify the container is running:
-   ```cmd
-   docker ps
-   ```
-5. Test locally on your server by opening your browser at:
-   `http://localhost:3000`
-
----
-
-## 🌐 Step 3: Secure Remote Access (Cloudflare Tunnel)
-
-To access your home server securely from anywhere over HTTPS without opening router ports or exposing your home IP:
-
-1. Create a free account at [Cloudflare Zero Trust](https://one.dash.cloudflare.com/).
-2. Go to **Networks** -> **Tunnels** -> **Create a Tunnel**.
-3. Name your tunnel (e.g., `repairtrack-home`).
-4. Select **Docker** or **Windows** connector and copy your tunnel token.
-5. In your `docker-compose.yml`, uncomment the `cloudflared` service and paste your token:
+1. Go to [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/) -> **Networks** -> **Tunnels**.
+2. Click **Create a Tunnel** and name it (e.g. `inoms-tunnel`).
+3. Copy your Cloudflare Tunnel Token.
+4. In `docker-compose.yml`, uncomment the `cloudflared` block and paste your token:
    ```yaml
    cloudflared:
      image: cloudflare/cloudflared:latest
-     container_name: repairtrack-tunnel
+     container_name: inoms-tunnel
      restart: unless-stopped
      command: tunnel --no-autoupdate run --token YOUR_TOKEN_HERE
+     networks:
+       - inoms-network
+     depends_on:
+       - inoms-app
    ```
-6. Route traffic in Cloudflare Dashboard:
-   - **Public Hostname**: `repairtrack.yourdomain.com` (or free Cloudflare domain)
-   - **Service**: `http://repairtrack-erp:3000` (or `http://localhost:3000`)
-7. Restart containers:
-   ```cmd
+5. In Cloudflare Tunnel Public Hostname configuration:
+   - **Service**: `HTTP`
+   - **URL**: `inoms-app:3000`
+6. Restart Docker Compose:
+   ```powershell
    docker compose up -d
    ```
+7. Your app is now accessible worldwide over HTTPS at your custom domain (e.g. `https://inoms.yourdomain.com`).
 
 ---
 
-## 📥 Step 4: Import Live Data into Home Server
+## 💾 4. Production Database Backups (`pg_dump`)
 
-1. Open your new URL (`http://localhost:3000` or `https://repairtrack.yourdomain.com`).
-2. Log in with your Organization credentials or Master PIN (`814986`).
-3. Go to **Settings / Backup & Restore** or click **Restore from JSON Backup**.
-4. Select the `.json` file downloaded in Step 1B.
-5. All your live clients, jobs, products, and financial ledger items will immediately restore and persist in your home server!
+Docker volume storage (`postgres_data`) protects against container recreation, but proper disaster recovery requires regular database dumps.
 
----
+### One-Command Manual Backup:
+```powershell
+docker exec -t inoms-postgres pg_dump -U inoms_admin -d inoms -F c -b -v -f /var/lib/postgresql/data/inoms_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss').dump
+```
 
-## 🔄 Step 5: Data Persistence & Backup Strategy
+Or export SQL format:
+```powershell
+docker exec -t inoms-postgres pg_dump -U inoms_admin -d inoms > C:\inoms\backups\inoms_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss').sql
+```
 
-- All local app storage and server configurations are kept inside Docker volumes (`repairtrack-data`).
-- To schedule automated daily backups on Windows:
-  Create a Windows Task Scheduler job running:
-  ```cmd
-  docker exec repairtrack-erp node dist/server.cjs --backup
-  ```
+### Restore Database from Backup:
+```powershell
+# Restore from custom format dump
+docker exec -i inoms-postgres pg_restore -U inoms_admin -d inoms -v -c /var/lib/postgresql/data/your_backup.dump
+
+# Or restore from SQL script
+cat backup.sql | docker exec -i inoms-postgres psql -U inoms_admin -d inoms
+```
+
+### Automated Daily Backup via Windows Task Scheduler
+Create a `.bat` script (e.g. `C:\inoms\backup.bat`):
+```bat
+@echo off
+set TIMESTAMP=%date:~-4,4%%date:~-7,2%%date:~-10,2%_%time:~0,2%%time:~3,2%%time:~6,2%
+set TIMESTAMP=%TIMESTAMP: =0%
+docker exec -t inoms-postgres pg_dump -U inoms_admin -d inoms -F c -b -f /var/lib/postgresql/data/inoms_backup_%TIMESTAMP%.dump
+```
+Add this script to Windows Task Scheduler to run nightly at 2:00 AM.

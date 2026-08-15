@@ -12,15 +12,55 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - MASTER_PIN=814986
+      - MASTER_PIN=${MASTER_PIN:-814986}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-inoms}
+      - DB_USER=${DB_USER:-inoms_admin}
+      - DB_PASSWORD=${DB_PASSWORD:-inoms_secure_pass_2026}
     volumes:
-      - ./data:/app/data
+      - inoms_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - inoms-network
 
-  # Cloudflare Tunnel (Secure HTTPS access to inoms.in)
+  postgres:
+    image: postgres:16-alpine
+    container_name: inoms-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${DB_NAME:-inoms}
+      - POSTGRES_USER=${DB_USER:-inoms_admin}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-inoms_secure_pass_2026}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-inoms_admin} -d ${DB_NAME:-inoms}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - inoms-network
+    # Notice: Port 5432 is intentionally NOT exposed to the host for maximum security
+
+  # Cloudflare Tunnel (Secure HTTPS access to inoms.in / your domain)
   # cloudflared:
   #   image: cloudflare/cloudflared:latest
   #   container_name: inoms-tunnel
   #   restart: unless-stopped
   #   command: tunnel --no-autoupdate run --token YOUR_CLOUDFLARE_TUNNEL_TOKEN
+  #   networks:
+  #     - inoms-network
+  #   depends_on:
+  #     - inoms-app
 
+volumes:
+  postgres_data:
+  inoms_data:
 
+networks:
+  inoms-network:
+    driver: bridge

@@ -83,6 +83,9 @@ export async function verifyTOTPViaApi(
       })
     });
     const data = await res.json();
+    if (data.success && data.token) {
+      setAuthToken(data.token, true);
+    }
     return !!data.success;
   } catch (err) {
     return false;
@@ -99,10 +102,167 @@ export async function verifyMasterPinViaApi(codeOrPin: string): Promise<boolean>
       })
     });
     const data = await res.json();
+    if (data.success && data.token) {
+      setAuthToken(data.token, true);
+    }
     return !!data.success;
   } catch (err) {
     return false;
   }
+}
+
+export async function ensureTenantSessionViaApi(tenantId: string): Promise<string | null> {
+  try {
+    const res = await fetch('/api/auth/session-for-tenant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenantId })
+    });
+    const data = await res.json();
+    if (data.success && data.token) {
+      setAuthToken(data.token, true);
+      return data.token;
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
+  success: boolean;
+  serverRevision?: number;
+  companyConfig?: any;
+  collections?: Record<string, any[]>;
+  message?: string;
+}> {
+  if (!tenantId) return { success: false, message: 'Tenant ID required' };
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-tenant-id': tenantId
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    const res = await fetch(`/api/sync/bootstrap?tenantId=${encodeURIComponent(tenantId)}`, {
+      method: 'GET',
+      headers
+    });
+    const data = await res.json();
+    if (data.success) {
+      console.info(`[Home Server Sync] GET /api/sync/bootstrap -> Bootstrapped authoritative data for ${tenantId}`);
+    }
+    return data;
+  } catch (err: any) {
+    console.warn(`[Home Server Sync] GET /api/sync/bootstrap failed:`, err?.message || err);
+    return { success: false, message: err?.message || 'Bootstrap failed' };
+  }
+}
+
+export async function pullDeltaFromHomeServerViaApi(tenantId: string, sinceRevision = 0): Promise<{
+  success: boolean;
+  currentRevision?: number;
+  hasChanges?: boolean;
+  changes?: any[];
+  message?: string;
+}> {
+  if (!tenantId) return { success: false, message: 'Tenant ID required' };
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-tenant-id': tenantId
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    const res = await fetch(`/api/sync/pull?sinceRevision=${sinceRevision}&tenantId=${encodeURIComponent(tenantId)}`, {
+      method: 'GET',
+      headers
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Pull delta failed' };
+  }
+}
+
+export async function saveAllTenantDataViaApi(
+  tenantId: string,
+  companyConfig: any,
+  collections: Record<string, any[]>
+): Promise<{ success: boolean; serverRevision?: number; message?: string }> {
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-tenant-id': tenantId
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    const res = await fetch('/api/sync/save-all', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ tenantId, companyConfig, collections })
+    });
+    const data = await res.json();
+    if (data.success) {
+      console.info(`[Home Server Sync] POST /api/sync/save-all -> Snapshot saved to Home Server SQLite for tenant: ${tenantId}`);
+    }
+    return data;
+  } catch (err: any) {
+    console.warn(`[Home Server Sync] POST /api/sync/save-all failed:`, err?.message || err);
+    return { success: false, message: err?.message || 'Home Server save failed' };
+  }
+}
+
+const syncDebounceTimers = new Map<string, any>();
+
+export async function saveTenantCollectionViaApi(
+  tenantId: string,
+  entity: string,
+  items?: any[],
+  config?: any
+): Promise<{ success: boolean; message?: string }> {
+  if (!tenantId || !entity) return { success: false, message: 'Tenant and entity required' };
+
+  return new Promise((resolve) => {
+    const timerKey = `${tenantId}:${entity}`;
+    if (syncDebounceTimers.has(timerKey)) {
+      clearTimeout(syncDebounceTimers.get(timerKey));
+    }
+
+    const timer = setTimeout(async () => {
+      syncDebounceTimers.delete(timerKey);
+      try {
+        const token = getAuthToken();
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'x-tenant-id': tenantId
+        };
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
+        }
+        const res = await fetch('/api/sync/save-collection', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ tenantId, entity, items, config })
+        });
+        const data = await res.json();
+        if (data.success) {
+          console.info(`[Home Server Sync] POST /api/sync/save-collection -> Saved ${entity} (${Array.isArray(items) ? items.length : 1} records) for tenant: ${tenantId}`);
+        }
+        resolve(data);
+      } catch (err: any) {
+        console.warn(`[Home Server Sync] POST /api/sync/save-collection failed for ${entity}:`, err?.message || err);
+        resolve({ success: false, message: err?.message || 'Home Server collection save failed' });
+      }
+    }, 300);
+
+    syncDebounceTimers.set(timerKey, timer);
+  });
 }
 
 export async function verifyOrgPinViaApi(tenantId: string, pin: string): Promise<boolean> {
@@ -122,6 +282,30 @@ export async function verifyOrgPinViaApi(tenantId: string, pin: string): Promise
     return !!data.success;
   } catch (err) {
     return false;
+  }
+}
+
+export async function uploadInvoicePdfViaApi(
+  filename: string,
+  base64Pdf: string,
+  subfolder: string = 'invoices'
+): Promise<{ success: boolean; filename?: string; publicUrl?: string; message?: string }> {
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    const res = await fetch('/api/docs/upload-pdf', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ filename, base64Pdf, subfolder })
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Could not upload PDF document' };
   }
 }
 

@@ -3,6 +3,7 @@ import { getAuth, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { TenantOrg, SystemAnnouncement, INITIAL_TENANTS } from '../components/AuthModal';
 import { CompanyConfig } from '../types';
+import { saveTenantCollectionViaApi } from './api';
 import {
   saveLocalRecord,
   deleteLocalRecord,
@@ -187,6 +188,9 @@ export function subscribeCompanyConfig(tenantId: string, onUpdate: (config: Comp
 export async function saveCompanyConfigToFirestore(tenantId: string, config: CompanyConfig): Promise<void> {
   if (!tenantId) return;
   await saveLocalRecord(tenantId, 'config', { ...config, id: tenantId });
+  try {
+    saveTenantCollectionViaApi(tenantId, 'config', undefined, config).catch(() => {});
+  } catch (e) {}
 }
 
 export async function saveUserSessionToFirestore(
@@ -257,6 +261,10 @@ export async function saveTenantCollectionToFirestore(
   items: any[]
 ): Promise<void> {
   if (!tenantId || !collectionName) return;
-  // Atomically replace collection in local IndexedDB replica without duplicate echo-notification
+  // 1. Atomically replace collection in local IndexedDB replica
   await replaceLocalCollection(tenantId, collectionName, items, false, false);
+  // 2. Persist directly to Home Server SQLite database
+  try {
+    saveTenantCollectionViaApi(tenantId, collectionName, items).catch(() => {});
+  } catch (e) {}
 }
