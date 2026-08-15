@@ -45,6 +45,7 @@ import AddClientModal from './AddClientModal';
 import LockedAddonModal, { AddonType } from './LockedAddonModal';
 import MasterAdminBilling from './MasterAdminBilling';
 import MasterAdminPricing from './MasterAdminPricing';
+import { generateInvoicePdfBlob, blobToBase64, sanitizeFolderName } from '../lib/invoicePdfService';
 
 const WhatsAppIcon = ({ className = "w-3.5 h-3.5" }: { className?: string }) => (
   <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -576,16 +577,68 @@ export default function Billing({
     setShowCreateInvoice(false);
   };
 
-  const handleDownloadPdf = (inv: Invoice) => {
-    setPreviewInvoice(inv);
-    setTimeout(() => {
-      window.print();
-    }, 150);
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+
+  const handleDownloadPdf = async (inv: Invoice) => {
+    try {
+      setIsGeneratingPdf(true);
+      const pdfBlob = await generateInvoicePdfBlob(inv, companyConfig);
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Invoice_${inv.id}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('PDF download error:', err);
+      setPreviewInvoice(inv);
+      setTimeout(() => window.print(), 150);
+    } finally {
+      setIsGeneratingPdf(false);
+    }
   };
 
-  const handleSendWhatsAppInvoice = (inv: Invoice) => {
+  const handleSendWhatsAppInvoice = async (inv: Invoice) => {
     const cleanMobile = inv.clientMobile ? inv.clientMobile.replace(/[^0-9]/g, '') : '';
     const formattedMobile = cleanMobile.length === 10 ? `91${cleanMobile}` : cleanMobile;
+
+    let publicPdfUrl = '';
+    const currentTenant = tenants.find(t => t.id === activeTenantId);
+    const tenantFolder = sanitizeFolderName(activeTenantId || currentTenant?.name || 'default_org');
+
+    try {
+      setIsGeneratingPdf(true);
+      // 1. Generate crisp PDF blob
+      const pdfBlob = await generateInvoicePdfBlob(inv, companyConfig);
+      const base64Pdf = await blobToBase64(pdfBlob);
+
+      // 2. Upload to isolated organization folder on Home Server
+      const filename = `${inv.id}.pdf`;
+      const response = await fetch('/api/docs/upload-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenantId: tenantFolder,
+          subfolder: 'invoices',
+          filename,
+          base64Pdf
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.publicUrl) {
+          const origin = window.location.origin;
+          publicPdfUrl = `${origin}${data.publicUrl}`;
+        }
+      }
+    } catch (err) {
+      console.warn('Could not upload PDF to server storage, falling back to summary:', err);
+    } finally {
+      setIsGeneratingPdf(false);
+    }
 
     let msg = `*${companyConfig.name} - Tax Invoice*\n\n`;
     msg += `Dear *${inv.clientName}*,\n`;
@@ -594,6 +647,11 @@ export default function Billing({
     msg += `📅 *Date:* ${inv.date}\n`;
     msg += `💰 *Grand Total:* ₹${inv.grandTotal.toFixed(2)}\n`;
     msg += `💳 *Payment Mode:* ${inv.paymentMode}\n\n`;
+
+    if (publicPdfUrl) {
+      msg += `📄 *Download Official PDF Invoice:*\n${publicPdfUrl}\n\n`;
+    }
+
     msg += `Thank you for your business!\n`;
     msg += `📞 Contact: ${companyConfig.phone}`;
 
@@ -603,12 +661,6 @@ export default function Billing({
     } else {
       window.open(`https://wa.me/?text=${encoded}`, '_blank');
     }
-
-    // Trigger exact printable PDF interface so user can Save as PDF and attach to WhatsApp
-    setPreviewInvoice(inv);
-    setTimeout(() => {
-      window.print();
-    }, 200);
   };
 
   return (

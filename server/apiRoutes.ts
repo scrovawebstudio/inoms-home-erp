@@ -1,5 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
+import path from 'path';
+import fs from 'fs';
 import {
   getDatabase,
   hashPassword,
@@ -1380,3 +1382,85 @@ apiRouter.post('/admin/backups/delete', authMiddleware, (req: AuthenticatedReque
     res.status(500).json({ success: false, error: err?.message || 'Backup deletion failed' });
   }
 });
+
+// -------------------------------------------------------------
+// MULTI-TENANT ISOLATED PDF STORAGE & PUBLIC SHARING ENDPOINTS
+// -------------------------------------------------------------
+
+// Helper to get or create isolated organization pdfs folder
+function getOrgPdfDirectory(tenantId: string, subfolder: string = 'invoices'): string {
+  const cleanTenant = (tenantId || 'default').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+  const cleanSubfolder = (subfolder || 'invoices').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+  const orgPdfsDir = path.join(process.cwd(), 'data', 'organisations', cleanTenant, 'pdfs', cleanSubfolder);
+  if (!fs.existsSync(orgPdfsDir)) {
+    fs.mkdirSync(orgPdfsDir, { recursive: true });
+  }
+  return orgPdfsDir;
+}
+
+// 1. Upload Generated PDF to Organization's dedicated folder
+apiRouter.post('/docs/upload-pdf', (req, res) => {
+  try {
+    const { tenantId, subfolder = 'invoices', filename, base64Pdf } = req.body || {};
+    if (!tenantId || !filename || !base64Pdf) {
+      return res.status(400).json({ success: false, message: 'tenantId, filename, and base64Pdf are required' });
+    }
+
+    const cleanFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const orgDir = getOrgPdfDirectory(tenantId, subfolder);
+    const filePath = path.join(orgDir, cleanFilename);
+
+    // Strip data URI header if present
+    const base64Data = base64Pdf.replace(/^data:application\/pdf;base64,/, '').replace(/^data:application\/octet-stream;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+    fs.writeFileSync(filePath, buffer);
+
+    const cleanTenant = tenantId.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    const cleanSub = (subfolder || 'invoices').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    const publicUrl = `/api/docs/public/${cleanTenant}/${cleanSub}/${cleanFilename}`;
+
+    res.json({
+      success: true,
+      filename: cleanFilename,
+      publicUrl,
+      sizeBytes: buffer.length,
+      message: 'PDF saved successfully to organization directory'
+    });
+  } catch (err: any) {
+    console.error('Error saving organization PDF:', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to save PDF' });
+  }
+});
+
+// 2. Public Direct Download / Stream Endpoint for customer WhatsApp links
+apiRouter.get('/docs/public/:tenantId/:subfolder/:filename', (req, res) => {
+  try {
+    const { tenantId, subfolder, filename } = req.params;
+    const cleanTenant = (tenantId || '').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    const cleanSub = (subfolder || 'invoices').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    const cleanFilename = (filename || '').replace(/[^a-zA-Z0-9._-]/g, '_');
+
+    const filePath = path.join(process.cwd(), 'data', 'organisations', cleanTenant, 'pdfs', cleanSub, cleanFilename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Invoice Not Found</title></head>
+        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+          <h2>Invoice Document Not Found</h2>
+          <p>The requested PDF invoice could not be located or may have been archived.</p>
+        </body>
+        </html>
+      `);
+    }
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${cleanFilename}"`);
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+  } catch (err: any) {
+    res.status(500).send('Error serving PDF document');
+  }
+});
+

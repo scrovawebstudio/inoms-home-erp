@@ -2934,28 +2934,73 @@ export default function App() {
             style={{ backgroundColor: activeThemePalette.sidebarBg, color: activeThemePalette.sidebarText }}
           >
             <div className="flex flex-col overflow-y-auto">
-              <div className="p-5 border-b border-white/10 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div 
-                    className="w-10 h-10 rounded-xl flex items-center justify-center font-black shadow-md shrink-0 overflow-hidden bg-white border border-white/20 p-0.5"
-                  >
-                    <img src={systemAppLogo} alt={`${systemAppName} Logo`} className="w-full h-full object-contain rounded-lg" />
+              {/* Mobile Drawer Header with Close */}
+              <div className="p-4 border-b border-white/10 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center text-white border border-white/15">
+                    <Menu className="w-4 h-4" />
                   </div>
-                  <div className="overflow-hidden">
-                    <span className="text-sm font-black text-white tracking-wide block uppercase leading-tight truncate">
-                      {systemAppName}
-                    </span>
-                    <span className="text-[9px] font-bold tracking-wider uppercase block truncate" style={{ color: activeThemePalette.fontAccent || '#5eead4' }} title={systemAppTagline}>
-                      Inward &amp; Outward OS
-                    </span>
-                  </div>
+                  <span className="text-sm font-bold text-white tracking-wide uppercase">Navigation</span>
                 </div>
                 <button 
                   onClick={() => setIsMobileMenuOpen(false)}
-                  className="p-1.5 rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition cursor-pointer"
+                  className="p-1.5 rounded-xl text-white/70 hover:text-white hover:bg-white/10 transition cursor-pointer shrink-0"
                 >
                   <X className="w-5 h-5" />
                 </button>
+              </div>
+
+              {/* Top Sidebar Utilities: Synced & Notifications */}
+              <div className="p-3.5 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
+                {/* Sync Status Button */}
+                <button
+                  onClick={handleSyncData}
+                  disabled={isSyncing}
+                  title={
+                    !isOnline
+                      ? 'Device is offline. All data is saved locally in browser storage & PC backups until internet returns.'
+                      : isSyncing
+                      ? 'Synchronizing changes with Cloud Firestore & backing up local JSON files...'
+                      : 'Data synchronized in real-time with Cloud Firestore & Local Storage. Click to trigger manual sync.'
+                  }
+                  className={`flex-1 px-3 py-2 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-2 font-bold text-xs shadow-xs ${
+                    !isOnline
+                      ? 'bg-amber-500/20 border-amber-400/40 text-amber-300 hover:bg-amber-500/30'
+                      : isSyncing
+                      ? 'bg-teal-500/20 border-teal-400/40 text-teal-300 animate-pulse'
+                      : 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300 hover:bg-emerald-500/30'
+                  }`}
+                >
+                  {!isOnline ? (
+                    <>
+                      <WifiOff className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                      <span className="text-[11px] font-extrabold uppercase tracking-wide">Offline</span>
+                    </>
+                  ) : isSyncing ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-300 shrink-0" />
+                      <span className="text-[11px] font-extrabold uppercase tracking-wide">Syncing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span className="text-[11px] font-extrabold uppercase tracking-wide">Synced</span>
+                    </>
+                  )}
+                </button>
+
+                {/* Notification Bell Button */}
+                <div className="relative">
+                  <button
+                    onClick={() => setShowNotifications(!showNotifications)}
+                    className="p-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white/90 hover:text-white cursor-pointer relative transition shadow-xs flex items-center justify-center"
+                    title="Notifications & Announcements"
+                  >
+                    <Bell className="w-4 h-4" />
+                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500"></span>
+                  </button>
+                </div>
               </div>
 
               <nav className="p-4 space-y-1.5">
@@ -2987,12 +3032,30 @@ export default function App() {
               </nav>
             </div>
 
-            <div className="p-4 border-t border-white/10 bg-black/20 text-[10px] opacity-75 font-semibold text-center space-y-1">
-              <div className="flex items-center justify-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span className="font-bold text-white tracking-wide">{systemAppName} Enterprise</span>
+            {/* Application Branding Footer */}
+            <div className="p-4 border-t border-white/10 bg-black/25 text-[11px] font-semibold text-center space-y-2">
+              <div className="flex items-center justify-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-white p-1 shadow-md border border-white/25 shrink-0 flex items-center justify-center overflow-hidden">
+                  <img 
+                    src={systemAppLogo} 
+                    alt={`${systemAppName} Logo`} 
+                    className="w-full h-full object-contain" 
+                  />
+                </div>
+                <div className="text-left overflow-hidden">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-black text-white tracking-wide text-sm leading-tight truncate">
+                      {systemAppName}
+                    </span>
+                    <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-white/10 text-emerald-300 font-bold border border-white/10">
+                      v1.0
+                    </span>
+                  </div>
+                  <p className="text-[10px] opacity-75 text-slate-300 font-medium truncate max-w-[140px]" title={systemAppTagline}>
+                    {systemAppTagline}
+                  </p>
+                </div>
               </div>
-              <p className="text-[9px] opacity-70 font-mono text-emerald-300">v1.0.0</p>
             </div>
           </aside>
         </div>
@@ -3004,25 +3067,61 @@ export default function App() {
         style={{ backgroundColor: activeThemePalette.sidebarBg, color: activeThemePalette.sidebarText }}
       >
         <div className="flex flex-col overflow-y-auto">
-          {/* Brand header - Fixed Application Logo, Name, and Tagline */}
-          <div className="p-5 border-b border-white/10 flex items-center gap-3">
-            <div 
-              className="w-10 h-10 rounded-xl flex items-center justify-center font-black shadow-md shrink-0 overflow-hidden bg-white border border-white/20 p-0.5"
+          {/* Top Sidebar Utilities: Synced & Notifications (Before Tabs) */}
+          <div className="p-3.5 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
+            {/* Sync Status Button */}
+            <button
+              onClick={handleSyncData}
+              disabled={isSyncing}
+              title={
+                !isOnline
+                  ? 'Device is offline. All data is saved locally in browser storage & PC backups until internet returns.'
+                  : isSyncing
+                  ? 'Synchronizing changes with Cloud Firestore & backing up local JSON files...'
+                  : 'Data synchronized in real-time with Cloud Firestore & Local Storage. Click to trigger manual sync.'
+              }
+              className={`flex-1 px-3 py-2 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-2 font-bold text-xs shadow-xs ${
+                !isOnline
+                  ? 'bg-amber-500/20 border-amber-400/40 text-amber-300 hover:bg-amber-500/30'
+                  : isSyncing
+                  ? 'bg-teal-500/20 border-teal-400/40 text-teal-300 animate-pulse'
+                  : 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300 hover:bg-emerald-500/30'
+              }`}
             >
-              <img src={systemAppLogo} alt={`${systemAppName} Logo`} className="w-full h-full object-contain rounded-lg" />
-            </div>
-            <div className="overflow-hidden">
-              <span className="text-base font-black text-white tracking-wide block uppercase leading-tight truncate">
-                {systemAppName}
-              </span>
-              <span className="text-[9px] font-bold tracking-wider uppercase block truncate" style={{ color: activeThemePalette.fontAccent || '#5eead4' }} title={systemAppTagline}>
-                Inward &amp; Outward OS
-              </span>
+              {!isOnline ? (
+                <>
+                  <WifiOff className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                  <span className="text-[11px] font-extrabold uppercase tracking-wide">Offline</span>
+                </>
+              ) : isSyncing ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-300 shrink-0" />
+                  <span className="text-[11px] font-extrabold uppercase tracking-wide">Syncing...</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span className="text-[11px] font-extrabold uppercase tracking-wide">Synced</span>
+                </>
+              )}
+            </button>
+
+            {/* Notification Bell Button */}
+            <div className="relative">
+              <button
+                onClick={() => setShowNotifications(!showNotifications)}
+                className="p-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white/90 hover:text-white cursor-pointer relative transition shadow-xs flex items-center justify-center"
+                title="Notifications & Announcements"
+              >
+                <Bell className="w-4 h-4" />
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500"></span>
+              </button>
             </div>
           </div>
 
           {/* Menu items */}
-          <nav className="p-4 space-y-1.5" id="sidebar-nav">
+          <nav className="p-4 pt-3.5 space-y-1.5" id="sidebar-nav">
             {getNavItems().map((menu) => {
               const Icon = menu.icon;
               const isActive = activeTab === menu.id;
@@ -3048,15 +3147,98 @@ export default function App() {
           </nav>
         </div>
 
-        {/* Brand credit info footer */}
-        <div className="p-4 border-t border-white/10 bg-black/20 text-[10px] opacity-75 font-semibold text-center space-y-1">
-          <div className="flex items-center justify-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span className="font-bold text-white tracking-wide">{systemAppName} Enterprise</span>
+        {/* Application Branding Footer */}
+        <div className="p-4 border-t border-white/10 bg-black/25 text-[11px] font-semibold text-center space-y-2">
+          <div className="flex items-center justify-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-white p-1 shadow-md border border-white/25 shrink-0 flex items-center justify-center overflow-hidden">
+              <img 
+                src={systemAppLogo} 
+                alt={`${systemAppName} Logo`} 
+                className="w-full h-full object-contain" 
+              />
+            </div>
+            <div className="text-left overflow-hidden">
+              <div className="flex items-center gap-1.5">
+                <span className="font-black text-white tracking-wide text-sm leading-tight truncate">
+                  {systemAppName}
+                </span>
+                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-white/10 text-emerald-300 font-bold border border-white/10">
+                  v1.0
+                </span>
+              </div>
+              <p className="text-[10px] opacity-75 text-slate-300 font-medium truncate max-w-[140px]" title={systemAppTagline}>
+                {systemAppTagline}
+              </p>
+            </div>
           </div>
-          <p className="text-[9px] opacity-70 font-mono text-emerald-300">v1.0.0</p>
         </div>
       </aside>
+
+      {/* Notifications Popover (Global Modal Dialog) */}
+      {showNotifications && (
+        <div className="fixed inset-0 z-50 flex items-start justify-start p-4 sm:p-6 bg-slate-900/40 backdrop-blur-2xs" onClick={() => setShowNotifications(false)}>
+          <div 
+            className="relative ml-0 lg:ml-64 mt-12 bg-white border border-slate-200/90 rounded-2xl shadow-2xl w-full max-w-sm p-4 space-y-3 z-50 text-slate-800 animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+              <h4 className="font-bold text-slate-800 uppercase text-[10px] tracking-wider flex items-center gap-1.5">
+                <Bell className="w-3.5 h-3.5 text-teal-600" /> Notifications &amp; Broadcasts
+              </h4>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] bg-teal-50 text-teal-700 font-bold px-2 py-0.5 rounded-full border border-teal-200">
+                  {activeTenant?.name || 'Workspace'}
+                </span>
+                <button
+                  onClick={() => setShowNotifications(false)}
+                  className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Master Admin Broadcasts */}
+            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+              {announcements
+                .filter(a => a.targetTenantId === 'all' || a.targetTenantId === activeTenant?.id)
+                .map((ann, annIdx) => (
+                  <div
+                    key={ann.id ? `${ann.id}-${annIdx}` : `ann-${annIdx}`}
+                    className={`p-2.5 rounded-xl border text-[11px] space-y-1 ${
+                      ann.severity === 'urgent'
+                        ? 'bg-rose-50/80 border-rose-200 text-rose-900'
+                        : ann.severity === 'warning'
+                        ? 'bg-amber-50/80 border-amber-200 text-amber-900'
+                        : 'bg-teal-50/80 border-teal-200 text-teal-900'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-extrabold text-xs block">{ann.title}</span>
+                      <span className="text-[9px] font-mono opacity-70">{ann.createdAt.split(' ')[0]}</span>
+                    </div>
+                    <p className="text-[10px] leading-relaxed opacity-90 font-medium">{ann.message}</p>
+                    <div className="text-[9px] font-bold text-slate-500 uppercase flex items-center gap-1 pt-0.5">
+                      <span>👑 Platform Announcement</span>
+                    </div>
+                  </div>
+                ))}
+
+              {/* Standard System Logs */}
+              <div className="pt-2 border-t border-slate-100 space-y-1.5 text-[10px] text-slate-500">
+                <p className="pb-1 border-b border-slate-50 flex items-center justify-between">
+                  <span>🔔 Backup success: Cloud schema synced</span>
+                  <span className="font-mono text-[9px]">Just now</span>
+                </p>
+                <p className="flex items-center justify-between">
+                  <span>⚠️ Low Stock Alert: Keyboard inventory under 10</span>
+                  <span className="font-mono text-[9px]">Today</span>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 2. Main Workstage Section */}
       <main className="flex-1 flex flex-col overflow-hidden h-full">
@@ -3067,7 +3249,7 @@ export default function App() {
         >
           
           {/* Company Title & Org Selector */}
-          <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
+          <div className="flex items-center gap-2 sm:gap-3.5 min-w-0">
             {/* Mobile Hamburger Toggle */}
             <button
               type="button"
@@ -3078,162 +3260,47 @@ export default function App() {
               <Menu className="w-5 h-5 text-teal-700" />
             </button>
 
-            {/* Single Consolidated Organisation Info Badge */}
-            <div className="flex items-center gap-2 bg-slate-50/80 px-2.5 py-1.5 rounded-xl border border-slate-200/80 min-w-0 max-w-[175px] xs:max-w-[220px] sm:max-w-none">
-              {/* Organisation Logo / Badge */}
-              <div className="w-7 h-7 rounded-lg bg-teal-600 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-2xs overflow-hidden">
+            {/* Prominent Organisation Info Badge (The Sole Destination for Org Identity) */}
+            <div className="flex items-center gap-3 bg-slate-50/90 px-3.5 py-1.5 rounded-2xl border border-slate-200/80 min-w-0 max-w-[200px] xs:max-w-[260px] sm:max-w-none shadow-xs">
+              {/* Organisation Logo / Badge (Larger & Attractive) */}
+              <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-teal-600 text-white flex items-center justify-center font-black text-base shrink-0 shadow-xs overflow-hidden border border-teal-700/20">
                 {companyConfig.logoUrl ? (
-                  <img src={companyConfig.logoUrl} alt="Logo" className="w-full h-full object-cover rounded-lg" />
+                  <img src={companyConfig.logoUrl} alt="Organization Logo" className="w-full h-full object-contain bg-white rounded-2xl p-0.5" />
                 ) : (
-                  (activeTenant?.name || activeCompany || 'O').charAt(0).toUpperCase()
+                  <div className="w-full h-full rounded-2xl bg-gradient-to-br from-teal-500 to-emerald-600 text-white flex items-center justify-center font-black text-base sm:text-lg shadow-inner">
+                    {(activeTenant?.name || activeCompany || 'O').charAt(0).toUpperCase()}
+                  </div>
                 )}
               </div>
 
               {/* Organisation Details: Name, Number, and Role */}
-              <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-2 text-left min-w-0">
-                <span className="text-xs font-bold text-slate-800 leading-none truncate max-w-[110px] sm:max-w-[180px] md:max-w-none">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-2.5 text-left min-w-0">
+                <span className="text-sm sm:text-base font-black text-slate-800 leading-tight truncate max-w-[130px] sm:max-w-[240px] md:max-w-none">
                   {activeTenant?.name || activeCompany}
                 </span>
                 
                 {activeTenant?.ownerMobile && (
-                  <span className="text-[10px] font-mono font-bold bg-teal-50 text-teal-700 px-1.5 py-0.5 rounded border border-teal-200/80 hidden sm:inline-block">
+                  <span className="text-[10px] sm:text-xs font-mono font-bold bg-teal-50 text-teal-700 px-2 py-0.5 rounded-lg border border-teal-200/80 hidden sm:inline-block">
                     {activeTenant.ownerMobile}
                   </span>
                 )}
 
-                <span className="text-[9px] sm:text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 sm:px-2 py-0.5 rounded-full border border-slate-200 hidden md:inline-block">
+                <span className="text-[9px] sm:text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200 hidden md:inline-block">
                   Role: {currentUser?.role || (activeTenant?.id === 'org-admin' || activeTenant?.code === 'ADMIN-00' ? 'System Admin' : 'Organization Owner')}
                 </span>
               </div>
             </div>
           </div>
 
-          {/* Sync icons / Notifications / Lock App button */}
-          <div className="flex items-center gap-1.5 sm:gap-3 text-xs font-semibold text-slate-600 shrink-0">
-            {/* Real-time sync notifier */}
-            <button
-              onClick={handleSyncData}
-              disabled={isSyncing}
-              title={
-                !isOnline
-                  ? 'Device is offline. All data is saved locally in browser storage & PC backups until internet returns.'
-                  : isSyncing
-                  ? 'Synchronizing changes with Cloud Firestore & backing up local JSON files...'
-                  : 'Data synchronized in real-time with Cloud Firestore & Local Storage. Click to trigger manual sync.'
-              }
-              className={`px-2 sm:px-2.5 py-1.5 rounded-xl border transition-all cursor-pointer flex items-center gap-1 sm:gap-1.5 font-bold text-xs ${
-                !isOnline
-                  ? 'bg-amber-50/90 border-amber-200/90 text-amber-800 hover:bg-amber-100 shadow-2xs'
-                  : isSyncing
-                  ? 'bg-teal-50 border-teal-300 text-teal-800 animate-pulse shadow-2xs'
-                  : 'bg-emerald-50/90 border-emerald-200/90 text-emerald-800 hover:bg-emerald-100 shadow-2xs'
-              }`}
-            >
-              {!isOnline ? (
-                <>
-                  <WifiOff className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                  <span className="text-[10px] font-black uppercase tracking-wide hidden sm:inline text-amber-800">
-                    Offline (Saved Locally)
-                  </span>
-                  <span className="text-[10px] font-black uppercase tracking-wide sm:hidden text-amber-800">
-                    Offline
-                  </span>
-                </>
-              ) : isSyncing ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-600 shrink-0" />
-                  <span className="text-[10px] font-black uppercase tracking-wide hidden sm:inline text-teal-800">
-                    Syncing...
-                  </span>
-                  <span className="text-[10px] font-black uppercase tracking-wide sm:hidden text-teal-800">
-                    Sync
-                  </span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  <span className="text-[10px] font-black uppercase tracking-wide hidden sm:inline text-emerald-800">
-                    Synced
-                  </span>
-                  <span className="text-[10px] font-black uppercase tracking-wide sm:hidden text-emerald-800">
-                    OK
-                  </span>
-                </>
-              )}
-            </button>
-
-            {/* Notification system */}
-            <div className="relative">
-              <button
-                onClick={() => setShowNotifications(!showNotifications)}
-                className="p-1.5 sm:p-2 hover:bg-slate-50 rounded-xl border border-slate-100 text-slate-500 cursor-pointer relative"
-              >
-                <Bell className="w-4 h-4" />
-                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-rose-500"></span>
-              </button>
-
-              {showNotifications && (
-                <div className="absolute right-0 top-11 bg-white border border-slate-200/90 rounded-2xl shadow-2xl w-[calc(100vw-32px)] sm:w-80 max-w-sm p-4 space-y-3 z-50 animate-in fade-in zoom-in-95 duration-150">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <h4 className="font-bold text-slate-800 uppercase text-[10px] tracking-wider flex items-center gap-1.5">
-                      <Bell className="w-3.5 h-3.5 text-teal-600" /> Notifications & Broadcasts
-                    </h4>
-                    <span className="text-[10px] bg-teal-50 text-teal-700 font-bold px-2 py-0.5 rounded-full border border-teal-200">
-                      {activeTenant?.name || 'Workspace'}
-                    </span>
-                  </div>
-
-                  {/* Master Admin Broadcasts */}
-                  <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                    {announcements
-                      .filter(a => a.targetTenantId === 'all' || a.targetTenantId === activeTenant?.id)
-                      .map((ann, annIdx) => (
-                        <div
-                          key={ann.id ? `${ann.id}-${annIdx}` : `ann-${annIdx}`}
-                          className={`p-2.5 rounded-xl border text-[11px] space-y-1 ${
-                            ann.severity === 'urgent'
-                              ? 'bg-rose-50/80 border-rose-200 text-rose-900'
-                              : ann.severity === 'warning'
-                              ? 'bg-amber-50/80 border-amber-200 text-amber-900'
-                              : 'bg-teal-50/80 border-teal-200 text-teal-900'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="font-extrabold text-xs block">{ann.title}</span>
-                            <span className="text-[9px] font-mono opacity-70">{ann.createdAt.split(' ')[0]}</span>
-                          </div>
-                          <p className="text-[10px] leading-relaxed opacity-90 font-medium">{ann.message}</p>
-                          <div className="text-[9px] font-bold text-slate-500 uppercase flex items-center gap-1 pt-0.5">
-                            <span>👑 Platform Announcement</span>
-                          </div>
-                        </div>
-                      ))}
-
-                    {/* Standard System Logs */}
-                    <div className="pt-2 border-t border-slate-100 space-y-1.5 text-[10px] text-slate-500">
-                      <p className="pb-1 border-b border-slate-50 flex items-center justify-between">
-                        <span>🔔 Backup success: Cloud schema synced</span>
-                        <span className="font-mono text-[9px]">Just now</span>
-                      </p>
-                      <p className="flex items-center justify-between">
-                        <span>⚠️ Low Stock Alert: Keyboard inventory under 10</span>
-                        <span className="font-mono text-[9px]">Today</span>
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Lock Session / Switch Org */}
+          {/* Right Corner: Just Logout */}
+          <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={handleLockSession}
-              title="Lock Session / Switch Organization"
-              className="px-2.5 sm:px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 rounded-xl cursor-pointer transition flex items-center gap-1 font-bold text-xs shadow-2xs"
+              title="Logout / Lock Session"
+              className="px-3 sm:px-4 py-2 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 hover:text-rose-800 rounded-xl cursor-pointer transition flex items-center gap-2 font-bold text-xs shadow-xs"
             >
-              <LogOut className="w-3.5 h-3.5" />
-              <span className="hidden xs:inline">Lock</span>
+              <LogOut className="w-4 h-4" />
+              <span>Logout</span>
             </button>
           </div>
 
