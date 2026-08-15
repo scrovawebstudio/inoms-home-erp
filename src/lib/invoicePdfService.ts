@@ -1,4 +1,5 @@
-import html2pdf from 'html2pdf.js';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { CompanyConfig, Invoice } from '../types';
 
 /**
@@ -13,179 +14,266 @@ export function sanitizeFolderName(name: string): string {
 }
 
 /**
- * Creates the exact HTML element representing the official Tax Invoice
+ * Generates a clean, professional GST Tax Invoice PDF using vector jsPDF
  */
-export function createInvoiceHtmlElement(invoice: Invoice, company: CompanyConfig): HTMLElement {
-  const container = document.createElement('div');
-  container.style.width = '750px';
-  container.style.padding = '30px';
-  container.style.backgroundColor = '#ffffff';
-  container.style.color = '#1e293b';
-  container.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-  container.style.fontSize = '12px';
-  container.style.lineHeight = '1.4';
-  container.style.boxSizing = 'border-box';
+export function generateInvoicePdfBlob(invoice: Invoice, company: CompanyConfig): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new jsPDF({
+        unit: 'mm',
+        format: 'a4',
+        orientation: 'portrait'
+      });
 
-  const subtotal = invoice.subtotal || invoice.items.reduce((acc, it) => acc + it.total, 0);
-  const taxAmount = invoice.taxAmount || 0;
-  const discount = invoice.discount || 0;
-  const deliveryCharges = invoice.deliveryCharges || 0;
-  const grandTotal = invoice.grandTotal || (subtotal - discount + taxAmount + deliveryCharges);
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const margin = 14;
 
-  const itemsRows = invoice.items.map((it, idx) => `
-    <tr style="border-bottom: 1px solid #e2e8f0; ${idx % 2 === 1 ? 'background-color: #f8fafc;' : ''}">
-      <td style="padding: 10px 8px; font-family: monospace; color: #64748b; font-size: 11px;">${idx + 1}</td>
-      <td style="padding: 10px 8px;">
-        <div style="font-weight: 700; color: #0f172a; font-size: 12px;">${it.productName}</div>
-        ${it.serialNo ? `<div style="font-size: 10px; color: #64748b; font-family: monospace;">Ref/SN: ${it.serialNo}</div>` : ''}
-      </td>
-      <td style="padding: 10px 8px; text-align: center; font-family: monospace; font-size: 11px;">${it.qty}</td>
-      <td style="padding: 10px 8px; text-align: right; font-family: monospace; font-size: 11px;">₹${it.rate.toFixed(2)}</td>
-      <td style="padding: 10px 8px; text-align: right; font-family: monospace; font-weight: 700; color: #0f172a; font-size: 11px;">₹${it.total.toFixed(2)}</td>
-    </tr>
-  `).join('');
+      // Primary theme color (#0f766e - Teal)
+      const primaryColor: [number, number, number] = [15, 118, 110];
+      const darkColor: [number, number, number] = [15, 23, 42];
+      const grayText: [number, number, number] = [71, 85, 105];
+      const lightBg: [number, number, number] = [241, 245, 249];
 
-  container.innerHTML = `
-    <div style="border: 1px solid #cbd5e1; border-radius: 12px; padding: 24px; background: #ffffff;">
-      <!-- Header -->
-      <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #0f766e; padding-bottom: 16px;">
-        <div style="max-width: 440px;">
-          <h1 style="margin: 0 0 6px 0; font-size: 20px; font-weight: 900; color: #0f766e; text-transform: uppercase; letter-spacing: -0.5px;">
-            ${company.name || 'Service Enterprise'}
-          </h1>
-          <p style="margin: 0 0 4px 0; color: #475569; font-size: 11px;">${company.address || 'Service & Repair Center'}</p>
-          <p style="margin: 0 0 4px 0; color: #475569; font-size: 11px;">
-            ${company.phone ? `Phone: <strong>${company.phone}</strong>` : ''} 
-            ${company.email ? ` | Email: <strong>${company.email}</strong>` : ''}
-          </p>
-          ${company.gstin ? `<p style="margin: 0; color: #0f766e; font-size: 11px; font-weight: 700;">GSTIN: <span style="font-family: monospace;">${company.gstin}</span></p>` : ''}
-        </div>
-        <div style="text-align: right;">
-          <div style="display: inline-block; background: #0f766e; color: #ffffff; font-size: 10px; font-weight: 900; padding: 4px 10px; border-radius: 6px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">
-            Tax Invoice
-          </div>
-          <div style="font-family: monospace; font-size: 12px; font-weight: 700; color: #1e293b;">#${invoice.id}</div>
-          <div style="font-size: 11px; color: #64748b; margin-top: 2px;">Date: ${invoice.date}</div>
-        </div>
-      </div>
+      // Top Border Accent Line
+      doc.setFillColor(...primaryColor);
+      doc.rect(0, 0, pageWidth, 4, 'F');
 
-      <!-- Bill To & Payment Info -->
-      <div style="display: flex; justify-content: space-between; background: #f1f5f9; padding: 14px 16px; border-radius: 8px; margin: 16px 0; border: 1px solid #e2e8f0;">
-        <div>
-          <div style="font-size: 10px; font-weight: 800; text-transform: uppercase; color: #64748b; letter-spacing: 0.5px; margin-bottom: 4px;">Billed To:</div>
-          <div style="font-size: 14px; font-weight: 800; color: #0f172a;">${invoice.clientName}</div>
-          ${invoice.clientMobile ? `<div style="font-size: 11px; font-family: monospace; color: #334155; margin-top: 2px;">Phone: ${invoice.clientMobile}</div>` : ''}
-          ${invoice.linkedJobId ? `<div style="font-size: 11px; color: #0f766e; font-weight: 700; margin-top: 3px;">Linked Job ID: ${invoice.linkedJobId}</div>` : ''}
-        </div>
-        <div style="text-align: right;">
-          <div style="font-size: 10px; font-weight: 800; text-transform: uppercase; color: #64748b; letter-spacing: 0.5px; margin-bottom: 4px;">Payment Summary:</div>
-          <div style="font-size: 13px; font-weight: 800; color: ${invoice.isPaid ? '#059669' : '#d97706'}; text-transform: uppercase;">
-            ${invoice.isPaid ? 'Paid' : 'Due / Pending'}
-          </div>
-          <div style="font-size: 11px; color: #475569; margin-top: 2px;">Mode: <strong>${invoice.paymentMode || 'Cash'}</strong></div>
-        </div>
-      </div>
+      let currentY = 14;
 
-      <!-- Items Table -->
-      <table style="width: 100%; border-collapse: collapse; margin-bottom: 16px;">
-        <thead>
-          <tr style="background: #0f172a; color: #ffffff; text-transform: uppercase; font-size: 10px; font-weight: 800; letter-spacing: 0.5px;">
-            <th style="padding: 8px; text-align: left; width: 35px;">#</th>
-            <th style="padding: 8px; text-align: left;">Item & Description</th>
-            <th style="padding: 8px; text-align: center; width: 60px;">Qty</th>
-            <th style="padding: 8px; text-align: right; width: 90px;">Rate</th>
-            <th style="padding: 8px; text-align: right; width: 110px;">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${itemsRows}
-        </tbody>
-      </table>
+      // Header: Company Details (Left)
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.setTextColor(...primaryColor);
+      doc.text((company.name || 'SERVICE ENTERPRISE').toUpperCase(), margin, currentY);
 
-      <!-- Totals & Terms -->
-      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; border-top: 1px solid #cbd5e1; padding-top: 14px;">
-        <div style="flex: 1; font-size: 10px; color: #64748b; line-height: 1.5;">
-          <div style="font-weight: 800; text-transform: uppercase; color: #334155; margin-bottom: 4px;">Terms & Conditions:</div>
-          <div>1. Goods / serviced items once sold or accepted are non-refundable.</div>
-          <div>2. Warranty is applicable as per manufacturer / repair terms.</div>
-          <div>3. Computer generated tax invoice valid without signature.</div>
-          ${company.upiId ? `<div style="margin-top: 6px; color: #0f766e; font-weight: 700;">UPI ID for payments: ${company.upiId}</div>` : ''}
-        </div>
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(...grayText);
+      currentY += 5;
+      
+      if (company.address) {
+        const splitAddress = doc.splitTextToSize(company.address, 110);
+        doc.text(splitAddress, margin, currentY);
+        currentY += splitAddress.length * 4;
+      }
 
-        <div style="width: 250px; background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 11px;">
-          <div style="display: flex; justify-content: space-between; margin-bottom: 4px; color: #475569;">
-            <span>Subtotal:</span>
-            <span style="font-family: monospace; font-weight: 600;">₹${subtotal.toFixed(2)}</span>
-          </div>
-          ${discount > 0 ? `
-          <div style="display: flex; justify-content: space-between; margin-bottom: 4px; color: #dc2626;">
-            <span>Discount:</span>
-            <span style="font-family: monospace; font-weight: 600;">-₹${discount.toFixed(2)}</span>
-          </div>` : ''}
-          ${taxAmount > 0 ? `
-          <div style="display: flex; justify-content: space-between; margin-bottom: 4px; color: #475569;">
-            <span>GST / Tax (${invoice.taxPercent || 0}%):</span>
-            <span style="font-family: monospace; font-weight: 600;">₹${taxAmount.toFixed(2)}</span>
-          </div>` : ''}
-          ${deliveryCharges > 0 ? `
-          <div style="display: flex; justify-content: space-between; margin-bottom: 4px; color: #475569;">
-            <span>Delivery:</span>
-            <span style="font-family: monospace; font-weight: 600;">₹${deliveryCharges.toFixed(2)}</span>
-          </div>` : ''}
-          <div style="display: flex; justify-content: space-between; border-top: 2px solid #0f766e; padding-top: 8px; margin-top: 8px; font-size: 13px; font-weight: 900; color: #0f766e;">
-            <span>Grand Total:</span>
-            <span style="font-family: monospace;">₹${grandTotal.toFixed(2)}</span>
-          </div>
-          ${invoice.paidAmount !== undefined ? `
-          <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 10px; color: #059669;">
-            <span>Paid Amount:</span>
-            <span style="font-family: monospace; font-weight: 600;">₹${invoice.paidAmount.toFixed(2)}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; margin-top: 2px; font-size: 10px; color: ${invoice.balanceAmount > 0 ? '#d97706' : '#64748b'};">
-            <span>Balance Due:</span>
-            <span style="font-family: monospace; font-weight: 700;">₹${(invoice.balanceAmount || 0).toFixed(2)}</span>
-          </div>` : ''}
-        </div>
-      </div>
+      let contactLine = '';
+      if (company.phone) contactLine += `Phone: ${company.phone}`;
+      if (company.email) contactLine += `${contactLine ? '  |  ' : ''}Email: ${company.email}`;
+      if (contactLine) {
+        doc.text(contactLine, margin, currentY);
+        currentY += 4;
+      }
 
-      <!-- Footer Note -->
-      <div style="margin-top: 18px; text-align: center; border-top: 1px dashed #cbd5e1; padding-top: 10px; font-size: 10px; color: #94a3b8;">
-        Thank you for your business with <strong>${company.name || 'us'}</strong>!
-      </div>
-    </div>
-  `;
+      if (company.gstin) {
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(...primaryColor);
+        doc.text(`GSTIN: ${company.gstin}`, margin, currentY);
+        currentY += 4;
+      }
 
-  return container;
-}
+      // Header: Invoice Badge & Details (Right)
+      const rightX = pageWidth - margin;
+      doc.setFillColor(...primaryColor);
+      doc.roundedRect(rightX - 32, 10, 32, 7, 1.5, 1.5, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(255, 255, 255);
+      doc.text('TAX INVOICE', rightX - 16, 14.8, { align: 'center' });
 
-/**
- * Generate PDF Blob from an invoice
- */
-export async function generateInvoicePdfBlob(invoice: Invoice, company: CompanyConfig): Promise<Blob> {
-  const element = createInvoiceHtmlElement(invoice, company);
-  
-  // Temporarily mount to offscreen DOM
-  element.style.position = 'fixed';
-  element.style.top = '-9999px';
-  element.style.left = '-9999px';
-  document.body.appendChild(element);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(...darkColor);
+      doc.text(`#${invoice.id}`, rightX, 22, { align: 'right' });
 
-  try {
-    const opt = {
-      margin: 10,
-      filename: `${invoice.id}.pdf`,
-      image: { type: 'jpeg' as const, quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true, logging: false },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const }
-    };
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(...grayText);
+      doc.text(`Date: ${invoice.date}`, rightX, 27, { align: 'right' });
 
-    const pdfBlob: Blob = await html2pdf().set(opt).from(element).outputPdf('blob');
-    return pdfBlob;
-  } finally {
-    if (document.body.contains(element)) {
-      document.body.removeChild(element);
+      currentY = Math.max(currentY + 2, 34);
+
+      // Section: Billed To Box
+      doc.setFillColor(...lightBg);
+      doc.roundedRect(margin, currentY, pageWidth - (margin * 2), 22, 2, 2, 'F');
+      doc.setDrawColor(226, 232, 240);
+      doc.roundedRect(margin, currentY, pageWidth - (margin * 2), 22, 2, 2, 'S');
+
+      // Left Box content
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text('BILLED TO:', margin + 4, currentY + 5);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(...darkColor);
+      doc.text(invoice.clientName || 'Valued Customer', margin + 4, currentY + 11);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(...grayText);
+      let clientDetails = '';
+      if (invoice.clientMobile) clientDetails += `Phone: ${invoice.clientMobile}`;
+      if (invoice.linkedJobId) clientDetails += `${clientDetails ? '  |  ' : ''}Linked Job: ${invoice.linkedJobId}`;
+      if (clientDetails) {
+        doc.text(clientDetails, margin + 4, currentY + 16.5);
+      }
+
+      // Right Box content (Payment Status)
+      const payStatus = invoice.isPaid ? 'PAID' : 'DUE / PENDING';
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text('PAYMENT STATUS:', rightX - 4, currentY + 5, { align: 'right' });
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      if (invoice.isPaid) {
+        doc.setTextColor(5, 150, 105);
+      } else {
+        doc.setTextColor(217, 119, 6);
+      }
+      doc.text(payStatus, rightX - 4, currentY + 11, { align: 'right' });
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(...grayText);
+      doc.text(`Mode: ${invoice.paymentMode || 'Cash'}`, rightX - 4, currentY + 16.5, { align: 'right' });
+
+      currentY += 26;
+
+      // Table of Items
+      const tableData = invoice.items.map((it, idx) => [
+        (idx + 1).toString(),
+        it.serialNo ? `${it.productName}\nRef/SN: ${it.serialNo}` : it.productName,
+        it.qty.toString(),
+        `Rs. ${it.rate.toFixed(2)}`,
+        `Rs. ${it.total.toFixed(2)}`
+      ]);
+
+      autoTable(doc, {
+        startY: currentY,
+        head: [['#', 'Item & Description', 'Qty', 'Rate', 'Amount']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: {
+          fillColor: darkColor,
+          textColor: [255, 255, 255],
+          fontSize: 8.5,
+          fontStyle: 'bold',
+          halign: 'left',
+          cellPadding: 3
+        },
+        columnStyles: {
+          0: { cellWidth: 10, halign: 'center' },
+          1: { cellWidth: 'auto' },
+          2: { cellWidth: 16, halign: 'center' },
+          3: { cellWidth: 26, halign: 'right' },
+          4: { cellWidth: 28, halign: 'right' }
+        },
+        styles: {
+          fontSize: 8.5,
+          cellPadding: 3,
+          textColor: darkColor
+        },
+        alternateRowStyles: {
+          fillColor: [248, 250, 252]
+        },
+        margin: { left: margin, right: margin }
+      });
+
+      const finalY = (doc as any).lastAutoTable?.finalY || currentY + 40;
+
+      // Bottom Totals & Terms
+      const subtotal = invoice.subtotal || invoice.items.reduce((acc, it) => acc + it.total, 0);
+      const taxAmount = invoice.taxAmount || 0;
+      const discount = invoice.discount || 0;
+      const deliveryCharges = invoice.deliveryCharges || 0;
+      const grandTotal = invoice.grandTotal || (subtotal - discount + taxAmount + deliveryCharges);
+
+      let bottomY = finalY + 8;
+
+      // Terms & Conditions (Left)
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(51, 65, 85);
+      doc.text('TERMS & CONDITIONS:', margin, bottomY);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(...grayText);
+      doc.text('1. Goods or serviced items once accepted are non-refundable.', margin, bottomY + 4);
+      doc.text('2. Warranty is applicable as per service/manufacturer terms.', margin, bottomY + 8);
+      doc.text('3. This is a computer generated tax invoice valid without signature.', margin, bottomY + 12);
+      if (company.upiId) {
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(...primaryColor);
+        doc.text(`UPI ID: ${company.upiId}`, margin, bottomY + 17);
+      }
+
+      // Summary Card (Right)
+      const summaryBoxWidth = 72;
+      const summaryBoxX = pageWidth - margin - summaryBoxWidth;
+      let sumY = bottomY - 2;
+
+      doc.setFillColor(...lightBg);
+      doc.roundedRect(summaryBoxX, sumY, summaryBoxWidth, 34, 1.5, 1.5, 'F');
+      doc.setDrawColor(226, 232, 240);
+      doc.roundedRect(summaryBoxX, sumY, summaryBoxWidth, 34, 1.5, 1.5, 'S');
+
+      sumY += 5;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(...grayText);
+      doc.text('Subtotal:', summaryBoxX + 4, sumY);
+      doc.text(`Rs. ${subtotal.toFixed(2)}`, rightX - 4, sumY, { align: 'right' });
+
+      if (discount > 0) {
+        sumY += 4.5;
+        doc.setTextColor(220, 38, 38);
+        doc.text('Discount:', summaryBoxX + 4, sumY);
+        doc.text(`-Rs. ${discount.toFixed(2)}`, rightX - 4, sumY, { align: 'right' });
+      }
+
+      if (taxAmount > 0) {
+        sumY += 4.5;
+        doc.setTextColor(...grayText);
+        doc.text(`GST / Tax (${invoice.taxPercent || 0}%):`, summaryBoxX + 4, sumY);
+        doc.text(`Rs. ${taxAmount.toFixed(2)}`, rightX - 4, sumY, { align: 'right' });
+      }
+
+      if (deliveryCharges > 0) {
+        sumY += 4.5;
+        doc.setTextColor(...grayText);
+        doc.text('Delivery Charges:', summaryBoxX + 4, sumY);
+        doc.text(`Rs. ${deliveryCharges.toFixed(2)}`, rightX - 4, sumY, { align: 'right' });
+      }
+
+      sumY += 5;
+      doc.setDrawColor(...primaryColor);
+      doc.setLineWidth(0.5);
+      doc.line(summaryBoxX + 3, sumY, rightX - 3, sumY);
+
+      sumY += 5;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(...primaryColor);
+      doc.text('Grand Total:', summaryBoxX + 4, sumY);
+      doc.text(`Rs. ${grandTotal.toFixed(2)}`, rightX - 4, sumY, { align: 'right' });
+
+      // Footer
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(148, 163, 184);
+      doc.text(`Thank you for doing business with ${company.name || 'us'}!`, pageWidth / 2, doc.internal.pageSize.getHeight() - 8, { align: 'center' });
+
+      const blob = doc.output('blob');
+      resolve(blob);
+    } catch (error) {
+      reject(error);
     }
-  }
+  });
 }
 
 /**

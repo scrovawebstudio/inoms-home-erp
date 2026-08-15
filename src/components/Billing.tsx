@@ -24,7 +24,8 @@ import {
   Receipt,
   Building,
   Tag,
-  Sparkles
+  Sparkles,
+  Loader2
 } from 'lucide-react';
 import {
   Invoice,
@@ -1618,6 +1619,25 @@ export default function Billing({
         addonType={lockedAddon || 'whatsapp'}
         orgName={companyConfig.name}
       />
+
+      {/* PDF Generation & Upload Loading State */}
+      {isGeneratingPdf && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl border border-slate-100 text-center animate-in fade-in zoom-in duration-200">
+            <div className="w-14 h-14 bg-teal-50 border border-teal-200 rounded-2xl flex items-center justify-center mx-auto mb-4 text-teal-700">
+              <Loader2 className="w-7 h-7 animate-spin" />
+            </div>
+            <h3 className="text-base font-bold text-slate-800 mb-1">Preparing Tax Invoice PDF</h3>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Generating official PDF and uploading to your organization's storage for WhatsApp direct link...
+            </p>
+            <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-center gap-1.5 text-[11px] font-medium text-teal-700">
+              <span className="w-2 h-2 rounded-full bg-teal-500 animate-ping"></span>
+              Secure multi-tenant storage
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

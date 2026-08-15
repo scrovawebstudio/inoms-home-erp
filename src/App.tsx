@@ -30,7 +30,9 @@ import {
   Menu,
   X,
   WifiOff,
-  Wifi
+  Wifi,
+  Clock,
+  Calendar
 } from 'lucide-react';
 
 import { getDirectoryHandle, getLatestBackupFromDirectoryHandle, writeBackupToDirectoryHandle } from './lib/directoryHandleStorage';
@@ -197,6 +199,63 @@ export default function App() {
         lastLocalBackupTime: ''
       };
     }
+  };
+
+  // Helper to accurately calculate remaining subscription time for the active organization
+  const getSubscriptionTimeLeft = (tenant: TenantOrg) => {
+    if (tenant.id === 'org-admin') {
+      return { text: 'Lifetime', type: 'lifetime', isUrgent: false, isExpired: false, days: 9999 };
+    }
+
+    if (tenant.subscriptionPlan === 'lifetime') {
+      return { text: 'Lifetime', type: 'lifetime', isUrgent: false, isExpired: false, days: 9999 };
+    }
+
+    let endDate: Date | null = null;
+
+    if (tenant.subscriptionEndDate) {
+      endDate = new Date(tenant.subscriptionEndDate);
+    } else if (tenant.createdAt) {
+      const created = new Date(tenant.createdAt);
+      const daysToAdd = tenant.isTrial ? (tenant.trialDays || 7) : 30;
+      endDate = new Date(created.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+    }
+
+    if (!endDate || isNaN(endDate.getTime())) {
+      return { text: 'Active', type: 'active', isUrgent: false, isExpired: false, days: 30 };
+    }
+
+    // Set end date to end of day
+    endDate.setHours(23, 59, 59, 999);
+    const now = new Date();
+    const diffMs = endDate.getTime() - now.getTime();
+    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+    if (diffDays <= 0) {
+      return { text: 'Expired', type: 'expired', isUrgent: true, isExpired: true, days: 0 };
+    }
+
+    if (diffDays > 365) {
+      const years = Math.floor(diffDays / 365);
+      const remMonths = Math.floor((diffDays % 365) / 30);
+      const text = remMonths > 0 ? `${years}y ${remMonths}m left` : `${years}y left`;
+      return { text, type: 'year', isUrgent: false, isExpired: false, days: diffDays };
+    }
+
+    if (diffDays > 30) {
+      const months = Math.floor(diffDays / 30);
+      const remDays = diffDays % 30;
+      const text = remDays > 0 ? `${months}m ${remDays}d left` : `${months}m left`;
+      return { text, type: 'month', isUrgent: false, isExpired: false, days: diffDays };
+    }
+
+    return {
+      text: `${diffDays}d left`,
+      type: 'day',
+      isUrgent: diffDays <= 5,
+      isExpired: false,
+      days: diffDays
+    };
   };
 
   // Helper to ensure Master System Admin org exists and strip unrequested demo tenants & duplicates
@@ -2950,9 +3009,35 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Top Sidebar Utilities: Synced & Notifications */}
+              {/* Top Sidebar Utilities: Subscription (Left) & Synced (Right) */}
               <div className="p-3.5 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
-                {/* Sync Status Button */}
+                {/* Organization Subscription Remaining Time Badge (Left) */}
+                {(() => {
+                  const sub = getSubscriptionTimeLeft(activeTenant);
+                  return (
+                    <div
+                      title={
+                        activeTenant.id === 'org-admin'
+                          ? 'Master Admin: Lifetime Unlimited Access'
+                          : `Organization: ${activeTenant.name}\nPlan: ${activeTenant.subscriptionPlan || (activeTenant.isTrial ? 'Trial' : 'Standard')}\nValid Until: ${activeTenant.subscriptionEndDate || 'Standard validity'}\nTime Remaining: ${sub.text}`
+                      }
+                      className={`flex-1 px-2.5 py-1.5 rounded-xl border transition-all flex items-center justify-center gap-1.5 text-[11px] font-extrabold shadow-xs truncate ${
+                        sub.isExpired
+                          ? 'bg-rose-500/25 border-rose-400/50 text-rose-300 animate-pulse'
+                          : sub.isUrgent
+                          ? 'bg-amber-500/25 border-amber-400/50 text-amber-300 animate-bounce'
+                          : sub.type === 'lifetime'
+                          ? 'bg-purple-500/20 border-purple-400/40 text-purple-300'
+                          : 'bg-teal-500/20 border-teal-400/40 text-teal-200'
+                      }`}
+                    >
+                      <Clock className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{sub.text}</span>
+                    </div>
+                  );
+                })()}
+
+                {/* Sync Status Button (Right of Subscription) */}
                 <button
                   onClick={handleSyncData}
                   disabled={isSyncing}
@@ -2963,7 +3048,7 @@ export default function App() {
                       ? 'Synchronizing changes with Cloud Firestore & backing up local JSON files...'
                       : 'Data synchronized in real-time with Cloud Firestore & Local Storage. Click to trigger manual sync.'
                   }
-                  className={`flex-1 px-3 py-2 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-2 font-bold text-xs shadow-xs ${
+                  className={`flex-1 px-2.5 py-1.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-1.5 font-bold text-xs shadow-xs ${
                     !isOnline
                       ? 'bg-amber-500/20 border-amber-400/40 text-amber-300 hover:bg-amber-500/30'
                       : isSyncing
@@ -2974,33 +3059,20 @@ export default function App() {
                   {!isOnline ? (
                     <>
                       <WifiOff className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-                      <span className="text-[11px] font-extrabold uppercase tracking-wide">Offline</span>
+                      <span className="text-[10px] font-extrabold uppercase tracking-wide">Offline</span>
                     </>
                   ) : isSyncing ? (
                     <>
                       <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-300 shrink-0" />
-                      <span className="text-[11px] font-extrabold uppercase tracking-wide">Syncing...</span>
+                      <span className="text-[10px] font-extrabold uppercase tracking-wide">Syncing</span>
                     </>
                   ) : (
                     <>
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      <span className="text-[11px] font-extrabold uppercase tracking-wide">Synced</span>
+                      <span className="text-[10px] font-extrabold uppercase tracking-wide">Synced</span>
                     </>
                   )}
                 </button>
-
-                {/* Notification Bell Button */}
-                <div className="relative">
-                  <button
-                    onClick={() => setShowNotifications(!showNotifications)}
-                    className="p-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white/90 hover:text-white cursor-pointer relative transition shadow-xs flex items-center justify-center"
-                    title="Notifications & Announcements"
-                  >
-                    <Bell className="w-4 h-4" />
-                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500"></span>
-                  </button>
-                </div>
               </div>
 
               <nav className="p-4 space-y-1.5">
@@ -3067,9 +3139,35 @@ export default function App() {
         style={{ backgroundColor: activeThemePalette.sidebarBg, color: activeThemePalette.sidebarText }}
       >
         <div className="flex flex-col overflow-y-auto">
-          {/* Top Sidebar Utilities: Synced & Notifications (Before Tabs) */}
+          {/* Top Sidebar Utilities: Subscription (Left) & Synced (Right) */}
           <div className="p-3.5 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
-            {/* Sync Status Button */}
+            {/* Organization Subscription Remaining Time Badge (Left) */}
+            {(() => {
+              const sub = getSubscriptionTimeLeft(activeTenant);
+              return (
+                <div
+                  title={
+                    activeTenant.id === 'org-admin'
+                      ? 'Master Admin: Lifetime Unlimited Access'
+                      : `Organization: ${activeTenant.name}\nPlan: ${activeTenant.subscriptionPlan || (activeTenant.isTrial ? 'Trial' : 'Standard')}\nValid Until: ${activeTenant.subscriptionEndDate || 'Standard validity'}\nTime Remaining: ${sub.text}`
+                  }
+                  className={`flex-1 px-2.5 py-1.5 rounded-xl border transition-all flex items-center justify-center gap-1.5 text-[11px] font-extrabold shadow-xs truncate ${
+                    sub.isExpired
+                      ? 'bg-rose-500/25 border-rose-400/50 text-rose-300 animate-pulse'
+                      : sub.isUrgent
+                      ? 'bg-amber-500/25 border-amber-400/50 text-amber-300 animate-bounce'
+                      : sub.type === 'lifetime'
+                      ? 'bg-purple-500/20 border-purple-400/40 text-purple-300'
+                      : 'bg-teal-500/20 border-teal-400/40 text-teal-200'
+                  }`}
+                >
+                  <Clock className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">{sub.text}</span>
+                </div>
+              );
+            })()}
+
+            {/* Sync Status Button (Right of Subscription) */}
             <button
               onClick={handleSyncData}
               disabled={isSyncing}
@@ -3080,7 +3178,7 @@ export default function App() {
                   ? 'Synchronizing changes with Cloud Firestore & backing up local JSON files...'
                   : 'Data synchronized in real-time with Cloud Firestore & Local Storage. Click to trigger manual sync.'
               }
-              className={`flex-1 px-3 py-2 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-2 font-bold text-xs shadow-xs ${
+              className={`flex-1 px-2.5 py-1.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-1.5 font-bold text-xs shadow-xs ${
                 !isOnline
                   ? 'bg-amber-500/20 border-amber-400/40 text-amber-300 hover:bg-amber-500/30'
                   : isSyncing
@@ -3091,33 +3189,20 @@ export default function App() {
               {!isOnline ? (
                 <>
                   <WifiOff className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-                  <span className="text-[11px] font-extrabold uppercase tracking-wide">Offline</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wide">Offline</span>
                 </>
               ) : isSyncing ? (
                 <>
                   <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-300 shrink-0" />
-                  <span className="text-[11px] font-extrabold uppercase tracking-wide">Syncing...</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wide">Syncing</span>
                 </>
               ) : (
                 <>
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                  <span className="text-[11px] font-extrabold uppercase tracking-wide">Synced</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wide">Synced</span>
                 </>
               )}
             </button>
-
-            {/* Notification Bell Button */}
-            <div className="relative">
-              <button
-                onClick={() => setShowNotifications(!showNotifications)}
-                className="p-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white/90 hover:text-white cursor-pointer relative transition shadow-xs flex items-center justify-center"
-                title="Notifications & Announcements"
-              >
-                <Bell className="w-4 h-4" />
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500"></span>
-              </button>
-            </div>
           </div>
 
           {/* Menu items */}
@@ -3292,8 +3377,21 @@ export default function App() {
             </div>
           </div>
 
-          {/* Right Corner: Just Logout */}
+          {/* Right Corner: Notifications & Logout */}
           <div className="flex items-center gap-2 shrink-0">
+            {/* Notification Bell Button */}
+            <div className="relative">
+              <button
+                onClick={() => setShowNotifications(!showNotifications)}
+                className="p-2 bg-slate-100 hover:bg-slate-200/80 border border-slate-200 text-slate-700 hover:text-slate-900 rounded-xl cursor-pointer relative transition shadow-xs flex items-center justify-center"
+                title="Notifications & Announcements"
+              >
+                <Bell className="w-4 h-4" />
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500"></span>
+              </button>
+            </div>
+
             <button
               onClick={handleLockSession}
               title="Logout / Lock Session"
