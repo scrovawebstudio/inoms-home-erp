@@ -211,6 +211,6 @@ export async function saveTenantCollectionToFirestore(
   items: any[]
 ): Promise<void> {
   if (!tenantId || !collectionName) return;
-  // Atomically replace collection in local IndexedDB replica and queue push to Home Server
-  await replaceLocalCollection(tenantId, collectionName, items, true);
+  // Atomically replace collection in local IndexedDB replica without duplicate echo-notification
+  await replaceLocalCollection(tenantId, collectionName, items, false, false);
 }

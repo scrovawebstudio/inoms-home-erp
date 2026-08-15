@@ -316,39 +316,39 @@ export default function MasterAdminBilling({
     <div className="space-y-8">
       
       {/* Top Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-teal-950 to-slate-900 p-6 rounded-3xl text-white shadow-xl flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <div className="bg-gradient-to-r from-slate-900 via-teal-950 to-slate-900 p-4 sm:p-6 rounded-3xl text-white shadow-xl flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <span className="p-2 bg-teal-500/20 text-teal-400 rounded-xl border border-teal-500/30">
               <Receipt className="w-5 h-5" />
             </span>
-            <h1 className="text-xl font-extrabold tracking-tight text-white">SaaS Bill Generation & Add-on Invoicing</h1>
+            <h1 className="text-lg sm:text-xl font-extrabold tracking-tight text-white">SaaS Bill Generation & Add-on Invoicing</h1>
           </div>
           <p className="text-xs text-slate-300 mt-1">
             Generate customized GST-compliant SaaS subscription bills based on each organization's enabled access points & configured add-on rates.
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="bg-white/10 backdrop-blur-md px-4 py-2 rounded-2xl border border-white/10 text-center">
-            <span className="text-[10px] font-bold text-slate-300 uppercase block">Total SaaS Revenue</span>
-            <span className="text-lg font-black text-emerald-400 font-mono">
+        <div className="grid grid-cols-2 sm:flex items-center gap-2 sm:gap-3">
+          <div className="bg-white/10 backdrop-blur-md px-3 sm:px-4 py-2 rounded-2xl border border-white/10 text-center">
+            <span className="text-[9px] sm:text-[10px] font-bold text-slate-300 uppercase block">Total SaaS Revenue</span>
+            <span className="text-base sm:text-lg font-black text-emerald-400 font-mono">
               ₹{invoices.reduce((s, i) => s + (i.paymentStatus === 'Paid' ? i.grandTotal : 0), 0).toLocaleString('en-IN')}
             </span>
           </div>
-          <div className="bg-white/10 backdrop-blur-md px-4 py-2 rounded-2xl border border-white/10 text-center">
-            <span className="text-[10px] font-bold text-slate-300 uppercase block">Generated Bills</span>
-            <span className="text-lg font-black text-teal-300 font-mono">{invoices.length}</span>
+          <div className="bg-white/10 backdrop-blur-md px-3 sm:px-4 py-2 rounded-2xl border border-white/10 text-center">
+            <span className="text-[9px] sm:text-[10px] font-bold text-slate-300 uppercase block">Generated Bills</span>
+            <span className="text-base sm:text-lg font-black text-teal-300 font-mono">{invoices.length}</span>
           </div>
         </div>
       </div>
 
       {/* Main Interactive Bill Generator Card */}
-      <div className="bg-white border border-slate-200/80 rounded-3xl p-6 shadow-sm space-y-6">
+      <div className="bg-white border border-slate-200/80 rounded-3xl p-4 sm:p-6 shadow-sm space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
           <div>
-            <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-teal-600" />
+            <h2 className="text-sm sm:text-base font-bold text-slate-900 flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-teal-600 shrink-0" />
               Interactive SaaS Bill Builder
             </h2>
             <p className="text-xs text-slate-500">Select an organization to auto-populate all its active access points and add-on rates.</p>
@@ -358,7 +358,7 @@ export default function MasterAdminBilling({
             <button
               type="button"
               onClick={handleAddCustomLine}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 transition cursor-pointer border border-teal-200"
+              className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 transition cursor-pointer border border-teal-200"
             >
               <Plus className="w-3.5 h-3.5" /> Add Custom Line Item
             </button>
@@ -368,7 +368,7 @@ export default function MasterAdminBilling({
         <form onSubmit={handleGenerateInvoice} className="space-y-6">
           
           {/* Top Controls: Organization & Period */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-200/70">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 bg-slate-50 p-3 sm:p-4 rounded-2xl border border-slate-200/70">
             
             {/* Org Selector */}
             <div>
@@ -426,18 +426,90 @@ export default function MasterAdminBilling({
 
           </div>
 
-          {/* Line Items Table */}
+          {/* Line Items Container */}
           <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-2xs">
-            <div className="bg-slate-100/80 px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+            <div className="bg-slate-100/80 p-3 sm:px-4 sm:py-3 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-700">
                 Access Points & Billable Line Items ({lineItems.filter(i => i.enabled).length} Active)
               </span>
-              <span className="text-[10px] font-bold text-teal-700 bg-teal-50 px-2.5 py-0.5 rounded-full border border-teal-200">
+              <span className="text-[10px] font-bold text-teal-700 bg-teal-50 px-2.5 py-0.5 rounded-full border border-teal-200 w-fit">
                 Auto-checked from {currentTenant?.name}'s permissions
               </span>
             </div>
 
-            <div className="divide-y divide-slate-100 overflow-x-auto">
+            {/* Mobile Line Items View (Phones) */}
+            <div className="sm:hidden divide-y divide-slate-100 p-2 space-y-2">
+              {lineItems.map(item => {
+                const amount = item.qty * item.rate;
+                return (
+                  <div
+                    key={item.id}
+                    className={`p-3 rounded-xl border transition space-y-2.5 ${
+                      item.enabled ? 'bg-white border-slate-200' : 'bg-slate-50/60 border-slate-100 opacity-50'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={item.enabled}
+                          onChange={() => handleToggleItem(item.id)}
+                          className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500 cursor-pointer shrink-0"
+                        />
+                        <input
+                          type="text"
+                          value={item.description}
+                          onChange={e => handleUpdateItemDesc(item.id, e.target.value)}
+                          className="w-full bg-transparent border-b border-slate-200 focus:border-teal-500 font-semibold text-slate-900 outline-none text-xs"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteLineItem(item.id)}
+                        className="text-slate-400 hover:text-rose-600 p-1 cursor-pointer shrink-0"
+                        title="Remove line item"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 text-xs pt-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-slate-500 font-bold uppercase">Qty:</span>
+                        <input
+                          type="number"
+                          min="1"
+                          value={item.qty}
+                          onChange={e => handleUpdateItemQty(item.id, Number(e.target.value) || 1)}
+                          className="w-14 text-center bg-white border border-slate-300 rounded-lg px-1.5 py-1 text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-teal-500"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-slate-500 font-bold uppercase">Rate:</span>
+                        <div className="relative w-24">
+                          <span className="absolute left-2 top-1 text-[10px] font-bold text-slate-400">₹</span>
+                          <input
+                            type="number"
+                            min="0"
+                            value={item.rate}
+                            onChange={e => handleUpdateItemRate(item.id, Number(e.target.value) || 0)}
+                            className="w-full text-right bg-white border border-slate-300 rounded-lg pl-4 pr-1.5 py-1 text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-teal-500 font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="text-right font-mono font-bold text-teal-700 text-xs">
+                        ₹{amount.toLocaleString('en-IN')}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Desktop Line Items Table */}
+            <div className="hidden sm:block divide-y divide-slate-100 overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-50 text-[10px] font-bold uppercase text-slate-500 border-b border-slate-200">
@@ -675,8 +747,117 @@ export default function MasterAdminBilling({
           </div>
         </div>
 
-        {/* Invoices Table */}
-        <div className="overflow-x-auto">
+        {/* Mobile Invoices Card List (Phones & Small Tablets) */}
+        <div className="md:hidden divide-y divide-slate-100">
+          {filteredInvoices.length === 0 ? (
+            <div className="p-8 text-center text-slate-400 text-xs italic">
+              No SaaS invoices found. Generate a new bill using the builder above.
+            </div>
+          ) : (
+            filteredInvoices.map(inv => {
+              const isPaid = inv.paymentStatus === 'Paid';
+              return (
+                <div key={inv.id} className="p-4 space-y-3 bg-white hover:bg-slate-50/50 transition">
+                  {/* Top: Invoice No, Period, Status */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono font-black text-slate-900 text-xs">{inv.id}</span>
+                        <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-bold text-[9.5px]">
+                          {inv.billingPeriod}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 font-mono mt-0.5">
+                        Date: {inv.date} (Due: {inv.dueDate})
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextStatus = isPaid ? 'Unpaid' : 'Paid';
+                        onUpdateInvoice({ ...inv, paymentStatus: nextStatus });
+                      }}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full font-bold text-[10px] transition cursor-pointer border ${
+                        isPaid
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                          : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                      }`}
+                      title="Click to toggle Payment Status"
+                    >
+                      {isPaid ? <Check className="w-3 h-3 text-emerald-600" /> : <Clock className="w-3 h-3 text-amber-600" />}
+                      <span>{inv.paymentStatus}</span>
+                    </button>
+                  </div>
+
+                  {/* Organization info & Total */}
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex items-center justify-between gap-2 text-xs">
+                    <div>
+                      <span className="font-bold text-slate-900 block">{inv.tenantName}</span>
+                      <span className="text-[10px] text-slate-500 font-mono block">Code: {inv.tenantCode} | {inv.ownerMobile}</span>
+                    </div>
+
+                    <div className="text-right">
+                      <span className="text-[9px] font-bold text-slate-400 uppercase block">Grand Total</span>
+                      <span className="font-mono font-black text-emerald-600 text-xs sm:text-sm">
+                        ₹{inv.grandTotal.toLocaleString('en-IN')}.00
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Included Add-ons */}
+                  <div className="flex flex-wrap gap-1">
+                    {inv.items.map((item, idx) => (
+                      <span key={idx} className="bg-teal-50 text-teal-800 text-[9px] font-bold px-1.5 py-0.5 rounded border border-teal-100">
+                        {item.addonKey || item.description}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Action buttons */}
+                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleSendWhatsApp(inv)}
+                        className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1 border border-emerald-200"
+                        title="Send on WhatsApp"
+                      >
+                        <WhatsAppIcon className="w-3.5 h-3.5" />
+                        <span>WhatsApp</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewInvoice(inv)}
+                        className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1 border border-blue-200"
+                        title="View / Print Tax Invoice"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>View Slip</span>
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm(`Are you sure you want to delete SaaS invoice ${inv.id}?`)) {
+                          onDeleteInvoice(inv.id);
+                        }
+                      }}
+                      className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl transition cursor-pointer border border-rose-200 text-xs"
+                      title="Delete Invoice"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Desktop Invoices Table */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-100/60 text-slate-500 text-[10px] uppercase font-extrabold tracking-wider border-b border-slate-200/80">
@@ -800,34 +981,34 @@ export default function MasterAdminBilling({
 
       {/* Printable Master Admin SaaS Invoice Modal */}
       {previewInvoice && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/80 backdrop-blur-xs">
+          <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[95vh] sm:max-h-[90vh] animate-in fade-in zoom-in-95 duration-200">
             
             {/* Modal Control Bar */}
-            <div className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2">
-                <span className="p-1.5 bg-teal-500/20 text-teal-400 rounded-lg">
+            <div className="bg-slate-900 text-white p-3 sm:px-6 sm:py-4 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="p-1.5 bg-teal-500/20 text-teal-400 rounded-lg shrink-0">
                   <Receipt className="w-4 h-4" />
                 </span>
-                <span className="text-xs font-bold uppercase tracking-wider text-teal-400">
-                  Official SaaS Tax Invoice #{previewInvoice.id}
+                <span className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-teal-400 truncate">
+                  Tax Invoice #{previewInvoice.id}
                 </span>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => handleSendWhatsApp(previewInvoice)}
-                  className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer transition"
+                  className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-[11px] sm:text-xs font-bold px-2.5 sm:px-3 py-1.5 rounded-lg cursor-pointer transition"
                 >
-                  <WhatsAppIcon className="w-3.5 h-3.5" /> WhatsApp Share
+                  <WhatsAppIcon className="w-3.5 h-3.5" /> <span className="hidden xs:inline">WhatsApp</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => window.print()}
-                  className="flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer transition"
+                  className="flex items-center gap-1 bg-teal-600 hover:bg-teal-700 text-[11px] sm:text-xs font-bold px-2.5 sm:px-3 py-1.5 rounded-lg cursor-pointer transition"
                 >
-                  <Printer className="w-3.5 h-3.5" /> Print Invoice
+                  <Printer className="w-3.5 h-3.5" /> <span className="hidden xs:inline">Print</span>
                 </button>
                 <button
                   type="button"
@@ -840,19 +1021,19 @@ export default function MasterAdminBilling({
             </div>
 
             {/* Document Printable Body */}
-            <div className="p-6 bg-slate-100 overflow-y-auto flex-1">
-              <div id="saas-invoice-print-area" className="printable-area bg-white p-8 max-w-2xl mx-auto rounded-xl shadow-xs border border-slate-200 text-[11px] text-slate-700 space-y-5">
+            <div className="p-2 sm:p-6 bg-slate-100 overflow-y-auto flex-1">
+              <div id="saas-invoice-print-area" className="printable-area bg-white p-4 sm:p-8 max-w-2xl mx-auto rounded-xl shadow-xs border border-slate-200 text-[11px] text-slate-700 space-y-4 sm:space-y-5">
                 
                 {/* Header info */}
-                <div className="flex justify-between items-start border-b border-slate-200 pb-4">
+                <div className="flex flex-col sm:flex-row justify-between items-start border-b border-slate-200 pb-4 gap-3">
                   <div>
-                    <h2 className="text-lg font-black text-slate-900 tracking-tight">INOMS CLOUD PLATFORM</h2>
+                    <h2 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">INOMS CLOUD PLATFORM</h2>
                     <p className="text-[10px] text-slate-500">NextGen Enterprise SaaS & Multi-Tenant Solutions</p>
                     <p className="text-[10px] text-slate-500">Phone: +91 8149862034 | Email: billing@inoms.cloud</p>
                     <p className="text-[10px] text-slate-500 font-bold">GSTIN: <span className="font-mono">21ABCDE1234F1Z5</span></p>
                   </div>
-                  <div className="text-right">
-                    <span className="bg-teal-600 text-white text-[9px] px-3 py-1 rounded font-black tracking-widest block uppercase">
+                  <div className="text-left sm:text-right">
+                    <span className="bg-teal-600 text-white text-[9px] px-3 py-1 rounded font-black tracking-widest block uppercase w-fit sm:w-auto">
                       SaaS Tax Invoice
                     </span>
                     <p className="text-[10px] text-slate-600 mt-1.5 font-mono font-bold">Invoice No: {previewInvoice.id}</p>
@@ -862,7 +1043,7 @@ export default function MasterAdminBilling({
                 </div>
 
                 {/* Bill To Info */}
-                <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 bg-slate-50 p-3 sm:p-4 rounded-xl border border-slate-200">
                   <div>
                     <h4 className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Subscriber Organization</h4>
                     <p className="font-black text-slate-900 text-xs">{previewInvoice.tenantName}</p>
@@ -870,7 +1051,7 @@ export default function MasterAdminBilling({
                     <p className="text-[10px] text-slate-600">Owner: {previewInvoice.ownerName}</p>
                     <p className="text-[10px] text-slate-600 font-mono">Contact: {previewInvoice.ownerMobile}</p>
                   </div>
-                  <div className="text-right">
+                  <div className="text-left sm:text-right">
                     <h4 className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Billing Cycle</h4>
                     <span className="bg-teal-50 text-teal-800 text-[10px] font-bold px-2 py-0.5 rounded border border-teal-200 inline-block mb-1">
                       {previewInvoice.billingPeriod} Plan
@@ -881,32 +1062,34 @@ export default function MasterAdminBilling({
                 </div>
 
                 {/* Items Table */}
-                <table className="w-full border-collapse text-[10px]">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-slate-500 font-bold uppercase">
-                      <th className="py-2 text-left w-8">#</th>
-                      <th className="py-2 text-left">Access Point / Feature Description</th>
-                      <th className="py-2 text-center w-12">Qty</th>
-                      <th className="py-2 text-right w-24">Rate (₹)</th>
-                      <th className="py-2 text-right w-24">Total (₹)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {previewInvoice.items.map((item, idx) => (
-                      <tr key={idx}>
-                        <td className="py-2 font-mono text-slate-400">{idx + 1}</td>
-                        <td className="py-2 font-semibold text-slate-800">{item.description}</td>
-                        <td className="py-2 text-center font-mono">{item.qty}</td>
-                        <td className="py-2 text-right font-mono">₹{item.rate.toLocaleString('en-IN')}</td>
-                        <td className="py-2 text-right font-mono font-bold text-slate-900">₹{item.amount.toLocaleString('en-IN')}.00</td>
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse text-[10px]">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-slate-500 font-bold uppercase">
+                        <th className="py-2 text-left w-8">#</th>
+                        <th className="py-2 text-left">Access Point / Feature Description</th>
+                        <th className="py-2 text-center w-12">Qty</th>
+                        <th className="py-2 text-right w-20 sm:w-24">Rate (₹)</th>
+                        <th className="py-2 text-right w-20 sm:w-24">Total (₹)</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {previewInvoice.items.map((item, idx) => (
+                        <tr key={idx}>
+                          <td className="py-2 font-mono text-slate-400">{idx + 1}</td>
+                          <td className="py-2 font-semibold text-slate-800">{item.description}</td>
+                          <td className="py-2 text-center font-mono">{item.qty}</td>
+                          <td className="py-2 text-right font-mono">₹{item.rate.toLocaleString('en-IN')}</td>
+                          <td className="py-2 text-right font-mono font-bold text-slate-900">₹{item.amount.toLocaleString('en-IN')}.00</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
 
                 {/* Totals Summary */}
                 <div className="flex justify-end pt-2 border-t border-slate-200">
-                  <div className="w-60 space-y-1.5 text-[10px]">
+                  <div className="w-full sm:w-60 space-y-1.5 text-[10px]">
                     <div className="flex justify-between text-slate-600">
                       <span>Subtotal:</span>
                       <span className="font-mono">₹{previewInvoice.subtotal.toLocaleString('en-IN')}.00</span>
@@ -931,7 +1114,7 @@ export default function MasterAdminBilling({
                 </div>
 
                 {/* Payment QR & Signatures */}
-                <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-100">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-slate-100">
                   <div className="flex items-center gap-3 bg-emerald-50/50 p-2.5 rounded-xl border border-emerald-100/50">
                     <div className="w-14 h-14 bg-white rounded-lg border border-emerald-200 flex items-center justify-center p-0.5 shrink-0 overflow-hidden">
                       <img
@@ -949,8 +1132,8 @@ export default function MasterAdminBilling({
                   </div>
 
                   <div className="flex justify-end items-end text-center">
-                    <div className="w-36 text-center">
-                      <div className="h-8"></div>
+                    <div className="w-full sm:w-36 text-center">
+                      <div className="h-6 sm:h-8"></div>
                       <div className="w-full border-b border-slate-300 mx-auto"></div>
                       <span className="text-[8.5px] font-bold text-slate-700 mt-0.5 block uppercase">Authorized Signature</span>
                       <span className="text-[8px] text-slate-400 block font-semibold">INOMS Cloud Systems</span>

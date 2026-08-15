@@ -424,13 +424,13 @@ Login Page: Access with registered mobile and PIN on the portal.`;
     <div className="space-y-6 max-w-7xl mx-auto pb-12">
       
       {/* Header Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-teal-950 to-slate-900 p-6 rounded-3xl text-white shadow-xl flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <div className="bg-gradient-to-r from-slate-900 via-teal-950 to-slate-900 p-4 sm:p-6 rounded-3xl text-white shadow-xl flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div className="space-y-1">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="p-2 bg-teal-500/20 text-teal-400 rounded-xl border border-teal-500/30">
               <ShieldCheck className="w-5 h-5" />
             </span>
-            <h1 className="text-xl font-extrabold tracking-tight text-white">Platform Master Admin Dashboard</h1>
+            <h1 className="text-lg sm:text-xl font-extrabold tracking-tight text-white">Platform Master Admin Dashboard</h1>
             <span className="bg-teal-500/20 text-teal-300 text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border border-teal-500/30 uppercase">
               Super Admin Level
             </span>
@@ -443,24 +443,24 @@ Login Page: Access with registered mobile and PIN on the portal.`;
         <button
           type="button"
           onClick={handleOpenRegisterModal}
-          className="bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs px-4 py-3 rounded-2xl shadow-lg transition cursor-pointer flex items-center justify-center gap-2 shrink-0"
+          className="w-full sm:w-auto bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs px-4 py-3 rounded-2xl shadow-lg transition cursor-pointer flex items-center justify-center gap-2 shrink-0"
         >
           <Plus className="w-4 h-4" /> Register New Organization
         </button>
       </div>
 
       {/* Top Sub-Navigation Tabs */}
-      <div className="flex bg-slate-200/80 p-1.5 rounded-2xl gap-2 text-xs font-bold w-fit shadow-inner">
+      <div className="flex items-center bg-slate-200/80 p-1.5 rounded-2xl gap-1.5 sm:gap-2 text-xs font-bold w-full sm:w-fit overflow-x-auto scrollbar-none shadow-inner">
         <button
           type="button"
           onClick={() => setMasterTab('accounts')}
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl transition cursor-pointer ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl whitespace-nowrap transition cursor-pointer ${
             masterTab === 'accounts'
               ? 'bg-white text-slate-900 shadow-sm font-extrabold'
               : 'text-slate-600 hover:text-slate-900'
           }`}
         >
-          <Building className="w-4 h-4 text-teal-600" />
+          <Building className="w-4 h-4 text-teal-600 shrink-0" />
           <span>Organizations & Workspaces</span>
           <span className="bg-slate-100 text-slate-700 text-[10px] px-2 py-0.5 rounded-full border border-slate-200">
             {tenants.length}
@@ -470,13 +470,13 @@ Login Page: Access with registered mobile and PIN on the portal.`;
         <button
           type="button"
           onClick={() => setMasterTab('pricing')}
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl transition cursor-pointer ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl whitespace-nowrap transition cursor-pointer ${
             masterTab === 'pricing'
               ? 'bg-white text-slate-900 shadow-sm font-extrabold'
               : 'text-slate-600 hover:text-slate-900'
           }`}
         >
-          <Tag className="w-4 h-4 text-teal-600" />
+          <Tag className="w-4 h-4 text-teal-600 shrink-0" />
           <span>Add-on Price Set</span>
           <span className="bg-teal-50 text-teal-700 text-[10px] px-2 py-0.5 rounded-full border border-teal-200">
             Rates Matrix
@@ -486,13 +486,13 @@ Login Page: Access with registered mobile and PIN on the portal.`;
         <button
           type="button"
           onClick={() => setMasterTab('billing')}
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl transition cursor-pointer ${
+          className={`flex items-center gap-1.5 sm:gap-2 px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl whitespace-nowrap transition cursor-pointer ${
             masterTab === 'billing'
               ? 'bg-white text-slate-900 shadow-sm font-extrabold'
               : 'text-slate-600 hover:text-slate-900'
           }`}
         >
-          <Receipt className="w-4 h-4 text-teal-600" />
+          <Receipt className="w-4 h-4 text-teal-600 shrink-0" />
           <span>SaaS Bill Generation & Invoices</span>
           <span className="bg-emerald-50 text-emerald-700 text-[10px] px-2 py-0.5 rounded-full border border-emerald-200">
             {saasInvoices.length} Bills
@@ -672,8 +672,210 @@ Login Page: Access with registered mobile and PIN on the portal.`;
           </div>
         </div>
 
-        {/* Organizations Table */}
-        <div className="overflow-x-auto">
+        {/* Mobile Organizations Card List (Phones & Small Tablets) */}
+        <div className="md:hidden divide-y divide-slate-100">
+          {filteredTenants.length === 0 ? (
+            <div className="p-8 text-center text-slate-400 text-xs italic">
+              No matching organizations found.
+            </div>
+          ) : (
+            filteredTenants.map(org => {
+              const isMasterAdmin = org.id === 'org-admin' || org.code?.toUpperCase() === 'ADMIN-00' || org.ownerMobile?.includes('8149862034');
+              const isActive = isMasterAdmin ? true : org.status === 'active';
+
+              // Subscription calculation
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              let subBadge = null;
+
+              if (isMasterAdmin) {
+                subBadge = (
+                  <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full text-[10px] font-bold border border-slate-200">
+                    ♾️ Lifetime System
+                  </span>
+                );
+              } else if (org.subscriptionEndDate) {
+                const end = new Date(org.subscriptionEndDate);
+                end.setHours(0, 0, 0, 0);
+                const diffDays = Math.ceil((end.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+                const isExpired = diffDays < 0;
+                const isTrial = org.isTrial || org.subscriptionPlan === 'trial';
+
+                if (isExpired) {
+                  subBadge = (
+                    <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 px-2 py-0.5 rounded-md text-[10px] font-extrabold border border-rose-300">
+                      <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0" /> Expired ({Math.abs(diffDays)}d ago)
+                    </span>
+                  );
+                } else if (diffDays <= 7) {
+                  subBadge = (
+                    <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 px-2 py-0.5 rounded-md text-[10px] font-extrabold border border-amber-300 animate-pulse">
+                      <Clock className="w-3 h-3 text-amber-700 shrink-0" /> {diffDays === 0 ? 'Expires Today' : `${diffDays}d left`} {isTrial ? '(Trial)' : ''}
+                    </span>
+                  );
+                } else {
+                  subBadge = (
+                    <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded-md text-[10px] font-bold border border-emerald-200">
+                      {isTrial ? '🎁 7-Day Trial' : org.subscriptionPlan ? `⭐ ${org.subscriptionPlan.toUpperCase()}` : 'Active Plan'} ({diffDays}d left)
+                    </span>
+                  );
+                }
+              } else {
+                subBadge = (
+                  <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md text-[10px] font-medium border border-slate-200">
+                    {org.createdAt || 'Standard'}
+                  </span>
+                );
+              }
+
+              return (
+                <div key={org.id} className="p-4 space-y-3 bg-white hover:bg-slate-50/50 transition">
+                  {/* Top: Avatar, Name, Status */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white text-xs shrink-0 shadow-2xs ${
+                        isMasterAdmin ? 'bg-slate-900 ring-2 ring-teal-500/50' : isActive ? 'bg-teal-600' : 'bg-slate-400'
+                      }`}>
+                        {org.name.substring(0, 2).toUpperCase()}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-bold text-slate-900 text-sm truncate">{org.name}</span>
+                          {isMasterAdmin && (
+                            <span className="bg-teal-100 text-teal-800 font-extrabold text-[9px] px-1.5 py-0.5 rounded-full border border-teal-200 shrink-0">
+                              Master Admin
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-500 flex items-center gap-1.5 flex-wrap">
+                          <span>Owner: <strong className="text-slate-700">{org.ownerName || 'Admin'}</strong></span>
+                          <span className="font-mono font-bold text-slate-700 bg-slate-100 px-1.5 py-0.2 rounded border border-slate-200 text-[10px]">
+                            {org.code}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0">
+                      {isMasterAdmin ? (
+                        <span className="inline-flex items-center gap-1 bg-teal-50 text-teal-800 border border-teal-200 px-2 py-0.5 rounded-full font-bold text-[10px]">
+                          <ShieldCheck className="w-3 h-3 text-teal-600" /> Protected
+                        </span>
+                      ) : isActive ? (
+                        <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full font-bold text-[10px]">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 bg-rose-50 text-rose-700 border border-rose-200 px-2 py-0.5 rounded-full font-bold text-[10px]">
+                          <Lock className="w-3 h-3 text-rose-600" /> Deactivated
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Middle: Details row */}
+                  <div className="bg-slate-50/80 p-2.5 rounded-xl border border-slate-100 flex items-center justify-between gap-2 text-xs flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase">Mobile:</span>
+                      {org.ownerMobile ? (
+                        <a
+                          href={`tel:${org.ownerMobile}`}
+                          className="font-mono font-bold text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-200 text-[11px]"
+                        >
+                          {org.ownerMobile}
+                        </a>
+                      ) : (
+                        <span className="text-slate-400 italic">None</span>
+                      )}
+                    </div>
+
+                    <div>{subBadge}</div>
+                  </div>
+
+                  {/* Actions Row */}
+                  <div className="flex items-center justify-between gap-1.5 pt-1 flex-wrap">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Generate SaaS Bill */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (onNavigateToSaasBilling) {
+                            onNavigateToSaasBilling(org.id);
+                          } else {
+                            setPreSelectedBillingTenantId(org.id);
+                            setMasterTab('billing');
+                          }
+                        }}
+                        className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1 border border-emerald-200"
+                        title="Generate SaaS Bill"
+                      >
+                        <Receipt className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Bill</span>
+                      </button>
+
+                      {/* Share Credentials */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedShareOrg(org)}
+                        className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1 border border-slate-200"
+                        title="View / Share Access Credentials"
+                      >
+                        <Share2 className="w-3.5 h-3.5 text-teal-600" />
+                        <span>Share</span>
+                      </button>
+
+                      {/* Edit Details */}
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditModal(org)}
+                        className="px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1 border border-teal-200"
+                        title="Edit Organization Details"
+                      >
+                        <Edit className="w-3.5 h-3.5 text-teal-600" />
+                        <span>Edit</span>
+                      </button>
+                    </div>
+
+                    {!isMasterAdmin && (
+                      <div className="flex items-center gap-1.5">
+                        {/* Toggle Active / Deactive */}
+                        <button
+                          type="button"
+                          onClick={() => onToggleTenantStatus(org.id)}
+                          className={`p-2 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1 border shadow-2xs ${
+                            isActive
+                              ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
+                              : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'
+                          }`}
+                          title={isActive ? 'Deactivate Account' : 'Activate Account'}
+                        >
+                          <Power className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* Delete Org / Account */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (confirm(`Are you sure you want to PERMANENTLY DELETE organization account "${org.name}"? This action cannot be undone.`)) {
+                              onDeleteTenant(org.id);
+                            }
+                          }}
+                          className="p-2 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-xl transition cursor-pointer border border-rose-200 text-xs font-bold"
+                          title="Delete Organization Account"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Desktop Organizations Table */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-100/60 text-slate-500 text-[10px] uppercase font-extrabold tracking-wider border-b border-slate-200/80">

@@ -28,6 +28,17 @@ export function getLocalDB(): Promise<IDBPDatabase> {
           db.createObjectStore('metadata', { keyPath: 'key' });
         }
       }
+    }).then(async (db) => {
+      // Clean up any stale backlog in pending_ops if it accumulated from previous infinite loops
+      try {
+        const count = await db.count('pending_ops');
+        if (count > 200) {
+          const tx = db.transaction('pending_ops', 'readwrite');
+          await tx.objectStore('pending_ops').clear();
+          await tx.done;
+        }
+      } catch (_) {}
+      return db;
     });
   }
   return dbPromise;
@@ -128,7 +139,7 @@ export async function saveLocalRecord<T extends { id: string; version?: number }
   const tx = db.transaction(['entities', 'pending_ops'], 'readwrite');
   await tx.objectStore('entities').put(entityRecord);
 
-  if (queuePush) {
+  if (queuePush && getAuthToken()) {
     const opId = `op_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const pendingOp: PendingOp = {
       id: opId,
@@ -145,16 +156,10 @@ export async function saveLocalRecord<T extends { id: string; version?: number }
 
   await tx.done;
 
-  // Trigger background push if online
-  if (queuePush && navigator.onLine) {
-    pushPendingOperations(tenantId).catch(err => {
-      console.warn('Background push error:', err);
-    });
+  // Trigger background push if online and authenticated
+  if (queuePush && navigator.onLine && getAuthToken()) {
+    pushPendingOperations(tenantId).catch(() => {});
   }
-
-  // Refresh and notify
-  const all = await getLocalCollection(tenantId, entity);
-  notifyListeners(entity, all);
 }
 
 export async function deleteLocalRecord(
@@ -176,7 +181,7 @@ export async function deleteLocalRecord(
     await tx.objectStore('entities').put(existing);
   }
 
-  if (queuePush) {
+  if (queuePush && getAuthToken()) {
     const opId = `op_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const pendingOp: PendingOp = {
       id: opId,
@@ -193,23 +198,20 @@ export async function deleteLocalRecord(
 
   await tx.done;
 
-  if (queuePush && navigator.onLine) {
-    pushPendingOperations(tenantId).catch(err => {
-      console.warn('Background push error:', err);
-    });
+  if (queuePush && navigator.onLine && getAuthToken()) {
+    pushPendingOperations(tenantId).catch(() => {});
   }
-
-  const all = await getLocalCollection(tenantId, entity);
-  notifyListeners(entity, all);
 }
 
-// Replace an entire local collection safely (e.g. from local memory bulk import)
+// Replace an entire local collection safely (e.g. from local memory bulk mirror)
 export async function replaceLocalCollection<T extends { id: string }>(
   tenantId: string,
   entity: string,
   items: T[],
-  queuePush = true
+  queuePush = false,
+  notify = false
 ): Promise<void> {
+  if (!items || !Array.isArray(items)) return;
   const db = await getLocalDB();
   const tx = db.transaction(['entities', 'pending_ops'], 'readwrite');
   const entitiesStore = tx.objectStore('entities');
@@ -230,7 +232,7 @@ export async function replaceLocalCollection<T extends { id: string }>(
       data: item
     });
 
-    if (queuePush) {
+    if (queuePush && getAuthToken()) {
       await pendingStore.put({
         id: `op_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         tenantId,
@@ -245,12 +247,14 @@ export async function replaceLocalCollection<T extends { id: string }>(
 
   await tx.done;
 
-  if (queuePush && navigator.onLine) {
+  if (queuePush && navigator.onLine && getAuthToken()) {
     pushPendingOperations(tenantId).catch(() => {});
   }
 
-  const all = await getLocalCollection(tenantId, entity);
-  notifyListeners(entity, all);
+  if (notify) {
+    const all = await getLocalCollection(tenantId, entity);
+    notifyListeners(entity, all);
+  }
 }
 
 // -------------------------------------------------------------
@@ -262,142 +266,167 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
   serverRevision: number;
   companyConfig: any;
   collections: Record<string, any[]>;
-}> {
+} | null> {
   const token = getAuthToken();
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-
-  const res = await fetch('/api/sync/bootstrap', { headers });
-  if (!res.ok) {
-    throw new Error(`Bootstrap failed: HTTP ${res.status}`);
+  if (!token) {
+    // If no token exists yet, avoid sending unauthenticated requests that return 401
+    return null;
   }
 
-  const data = await res.json();
-  if (!data.success) {
-    throw new Error(data.error || 'Bootstrap failed');
-  }
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`
+  };
 
-  const db = await getLocalDB();
-  const tx = db.transaction(['entities', 'metadata'], 'readwrite');
-  const entitiesStore = tx.objectStore('entities');
-  const metaStore = tx.objectStore('metadata');
-  const now = new Date().toISOString();
+  try {
+    const res = await fetch('/api/sync/bootstrap', { headers });
+    if (!res.ok) {
+      if (res.status === 401) {
+        clearAuthToken();
+      }
+      return null;
+    }
 
-  // Clear existing local entities for this tenant to eliminate old stale replicas
-  const index = entitiesStore.index('by_tenant');
-  const existingKeys = await index.getAllKeys(tenantId);
-  for (const k of existingKeys) {
-    await entitiesStore.delete(k);
-  }
+    const data = await res.json();
+    if (!data.success) {
+      return null;
+    }
 
-  // Populate fresh authoritative entities from Home Server
-  const collections = data.collections || {};
-  for (const [entityName, items] of Object.entries(collections)) {
-    if (Array.isArray(items)) {
-      for (const item of items) {
-        if (!item?.id) continue;
-        const key = `${tenantId}:${entityName}:${item.id}`;
-        await entitiesStore.put({
-          key,
-          tenantId,
-          entity: entityName,
-          id: item.id,
-          version: item.version || 1,
-          updatedAt: item.updatedAt || now,
-          deletedAt: null,
-          data: item
-        });
+    const db = await getLocalDB();
+    const tx = db.transaction(['entities', 'metadata'], 'readwrite');
+    const entitiesStore = tx.objectStore('entities');
+    const metaStore = tx.objectStore('metadata');
+    const now = new Date().toISOString();
+
+    // Clear existing local entities for this tenant to eliminate old stale replicas
+    const index = entitiesStore.index('by_tenant');
+    const existingKeys = await index.getAllKeys(tenantId);
+    for (const k of existingKeys) {
+      await entitiesStore.delete(k);
+    }
+
+    // Populate fresh authoritative entities from Home Server
+    const collections = data.collections || {};
+    for (const [entityName, items] of Object.entries(collections)) {
+      if (Array.isArray(items)) {
+        for (const item of items) {
+          if (!item?.id) continue;
+          const key = `${tenantId}:${entityName}:${item.id}`;
+          await entitiesStore.put({
+            key,
+            tenantId,
+            entity: entityName,
+            id: item.id,
+            version: item.version || 1,
+            updatedAt: item.updatedAt || now,
+            deletedAt: null,
+            data: item
+          });
+        }
       }
     }
-  }
 
-  // Store server revision & metadata
-  await metaStore.put({
-    key: `revision_${tenantId}`,
-    revision: data.serverRevision || 1,
-    lastSyncTime: now
-  });
-
-  if (data.companyConfig) {
+    // Store server revision & metadata
     await metaStore.put({
-      key: `config_${tenantId}`,
-      config: data.companyConfig
+      key: `revision_${tenantId}`,
+      revision: data.serverRevision || 1,
+      lastSyncTime: now
     });
+
+    if (data.companyConfig) {
+      await metaStore.put({
+        key: `config_${tenantId}`,
+        config: data.companyConfig
+      });
+    }
+
+    await tx.done;
+
+    // Notify UI of fresh authoritative data
+    for (const [entityName, items] of Object.entries(collections)) {
+      notifyListeners(entityName, items as any[]);
+    }
+
+    return data;
+  } catch (err) {
+    return null;
   }
-
-  await tx.done;
-
-  // Notify UI
-  for (const [entityName, items] of Object.entries(collections)) {
-    notifyListeners(entityName, items as any[]);
-  }
-
-  return data;
 }
 
 // 2. Incremental Delta Pull
 export async function pullDeltaFromHomeServer(tenantId: string): Promise<number> {
-  const db = await getLocalDB();
-  const meta = await db.get('metadata', `revision_${tenantId}`);
-  const sinceRevision = meta?.revision || 0;
-
   const token = getAuthToken();
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (!token) return 0;
 
-  const res = await fetch(`/api/sync/pull?sinceRevision=${sinceRevision}`, { headers });
-  if (!res.ok) return sinceRevision;
+  try {
+    const db = await getLocalDB();
+    const meta = await db.get('metadata', `revision_${tenantId}`);
+    const sinceRevision = meta?.revision || 0;
 
-  const data = await res.json();
-  if (!data.success || !data.hasChanges || !Array.isArray(data.changes)) {
-    return sinceRevision;
-  }
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    };
 
-  const tx = db.transaction(['entities', 'metadata'], 'readwrite');
-  const entitiesStore = tx.objectStore('entities');
-  const metaStore = tx.objectStore('metadata');
-  const affectedEntities = new Set<string>();
-
-  for (const change of data.changes) {
-    const { entity, entityId, operation, data: recordData } = change;
-    const key = `${tenantId}:${entity}:${entityId}`;
-
-    if (operation === 'delete') {
-      const existing = await entitiesStore.get(key);
-      if (existing) {
-        existing.deletedAt = change.timestamp || new Date().toISOString();
-        await entitiesStore.put(existing);
-      }
-    } else if (recordData) {
-      await entitiesStore.put({
-        key,
-        tenantId,
-        entity,
-        id: entityId,
-        version: recordData.version || 1,
-        updatedAt: recordData.updatedAt || new Date().toISOString(),
-        deletedAt: null,
-        data: recordData
-      });
+    const res = await fetch(`/api/sync/pull?sinceRevision=${sinceRevision}`, { headers });
+    if (!res.ok) {
+      if (res.status === 401) clearAuthToken();
+      return sinceRevision;
     }
-    affectedEntities.add(entity);
+
+    const data = await res.json();
+    if (!data.success || !data.hasChanges || !Array.isArray(data.changes)) {
+      return sinceRevision;
+    }
+
+    const tx = db.transaction(['entities', 'metadata'], 'readwrite');
+    const entitiesStore = tx.objectStore('entities');
+    const metaStore = tx.objectStore('metadata');
+    const affectedEntities = new Set<string>();
+
+    for (const change of data.changes) {
+      const { entity, entityId, operation, data: recordData } = change;
+      const key = `${tenantId}:${entity}:${entityId}`;
+
+      if (operation === 'delete') {
+        const existing = await entitiesStore.get(key);
+        if (existing) {
+          existing.deletedAt = change.timestamp || new Date().toISOString();
+          await entitiesStore.put(existing);
+        }
+      } else if (recordData) {
+        await entitiesStore.put({
+          key,
+          tenantId,
+          entity,
+          id: entityId,
+          version: recordData.version || 1,
+          updatedAt: recordData.updatedAt || new Date().toISOString(),
+          deletedAt: null,
+          data: recordData
+        });
+      }
+      affectedEntities.add(entity);
+    }
+
+    await metaStore.put({
+      key: `revision_${tenantId}`,
+      revision: data.currentRevision,
+      lastSyncTime: new Date().toISOString()
+    });
+
+    await tx.done;
+
+    // Notify affected UI components
+    for (const ent of affectedEntities) {
+      const fresh = await getLocalCollection(tenantId, ent);
+      notifyListeners(ent, fresh);
+    }
+
+    return data.currentRevision;
+  } catch (err) {
+    return 0;
   }
-
-  await metaStore.put({
-    key: `revision_${tenantId}`,
-    revision: data.currentRevision,
-    lastSyncTime: new Date().toISOString()
-  });
-
-  await tx.done;
-
-  // Notify affected UI components
-  for (const ent of affectedEntities) {
-    const fresh = await getLocalCollection(tenantId, ent);
-    notifyListeners(ent, fresh);
-  }
-
-  return data.currentRevision;
 }
 
 // 3. Push Pending Operations to Home Server
@@ -407,6 +436,11 @@ export async function pushPendingOperations(tenantId: string): Promise<{
   committedCount: number;
   remainingCount: number;
 }> {
+  const token = getAuthToken();
+  if (!token) {
+    return { success: false, committedCount: 0, remainingCount: 0 };
+  }
+
   if (isPushing) return { success: true, committedCount: 0, remainingCount: 0 };
   isPushing = true;
 
@@ -419,31 +453,33 @@ export async function pushPendingOperations(tenantId: string): Promise<{
       return { success: true, committedCount: 0, remainingCount: 0 };
     }
 
-    const token = getAuthToken();
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
+    // Safety guard: de-duplicate operations by entity+recordId keeping only newest
+    const opMap = new Map<string, PendingOp>();
+    for (const op of ops) {
+      const recId = op.record?.id || op.id;
+      const opKey = `${op.entity}:${recId}`;
+      opMap.set(opKey, op);
+    }
+    const deduplicatedOps = Array.from(opMap.values()).slice(0, 100);
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    };
 
     const res = await fetch('/api/sync/push', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ operations: ops })
+      body: JSON.stringify({ operations: deduplicatedOps })
     });
 
     if (!res.ok) {
-      // Increment retry count
-      const tx = db.transaction('pending_ops', 'readwrite');
-      for (const op of ops) {
-        op.retryCount = (op.retryCount || 0) + 1;
-        op.error = `HTTP ${res.status}`;
-        await tx.store.put(op);
-      }
-      await tx.done;
+      if (res.status === 401) clearAuthToken();
       return { success: false, committedCount: 0, remainingCount: ops.length };
     }
 
     const result = await res.json();
     if (result.success) {
-      // Remove successfully committed operations from pending queue
       const tx = db.transaction(['pending_ops', 'metadata'], 'readwrite');
       for (const op of ops) {
         await tx.objectStore('pending_ops').delete(op.id);
@@ -473,8 +509,13 @@ export async function pushPendingOperations(tenantId: string): Promise<{
 }
 
 export async function getPendingOperationsCount(tenantId: string): Promise<number> {
-  const db = await getLocalDB();
-  const index = db.transaction('pending_ops').store.index('by_tenant');
-  const count = await index.count(tenantId);
-  return count;
+  try {
+    const db = await getLocalDB();
+    const index = db.transaction('pending_ops').store.index('by_tenant');
+    const count = await index.count(tenantId);
+    return count;
+  } catch {
+    return 0;
+  }
 }
+

@@ -56,7 +56,8 @@ import {
   bootstrapTenantFromHomeServer,
   pullDeltaFromHomeServer,
   pushPendingOperations,
-  getPendingOperationsCount
+  getPendingOperationsCount,
+  getAuthToken
 } from './lib/localDb';
 
 // Modular Components
@@ -899,7 +900,22 @@ export default function App() {
   const handleCloudCollectionUpdate = <T,>(colName: string, setter: React.Dispatch<React.SetStateAction<T[]>>) => {
     return (items: T[]) => {
       hasLoadedCloudRef.current.add(colName);
-      setter(items);
+      setter(prev => {
+        if (!items || prev === items) return prev;
+        if (prev && prev.length === items.length) {
+          let isSame = true;
+          for (let i = 0; i < prev.length; i++) {
+            const p = prev[i] as any;
+            const it = items[i] as any;
+            if (p?.id !== it?.id || p?.version !== it?.version || p?.updatedAt !== it?.updatedAt) {
+              isSame = false;
+              break;
+            }
+          }
+          if (isSame) return prev;
+        }
+        return items;
+      });
     };
   };
 
@@ -1084,7 +1100,7 @@ export default function App() {
 
     // 2. Periodic Home Server Delta Synchronization (Every 10 seconds)
     const deltaSyncInterval = setInterval(() => {
-      if (navigator.onLine) {
+      if (navigator.onLine && getAuthToken()) {
         pullDeltaFromHomeServer(tId).catch(() => {});
         pushPendingOperations(tId).catch(() => {});
       }
@@ -1092,8 +1108,10 @@ export default function App() {
 
     // 3. Online event listener to immediately flush pending offline queue
     const handleOnline = () => {
-      pushPendingOperations(tId).catch(() => {});
-      pullDeltaFromHomeServer(tId).catch(() => {});
+      if (getAuthToken()) {
+        pushPendingOperations(tId).catch(() => {});
+        pullDeltaFromHomeServer(tId).catch(() => {});
+      }
     };
     window.addEventListener('online', handleOnline);
 

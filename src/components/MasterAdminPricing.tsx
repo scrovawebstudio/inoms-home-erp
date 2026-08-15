@@ -103,10 +103,10 @@ export default function MasterAdminPricing({
     <div className="space-y-6">
       
       {/* Header Info */}
-      <div className="bg-white border border-slate-200/80 rounded-3xl p-6 shadow-sm flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <div className="bg-white border border-slate-200/80 rounded-3xl p-4 sm:p-6 shadow-sm flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-            <Tag className="w-5 h-5 text-teal-600" />
+          <h2 className="text-base sm:text-lg font-bold text-slate-900 flex items-center gap-2">
+            <Tag className="w-5 h-5 text-teal-600 shrink-0" />
             Add-on Price Set & Subscription Rate Configuration
           </h2>
           <p className="text-xs text-slate-500 mt-1">
@@ -115,18 +115,18 @@ export default function MasterAdminPricing({
           </p>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="grid grid-cols-2 sm:flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={handleResetDefaults}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition cursor-pointer border border-slate-200"
+            className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition cursor-pointer border border-slate-200"
           >
             <RotateCcw className="w-3.5 h-3.5" /> Reset Defaults
           </button>
           <button
             type="button"
             onClick={handleSave}
-            className="flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 shadow-md transition cursor-pointer"
+            className="flex items-center justify-center gap-1.5 px-4 sm:px-5 py-2 rounded-xl text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 shadow-md transition cursor-pointer"
           >
             <Save className="w-4 h-4" /> Save Pricing Config
           </button>
@@ -134,7 +134,7 @@ export default function MasterAdminPricing({
       </div>
 
       {saveSuccess && (
-        <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-4 rounded-2xl flex items-center gap-3 text-xs font-bold shadow-xs animate-in fade-in duration-200">
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-3 sm:p-4 rounded-2xl flex items-center gap-2.5 sm:gap-3 text-xs font-bold shadow-xs animate-in fade-in duration-200">
           <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
           <span>✓ Add-on pricing updated and saved successfully! Future SaaS bill generations will use these rates automatically.</span>
         </div>
@@ -144,7 +144,7 @@ export default function MasterAdminPricing({
       <form onSubmit={handleSave} className="space-y-6">
         
         {/* Section 1: Base Platform Subscription Pricing */}
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-6 shadow-sm space-y-4">
+        <div className="bg-white border border-slate-200/80 rounded-3xl p-4 sm:p-6 shadow-sm space-y-4">
           <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
             <div className="p-2 bg-teal-50 text-teal-700 rounded-xl">
               <Layers className="w-5 h-5" />
