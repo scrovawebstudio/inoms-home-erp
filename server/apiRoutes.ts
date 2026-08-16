@@ -1374,11 +1374,15 @@ apiRouter.post('/sync/push', authMiddleware, (req: AuthenticatedRequest, res: Re
         committed,
         conflicts
       });
-    } catch (txErr) {
-      db.run('ROLLBACK');
+    } catch (txErr: any) {
+      console.error('[Sync Push Transaction Error]:', txErr?.message || txErr);
+      try {
+        db.run('ROLLBACK');
+      } catch (rbErr) {}
       throw txErr;
     }
   } catch (err: any) {
+    console.error('[Sync Push Request Error]:', err?.message || err);
     res.status(500).json({ success: false, error: err?.message || 'Push sync transaction failed' });
   }
 });
@@ -1486,11 +1490,12 @@ export function upsertEntityRecord(db: any, tenantId: string, entity: string, re
 
     case 'users':
       db.run(
-        `INSERT OR REPLACE INTO users (id, tenant_id, name, username, mobile, role, status, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        `INSERT OR REPLACE INTO users (id, tenant_id, name, username, mobile, role, status, permissions_json, data_json, created_at, updated_at, deleted_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [
           record.id, tenantId, record.name || 'User', record.username || record.name?.toLowerCase() || 'user',
           record.mobile || record.phone || '', record.role || 'Technician', record.status || 'Active',
+          record.permissions ? JSON.stringify(record.permissions) : null,
           dataJson, record.createdAt || now, now, version
         ]
       );
@@ -1522,13 +1527,46 @@ export function upsertEntityRecord(db: any, tenantId: string, entity: string, re
       break;
 
     case 'categories':
+      db.run(
+        `INSERT OR REPLACE INTO categories (id, tenant_id, name, type, data_json, created_at, updated_at, deleted_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        [record.id, tenantId, record.name || 'Category', record.type || 'Job', dataJson, record.createdAt || now, now, version]
+      );
+      break;
+
     case 'racks':
+      db.run(
+        `INSERT OR REPLACE INTO racks (id, tenant_id, name, capacity, location, data_json, created_at, updated_at, deleted_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        [record.id, tenantId, record.name || 'Rack', record.capacity || null, record.location || null, dataJson, record.createdAt || now, now, version]
+      );
+      break;
+
     case 'equipments':
+      db.run(
+        `INSERT OR REPLACE INTO equipments (id, tenant_id, name, brand, model, data_json, created_at, updated_at, deleted_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        [record.id, tenantId, record.name || 'Equipment', record.brand || null, record.model || null, dataJson, record.createdAt || now, now, version]
+      );
+      break;
+
     case 'problems':
       db.run(
-        `INSERT OR REPLACE INTO ${entity} (id, tenant_id, name, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
-        [record.id, tenantId, record.name || record.title || 'Item', dataJson, record.createdAt || now, now, version]
+        `INSERT OR REPLACE INTO problems (id, tenant_id, title, name, description, common_solution, standard_cost, data_json, created_at, updated_at, deleted_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        [
+          record.id,
+          tenantId,
+          record.title || record.name || 'Problem',
+          record.name || record.title || 'Problem',
+          record.description || null,
+          record.commonSolution || null,
+          record.standardCost || 0,
+          dataJson,
+          record.createdAt || now,
+          now,
+          version
+        ]
       );
       break;
 

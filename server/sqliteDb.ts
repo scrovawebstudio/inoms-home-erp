@@ -130,6 +130,7 @@ export async function initDatabase(): Promise<Database> {
       pin_hash TEXT,
       pin_salt TEXT,
       permissions_json TEXT,
+      data_json TEXT,
       created_at TEXT,
       updated_at TEXT,
       deleted_at TEXT,
@@ -332,7 +333,8 @@ export async function initDatabase(): Promise<Database> {
     CREATE TABLE IF NOT EXISTS problems (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL,
-      title TEXT NOT NULL,
+      title TEXT,
+      name TEXT,
       description TEXT,
       common_solution TEXT,
       standard_cost REAL DEFAULT 0,
@@ -391,9 +393,49 @@ export async function initDatabase(): Promise<Database> {
     for (const col of orgCols) {
       try {
         db.run(`ALTER TABLE organizations ADD COLUMN ${col} TEXT;`);
-      } catch (e) {
-        // Column may already exist
-      }
+      } catch (e) {}
+    }
+
+    const userCols = ['data_json', 'permissions_json', 'email', 'mobile'];
+    for (const col of userCols) {
+      try {
+        db.run(`ALTER TABLE users ADD COLUMN ${col} TEXT;`);
+      } catch (e) {}
+    }
+
+    const probCols = ['name', 'title', 'data_json', 'description', 'common_solution', 'standard_cost'];
+    for (const col of probCols) {
+      try {
+        db.run(`ALTER TABLE problems ADD COLUMN ${col} TEXT;`);
+      } catch (e) {}
+    }
+
+    const catCols = ['data_json', 'type'];
+    for (const col of catCols) {
+      try {
+        db.run(`ALTER TABLE categories ADD COLUMN ${col} TEXT;`);
+      } catch (e) {}
+    }
+
+    const rackCols = ['data_json', 'capacity', 'location'];
+    for (const col of rackCols) {
+      try {
+        db.run(`ALTER TABLE racks ADD COLUMN ${col} TEXT;`);
+      } catch (e) {}
+    }
+
+    const eqCols = ['data_json', 'brand', 'model'];
+    for (const col of eqCols) {
+      try {
+        db.run(`ALTER TABLE equipments ADD COLUMN ${col} TEXT;`);
+      } catch (e) {}
+    }
+
+    const otherTables = ['ledger', 'expenses', 'clients', 'jobs', 'invoices', 'payments', 'products'];
+    for (const tbl of otherTables) {
+      try {
+        db.run(`ALTER TABLE ${tbl} ADD COLUMN data_json TEXT;`);
+      } catch (e) {}
     }
   } catch (err) {}
 
@@ -447,11 +489,15 @@ export function getNextRevision(tenantId: string): number {
   stmt.free();
 
   const nextRev = currentRev + 1;
-  db.run(
-    'INSERT INTO sync_revisions (tenant_id, current_revision, last_updated) VALUES (?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET current_revision = ?, last_updated = ?',
-    [tenantId, nextRev, new Date().toISOString(), nextRev, new Date().toISOString()]
-  );
-  scheduleDbSave();
+  try {
+    db.run(
+      'INSERT OR REPLACE INTO sync_revisions (tenant_id, current_revision, last_updated) VALUES (?, ?, ?)',
+      [tenantId, nextRev, new Date().toISOString()]
+    );
+    scheduleDbSave();
+  } catch (err) {
+    console.warn('[SQLite getNextRevision Error]:', err);
+  }
   return nextRev;
 }
 

@@ -60,6 +60,7 @@ import {
   pullDeltaFromHomeServer,
   pushPendingOperations,
   getPendingOperationsCount,
+  replaceLocalCollection,
   getAuthToken
 } from './lib/localDb';
 
@@ -3798,19 +3799,73 @@ export default function App() {
               }}
               onRestoreData={(restored) => {
                 const tagTenant = (items: any[]) => Array.isArray(items) ? items.map(item => ({ ...item, tenantId: activeTenant.id })) : items;
-                if (restored.clients) setClients(tagTenant(restored.clients));
-                if (restored.jobs) setJobs(tagTenant(restored.jobs));
-                if (restored.invoices) setInvoices(tagTenant(restored.invoices));
-                if (restored.products) setProducts(tagTenant(restored.products));
-                if (restored.ledger) setLedger(tagTenant(restored.ledger));
-                if (restored.payments) setPayments(tagTenant(restored.payments));
-                if (restored.expenses) setExpenses(tagTenant(restored.expenses));
-                if (restored.users) setUsers(tagTenant(restored.users));
-                if (restored.categories) setCategories(tagTenant(restored.categories));
-                if (restored.racks) setRacks(tagTenant(restored.racks));
-                if (restored.equipments) setEquipments(tagTenant(restored.equipments));
-                if (restored.problems) setProblems(tagTenant(restored.problems));
+                if (restored.clients) {
+                  const items = tagTenant(restored.clients);
+                  setClients(items);
+                  replaceLocalCollection(activeTenant.id, 'clients', items, true);
+                }
+                if (restored.jobs) {
+                  const items = tagTenant(restored.jobs);
+                  setJobs(items);
+                  replaceLocalCollection(activeTenant.id, 'jobs', items, true);
+                }
+                if (restored.invoices) {
+                  const items = tagTenant(restored.invoices);
+                  setInvoices(items);
+                  replaceLocalCollection(activeTenant.id, 'invoices', items, true);
+                }
+                if (restored.products) {
+                  const items = tagTenant(restored.products);
+                  setProducts(items);
+                  replaceLocalCollection(activeTenant.id, 'products', items, true);
+                }
+                if (restored.ledger) {
+                  const items = tagTenant(restored.ledger);
+                  setLedger(items);
+                  replaceLocalCollection(activeTenant.id, 'ledger', items, true);
+                }
+                if (restored.payments) {
+                  const items = tagTenant(restored.payments);
+                  setPayments(items);
+                  replaceLocalCollection(activeTenant.id, 'payments', items, true);
+                }
+                if (restored.expenses) {
+                  const items = tagTenant(restored.expenses);
+                  setExpenses(items);
+                  replaceLocalCollection(activeTenant.id, 'expenses', items, true);
+                }
+                if (restored.users) {
+                  const items = tagTenant(restored.users);
+                  setUsers(items);
+                  replaceLocalCollection(activeTenant.id, 'users', items, true);
+                }
+                if (restored.categories) {
+                  const items = tagTenant(restored.categories);
+                  setCategories(items);
+                  replaceLocalCollection(activeTenant.id, 'categories', items, true);
+                }
+                if (restored.racks) {
+                  const items = tagTenant(restored.racks);
+                  setRacks(items);
+                  replaceLocalCollection(activeTenant.id, 'racks', items, true);
+                }
+                if (restored.equipments) {
+                  const items = tagTenant(restored.equipments);
+                  setEquipments(items);
+                  replaceLocalCollection(activeTenant.id, 'equipments', items, true);
+                }
+                if (restored.problems) {
+                  const items = tagTenant(restored.problems);
+                  setProblems(items);
+                  replaceLocalCollection(activeTenant.id, 'problems', items, true);
+                }
                 if (restored.companyConfig) setCompanyConfig(prev => ({ ...prev, ...restored.companyConfig }));
+                
+                // Immediately flush queue to Home Server backend
+                if (getAuthToken()) {
+                  pushPendingOperations(activeTenant.id).catch(() => {});
+                }
+
                 triggerSaveNotification(`✓ Records & settings successfully restored & synchronized for ${activeTenant.name}!`);
               }}
             />

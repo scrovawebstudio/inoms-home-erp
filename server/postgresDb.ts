@@ -923,6 +923,97 @@ export async function syncEntityToPostgres(entity: string, item: any, tenantId: 
           item.version || 1
         ]
       );
+    } else if (e === 'expenses' || e === 'expense') {
+      await currentPool.query(
+        `INSERT INTO expenses (id, tenant_id, expense_no, category, amount, payment_mode, description, paid_to, date, recorded_by, data_json, created_at, updated_at, deleted_at, version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+         ON CONFLICT (id) DO UPDATE SET
+           expense_no = EXCLUDED.expense_no, category = EXCLUDED.category, amount = EXCLUDED.amount,
+           payment_mode = EXCLUDED.payment_mode, description = EXCLUDED.description, paid_to = EXCLUDED.paid_to,
+           date = EXCLUDED.date, recorded_by = EXCLUDED.recorded_by, data_json = EXCLUDED.data_json,
+           updated_at = EXCLUDED.updated_at, deleted_at = EXCLUDED.deleted_at, version = EXCLUDED.version`,
+        [
+          item.id, tenantId, item.expense_no || item.expenseNo || item.id, item.category || 'General',
+          item.amount || 0, item.payment_mode || item.paymentMode || 'Cash', item.description || '',
+          item.paid_to || item.paidTo || '', item.date || now, item.recorded_by || item.recordedBy || '',
+          item.data_json || item, item.created_at || item.createdAt || now, item.updated_at || item.updatedAt || now,
+          item.deleted_at || item.deletedAt || null, item.version || 1
+        ]
+      );
+    } else if (e === 'ledger') {
+      await currentPool.query(
+        `INSERT INTO ledger (id, tenant_id, client_id, entry_type, amount, reference_id, description, balance_after, date, data_json, created_at, updated_at, deleted_at, version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         ON CONFLICT (id) DO UPDATE SET
+           client_id = EXCLUDED.client_id, entry_type = EXCLUDED.entry_type, amount = EXCLUDED.amount,
+           reference_id = EXCLUDED.reference_id, description = EXCLUDED.description,
+           balance_after = EXCLUDED.balance_after, date = EXCLUDED.date, data_json = EXCLUDED.data_json,
+           updated_at = EXCLUDED.updated_at, deleted_at = EXCLUDED.deleted_at, version = EXCLUDED.version`,
+        [
+          item.id, tenantId, item.client_id || item.clientId || '', item.entry_type || item.entryType || 'Debit',
+          item.amount || 0, item.reference_id || item.referenceId || '', item.description || '',
+          item.balance_after || item.balanceAfter || 0, item.date || now, item.data_json || item,
+          item.created_at || item.createdAt || now, item.updated_at || item.updatedAt || now,
+          item.deleted_at || item.deletedAt || null, item.version || 1
+        ]
+      );
+    } else if (e === 'categories' || e === 'category') {
+      await currentPool.query(
+        `INSERT INTO categories (id, tenant_id, name, type, data_json, created_at, updated_at, deleted_at, version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name, type = EXCLUDED.type, data_json = EXCLUDED.data_json,
+           updated_at = EXCLUDED.updated_at, deleted_at = EXCLUDED.deleted_at, version = EXCLUDED.version`,
+        [
+          item.id, tenantId, item.name || 'Category', item.type || 'Job', item.data_json || item,
+          item.created_at || item.createdAt || now, item.updated_at || item.updatedAt || now,
+          item.deleted_at || item.deletedAt || null, item.version || 1
+        ]
+      );
+    } else if (e === 'racks' || e === 'rack') {
+      await currentPool.query(
+        `INSERT INTO racks (id, tenant_id, name, capacity, location, data_json, created_at, updated_at, deleted_at, version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name, capacity = EXCLUDED.capacity, location = EXCLUDED.location,
+           data_json = EXCLUDED.data_json, updated_at = EXCLUDED.updated_at,
+           deleted_at = EXCLUDED.deleted_at, version = EXCLUDED.version`,
+        [
+          item.id, tenantId, item.name || 'Rack', item.capacity || '', item.location || '',
+          item.data_json || item, item.created_at || item.createdAt || now, item.updated_at || item.updatedAt || now,
+          item.deleted_at || item.deletedAt || null, item.version || 1
+        ]
+      );
+    } else if (e === 'equipments' || e === 'equipment') {
+      await currentPool.query(
+        `INSERT INTO equipments (id, tenant_id, name, brand, model, data_json, created_at, updated_at, deleted_at, version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name, brand = EXCLUDED.brand, model = EXCLUDED.model,
+           data_json = EXCLUDED.data_json, updated_at = EXCLUDED.updated_at,
+           deleted_at = EXCLUDED.deleted_at, version = EXCLUDED.version`,
+        [
+          item.id, tenantId, item.name || 'Equipment', item.brand || '', item.model || '',
+          item.data_json || item, item.created_at || item.createdAt || now, item.updated_at || item.updatedAt || now,
+          item.deleted_at || item.deletedAt || null, item.version || 1
+        ]
+      );
+    } else if (e === 'problems' || e === 'problem') {
+      await currentPool.query(
+        `INSERT INTO problems (id, tenant_id, title, description, common_solution, standard_cost, data_json, created_at, updated_at, deleted_at, version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         ON CONFLICT (id) DO UPDATE SET
+           title = EXCLUDED.title, description = EXCLUDED.description,
+           common_solution = EXCLUDED.common_solution, standard_cost = EXCLUDED.standard_cost,
+           data_json = EXCLUDED.data_json, updated_at = EXCLUDED.updated_at,
+           deleted_at = EXCLUDED.deleted_at, version = EXCLUDED.version`,
+        [
+          item.id, tenantId, item.title || item.name || 'Problem', item.description || '',
+          item.common_solution || item.commonSolution || '', item.standard_cost || item.standardCost || 0,
+          item.data_json || item, item.created_at || item.createdAt || now, item.updated_at || item.updatedAt || now,
+          item.deleted_at || item.deletedAt || null, item.version || 1
+        ]
+      );
     }
   } catch (err: any) {
     console.warn(`[PostgreSQL Realtime Write Warning for ${entity}]:`, err.message);
