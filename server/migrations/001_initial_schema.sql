@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     balance_due NUMERIC(15,2) DEFAULT 0.00,
     payment_mode VARCHAR(50),
     status VARCHAR(50) DEFAULT 'Unpaid',
+    notes TEXT,
     data_json JSONB,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,

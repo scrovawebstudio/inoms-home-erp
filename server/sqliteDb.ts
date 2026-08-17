@@ -932,7 +932,15 @@ async function migrateSqliteSchema(database: Database): Promise<void> {
       { name: 'grand_total', type: 'REAL DEFAULT 0' },
       { name: 'balance_amount', type: 'REAL DEFAULT 0' },
       { name: 'deducted_advance', type: 'REAL DEFAULT 0' },
-      { name: 'is_paid', type: 'INTEGER DEFAULT 0' }
+      { name: 'is_paid', type: 'INTEGER DEFAULT 0' },
+      { name: 'notes', type: 'TEXT' },
+      { name: 'created_by', type: 'TEXT' },
+      { name: 'updated_by', type: 'TEXT' },
+      { name: 'data_json', type: 'TEXT' },
+      { name: 'created_at', type: 'TEXT' },
+      { name: 'updated_at', type: 'TEXT' },
+      { name: 'deleted_at', type: 'TEXT' },
+      { name: 'version', type: 'INTEGER DEFAULT 1' }
     ]);
 
     // 5. Ensure columns for payments
