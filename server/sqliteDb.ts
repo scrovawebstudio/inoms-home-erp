@@ -2,10 +2,20 @@ import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 
 let db: Database | null = null;
 let sqlInstance: SqlJsStatic | null = null;
-const DATA_DIR = path.join(process.cwd(), 'data');
+const resolveAppRoot = (): string => {
+  if (process.env.INOMS_APP_ROOT) return path.resolve(process.env.INOMS_APP_ROOT);
+  try {
+    return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  } catch {
+    return path.resolve(process.cwd());
+  }
+};
+const APP_ROOT = resolveAppRoot();
+const DATA_DIR = path.join(APP_ROOT, 'data');
 const DB_FILE = path.join(DATA_DIR, 'inoms_primary.db');
 const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
 const ORGS_DIR = path.join(DATA_DIR, 'orgs');
@@ -1034,6 +1044,7 @@ async function migrateSqliteSchema(database: Database): Promise<void> {
       { name: 'date', type: 'TEXT' },
       { name: 'expense_date', type: 'TEXT' },
       { name: 'recorded_by', type: 'TEXT' },
+      { name: 'created_by', type: 'TEXT' },
       { name: 'data_json', type: 'TEXT' }
     ]);
 
@@ -1055,21 +1066,32 @@ async function migrateSqliteSchema(database: Database): Promise<void> {
     ensureColumns('categories', [
       { name: 'organization_id', type: 'TEXT' },
       { name: 'tenant_id', type: 'TEXT' },
+      { name: 'description', type: 'TEXT' },
+      { name: 'status', type: 'TEXT DEFAULT "active"' },
       { name: 'data_json', type: 'TEXT' }
     ]);
     ensureColumns('racks', [
       { name: 'organization_id', type: 'TEXT' },
       { name: 'tenant_id', type: 'TEXT' },
+      { name: 'rack_code', type: 'TEXT' },
+      { name: 'description', type: 'TEXT' },
+      { name: 'status', type: 'TEXT DEFAULT "active"' },
       { name: 'data_json', type: 'TEXT' }
     ]);
     ensureColumns('equipments', [
       { name: 'organization_id', type: 'TEXT' },
       { name: 'tenant_id', type: 'TEXT' },
+      { name: 'brand', type: 'TEXT' },
+      { name: 'model', type: 'TEXT' },
       { name: 'data_json', type: 'TEXT' }
     ]);
     ensureColumns('problems', [
       { name: 'organization_id', type: 'TEXT' },
       { name: 'tenant_id', type: 'TEXT' },
+      { name: 'title', type: 'TEXT' },
+      { name: 'description', type: 'TEXT' },
+      { name: 'common_solution', type: 'TEXT' },
+      { name: 'standard_cost', type: 'REAL DEFAULT 0' },
       { name: 'data_json', type: 'TEXT' }
     ]);
 

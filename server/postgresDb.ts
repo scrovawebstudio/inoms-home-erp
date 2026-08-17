@@ -2,9 +2,19 @@ import { Pool, PoolClient } from 'pg';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import { getDatabase as getSqliteDb } from './sqliteDb';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
+const resolveAppRoot = (): string => {
+  if (process.env.INOMS_APP_ROOT) return path.resolve(process.env.INOMS_APP_ROOT);
+  try {
+    return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  } catch {
+    return path.resolve(process.cwd());
+  }
+};
+const APP_ROOT = resolveAppRoot();
+const DATA_DIR = path.join(APP_ROOT, 'data');
 const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
 
 if (!fs.existsSync(DATA_DIR)) {
@@ -263,6 +273,7 @@ CREATE TABLE IF NOT EXISTS expenses (
     paid_to VARCHAR(255),
     date VARCHAR(50),
     recorded_by VARCHAR(255),
+    created_by VARCHAR(255),
     data_json JSONB,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -292,6 +303,8 @@ CREATE TABLE IF NOT EXISTS categories (
     tenant_id VARCHAR(100) NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     type VARCHAR(50) DEFAULT 'Job',
+    description TEXT,
+    status VARCHAR(50) DEFAULT 'active',
     data_json JSONB,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -302,9 +315,12 @@ CREATE TABLE IF NOT EXISTS categories (
 CREATE TABLE IF NOT EXISTS racks (
     id VARCHAR(100) PRIMARY KEY,
     tenant_id VARCHAR(100) NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    rack_code VARCHAR(100),
     name VARCHAR(255) NOT NULL,
     capacity VARCHAR(50),
     location VARCHAR(255),
+    description TEXT,
+    status VARCHAR(50) DEFAULT 'active',
     data_json JSONB,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
