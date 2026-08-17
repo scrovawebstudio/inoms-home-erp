@@ -371,17 +371,16 @@ export default function App() {
     };
   };
 
-  // Helper to ensure Master System Admin org exists and strip unrequested demo tenants & duplicates
+  // Helper to ensure Master System Admin org exists and keep all registered organizations intact
   const ensureAdminActive = (list: TenantOrg[]) => {
-    let result = list.filter(t => t && t.code !== 'SCROVA-01' && t.code !== 'NIBBAN-01' && t.id !== 'org-nibban' && t.id !== 'org-yash');
-    const hasAdminOrg = result.some(t => t.id === 'org-admin' || t.ownerMobile?.includes('8149862034'));
+    let result = Array.isArray(list) ? list.filter(t => t && t.id) : [];
+    const hasAdminOrg = result.some(t => t.id === 'org-admin' || t.ownerMobile?.includes('8149862034') || t.code?.toUpperCase() === 'ADMIN-00');
     if (!hasAdminOrg) {
       result = [INITIAL_TENANTS[0], ...result];
     }
     
-    // Deduplicate by ID and (name + cleanMobile)
+    // Deduplicate by ID strictly so no valid user organization is lost
     const seenIds = new Set<string>();
-    const seenKeys = new Set<string>();
     const deduped: TenantOrg[] = [];
 
     for (const t of result) {
@@ -389,22 +388,15 @@ export default function App() {
       seenIds.add(t.id);
 
       const cleanMobile = (t.ownerMobile || '').replace(/\D/g, '');
-      const cleanName = (t.name || '').trim().toLowerCase();
       const isMasterAdmin = t.id === 'org-admin' || cleanMobile === '8149862034' || t.code?.toUpperCase() === 'ADMIN-00';
-      const dedupeKey = isMasterAdmin ? 'org-admin' : `${cleanName}_${cleanMobile}`;
-
-      if (!isMasterAdmin && cleanMobile && seenKeys.has(dedupeKey)) {
-        continue;
-      }
-      if (dedupeKey) seenKeys.add(dedupeKey);
 
       if (isMasterAdmin) {
         deduped.push({
           ...t,
           id: 'org-admin',
-          name: 'Master System Admin',
-          ownerName: 'Master System Admin',
-          ownerMobile: '+91 8149862034',
+          name: t.name || 'Master System Admin',
+          ownerName: t.ownerName || 'Master System Admin',
+          ownerMobile: t.ownerMobile || '+91 8149862034',
           status: 'active' as const
         });
       } else {

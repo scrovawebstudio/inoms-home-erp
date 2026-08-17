@@ -60,16 +60,12 @@ export async function fetchTenantsOnce(force = false): Promise<TenantOrg[]> {
       const data = await res.json();
       if (data.success && Array.isArray(data.tenants)) {
         const list: TenantOrg[] = data.tenants;
-        const seen = new Map<string, boolean>();
+        const seen = new Set<string>();
         const deduped: TenantOrg[] = [];
         for (const t of list) {
           if (!t || !t.id) continue;
-          const cleanMobile = (t.ownerMobile || '').replace(/\D/g, '');
-          const cleanName = (t.name || '').trim().toLowerCase();
-          const dedupeKey = t.id === 'org-admin' ? 'org-admin' : `${cleanName}_${cleanMobile}`;
-          if (!seen.has(t.id) && !seen.has(dedupeKey)) {
-            seen.set(t.id, true);
-            seen.set(dedupeKey, true);
+          if (!seen.has(t.id)) {
+            seen.add(t.id);
             deduped.push(t);
           }
         }

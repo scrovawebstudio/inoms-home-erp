@@ -1,0 +1,15 @@
+{
+  "tenantId": "org-admin",
+  "clients": [],
+  "jobs": [],
+  "invoices": [],
+  "payments": [],
+  "products": [],
+  "expenses": [],
+  "ledger": [],
+  "users": [],
+  "categories": [],
+  "racks": [],
+  "equipments": [],
+  "problems": []
+}

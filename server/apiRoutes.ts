@@ -956,6 +956,10 @@ function updateOrganizationInDb(db: any, orgData: any) {
 
   scheduleDbSave();
 
+  try {
+    exportTenantToDisk(orgId);
+  } catch (e) {}
+
   recordAuditLog({
     tenantId: orgId,
     action: 'UPDATE_ORG',
@@ -1187,22 +1191,28 @@ function getEntityRecords(db: any, table: string, tenantId: string): any[] {
   if (isMasterOrAll) {
     stmt = db.prepare(`SELECT * FROM ${table} WHERE (deleted_at IS NULL OR deleted_at = '')`);
   } else {
-    stmt = db.prepare(`SELECT * FROM ${table} WHERE tenant_id = ? AND (deleted_at IS NULL OR deleted_at = '')`);
-    stmt.bind([tenantId]);
+    try {
+      stmt = db.prepare(`SELECT * FROM ${table} WHERE (organization_id = ? OR tenant_id = ?) AND (deleted_at IS NULL OR deleted_at = '')`);
+      stmt.bind([tenantId, tenantId]);
+    } catch (e) {
+      stmt = db.prepare(`SELECT * FROM ${table} WHERE tenant_id = ? AND (deleted_at IS NULL OR deleted_at = '')`);
+      stmt.bind([tenantId]);
+    }
   }
 
   const results: any[] = [];
   while (stmt.step()) {
     const row = stmt.getAsObject();
+    const orgId = (row.organization_id || row.tenant_id || tenantId) as string;
     if (row.data_json) {
       try {
         const parsed = JSON.parse(row.data_json as string);
-        results.push({ ...row, ...parsed, id: row.id, tenantId: row.tenant_id || tenantId, version: row.version, updatedAt: row.updated_at });
+        results.push({ ...row, ...parsed, id: row.id, tenantId: orgId, organizationId: orgId, version: row.version, updatedAt: row.updated_at });
         continue;
       } catch (e) {}
     }
     // Fallback to table fields
-    results.push({ ...row, tenantId: row.tenant_id || tenantId });
+    results.push({ ...row, tenantId: orgId, organizationId: orgId });
   }
   stmt.free();
 
@@ -1517,186 +1527,522 @@ apiRouter.post('/sync/push', authMiddleware, (req: AuthenticatedRequest, res: Re
 
 export function upsertEntityRecord(db: any, tenantId: string, entity: string, record: any, now: string, version = 1) {
   if (!record || !record.id) return;
+  const orgId = record.organizationId || record.organization_id || tenantId;
   const recordWithMeta = {
     ...record,
-    tenantId,
+    tenantId: orgId,
+    organizationId: orgId,
     version,
     updatedAt: now
   };
   const dataJson = JSON.stringify(recordWithMeta);
 
   switch (entity) {
-    case 'clients':
-      db.run(
-        `INSERT OR REPLACE INTO clients (id, tenant_id, name, phone, email, address, city, gstin, credit_limit, opening_balance, current_balance, notes, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-        [
-          record.id, tenantId, record.name || 'Client', record.phone || null, record.email || null,
-          record.address || null, record.city || null, record.gstin || null, record.creditLimit || 0,
-          record.openingBalance || 0, record.currentBalance || 0, record.notes || null, dataJson,
-          record.createdAt || now, now, version
-        ]
-      );
-      break;
+    case 'clients': {
+      const code = record.clientCode || record.client_code || null;
+      const compName = record.companyName || record.company_name || null;
+      const cType = record.clientType || record.client_type || record.type || 'Walk-in';
+      const mob = record.mobile || record.phone || null;
+      const ph = record.phone || record.mobile || null;
+      const altMob = record.alternateMobile || record.alternate_mobile || null;
+      const cp = record.contactPerson || record.contact_person || null;
+      const st = record.state || null;
+      const pin = record.pincode || null;
+      const gst = record.gstin || null;
+      const credLim = Number(record.creditLimit || record.credit_limit || 0);
+      const openBal = Number(record.openingBalance || record.opening_balance || 0);
+      const curBal = Number(record.currentBalance || record.current_balance || record.outstandingBalance || 0);
+      const outBal = Number(record.outstandingBalance || record.outstanding_balance || record.currentBalance || 0);
+      const stat = record.status || 'active';
 
-    case 'jobs':
       db.run(
-        `INSERT OR REPLACE INTO jobs (id, tenant_id, job_no, client_id, client_name, client_phone, equipment_type, brand_model, serial_no, problem_description, estimated_cost, advance_paid, status, priority, assigned_to, rack_location, data_json, created_at, updated_at, completed_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        `INSERT OR REPLACE INTO clients (
+          id, organization_id, tenant_id, client_code, name, company_name, client_type,
+          mobile, phone, alternate_mobile, contact_person, email, address, city, state, pincode,
+          gstin, credit_limit, opening_balance, current_balance, outstanding_balance, notes, status,
+          data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [
-          record.id, tenantId, record.jobNo || record.id, record.clientId || null, record.clientName || null,
-          record.clientPhone || null, record.equipmentType || null, record.brandModel || record.model || null,
-          record.serialNo || null, record.problemDescription || record.problem || null, record.estimatedCost || 0,
-          record.advancePaid || 0, record.status || 'Pending', record.priority || 'Normal', record.assignedTo || null,
-          record.rackLocation || null, dataJson, record.createdAt || now, now, record.completedAt || null, version
-        ]
-      );
-      break;
-
-    case 'invoices':
-      db.run(
-        `INSERT OR REPLACE INTO invoices (id, tenant_id, invoice_no, job_id, client_id, client_name, client_phone, subtotal, discount, tax, total, paid_amount, balance_due, payment_mode, status, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-        [
-          record.id, tenantId, record.invoiceNo || record.id, record.jobId || null, record.clientId || null,
-          record.clientName || null, record.clientPhone || null, record.subtotal || 0, record.discount || 0,
-          record.tax || 0, record.total || record.grandTotal || 0, record.paidAmount || 0, record.balanceDue || 0,
-          record.paymentMode || 'Cash', record.status || 'Paid', dataJson, record.createdAt || now, now, version
-        ]
-      );
-      break;
-
-    case 'payments':
-      db.run(
-        `INSERT OR REPLACE INTO payments (id, tenant_id, payment_no, client_id, client_name, invoice_id, job_id, amount, payment_mode, transaction_ref, notes, received_by, date, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-        [
-          record.id, tenantId, record.paymentNo || record.id, record.clientId || null, record.clientName || null,
-          record.invoiceId || null, record.jobId || null, record.amount || 0, record.paymentMode || 'Cash',
-          record.transactionRef || null, record.notes || null, record.receivedBy || null, record.date || now,
+          record.id, orgId, orgId, code, record.name || 'Client', compName, cType,
+          mob, ph, altMob, cp, record.email || null, record.address || null, record.city || null, st, pin,
+          gst, credLim, openBal, curBal, outBal, record.notes || null, stat,
           dataJson, record.createdAt || now, now, version
         ]
       );
       break;
+    }
 
-    case 'products':
+    case 'jobs': {
+      const jobNo = record.jobNo || record.jobNumber || record.job_no || record.id;
+      const clientName = record.clientName || record.client_name || null;
+      const clientPhone = record.clientPhone || record.client_phone || record.clientMobile || null;
+      const clientMobile = record.clientMobile || record.client_mobile || record.clientPhone || null;
+      const inwardDate = record.inwardDate || record.inward_date || record.date || now;
+      const expDate = record.expectedDeliveryDate || record.expected_delivery_date || null;
+      const equipType = record.equipmentType || record.equipment_type || record.equipment || null;
+      const prodName = record.productName || record.product_name || null;
+      const brand = record.brand || null;
+      const model = record.model || record.productModel || null;
+      const brandModel = record.brandModel || record.brand_model || (brand && model ? `${brand} ${model}` : (brand || model || null));
+      const serialNo = record.serialNo || record.serial_no || record.serialNumber || null;
+      const imei = record.imeiNumber || record.imei_number || null;
+      const probDesc = record.problemDescription || record.problem_description || record.problem || null;
+      const physCond = record.physicalCondition || record.physical_condition || null;
+      const accRec = record.accessoriesReceived || record.accessories_received || null;
+      const ramHdd = record.ramHdd || record.ram_hdd || null;
+      const compSpecs = record.componentSpecs ? JSON.stringify(record.componentSpecs) : null;
+      const probsJson = record.problems ? JSON.stringify(record.problems) : null;
+      const compChecklist = record.componentsChecklist ? JSON.stringify(record.componentsChecklist) : null;
+      const addDetails = record.additionalDetails || record.additional_details || null;
+      const imgs = record.images ? JSON.stringify(record.images) : null;
+      const estCost = Number(record.estimateAmount || record.estimatedCost || record.estimated_amount || 0);
+      const advPaid = Number(record.advancePaid || record.advanceAmount || record.advance_amount || 0);
+      const advMode = record.advancePaymentMode || record.advance_payment_mode || null;
+      const advRef = record.advanceRefunded ? 1 : 0;
+      const advRefMode = record.advanceRefundMode || record.advance_refund_mode || null;
+      const finBill = Number(record.finalBillAmount || record.final_bill_amount || 0);
+      const actTaken = record.actionTaken || record.action_taken || null;
+      const delStat = record.deliveryStatus || record.delivery_status || null;
+      const delType = record.deliveryType || record.delivery_type || null;
+      const courName = record.courierName || record.courier_name || null;
+      const trkNo = record.trackingNo || record.tracking_no || null;
+      const delTo = record.deliveredToName || record.delivered_to_name || null;
+      const delBy = record.deliveredBy || record.delivered_by || null;
+      const isRet = record.isReturnCase || record.is_return_case ? 1 : 0;
+      const payStat = record.paymentStatus || record.payment_status || null;
+      const repOut = record.repairOutcome || record.repair_outcome || null;
+      const priority = record.priority || 'Normal';
+      const status = record.status || 'Pending';
+      const assignedTo = record.assignedTo || record.assignedTechnician || record.assigned_technician || null;
+      const rackLoc = record.rackLocation || record.rack_location || record.rackId || null;
+      const remarks = record.remarks || record.notes || null;
+      const createdBy = record.createdBy || record.created_by || null;
+      const compAt = record.completedAt || record.completed_at || null;
+      const outDate = record.outwardedDate || record.outwarded_date || null;
+      const canAt = record.cancelledAt || record.cancelled_at || null;
+
       db.run(
-        `INSERT OR REPLACE INTO products (id, tenant_id, code, name, category, description, cost_price, selling_price, stock_quantity, min_stock_alert, unit, location, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        `INSERT OR REPLACE INTO jobs (
+          id, organization_id, tenant_id, job_number, job_no, client_id, client_name, client_phone, client_mobile,
+          inward_date, date, expected_delivery_date, equipment_type, equipment, product_name, brand, model, brand_model,
+          serial_number, serial_no, imei_number, problem_description, physical_condition, accessories_received, ram_hdd,
+          component_specs_json, problems_json, components_checklist_json, additional_details, images_json,
+          estimated_amount, estimate_amount, estimated_cost, advance_amount, advance_paid, advance_payment_mode,
+          advance_refunded, advance_refund_mode, final_bill_amount, action_taken, delivery_status, delivery_type,
+          courier_name, tracking_no, delivered_to_name, delivered_by, is_return_case, payment_status, repair_outcome,
+          priority, status, assigned_to, assigned_technician, rack_location, rack_id, remarks, notes,
+          created_by, data_json, created_at, updated_at, completed_at, outwarded_date, cancelled_at, deleted_at, version
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, NULL, ?
+        )`,
         [
-          record.id, tenantId, record.code || record.sku || null, record.name || 'Product', record.category || null,
-          record.description || null, record.costPrice || 0, record.sellingPrice || record.price || 0,
-          record.stockQuantity || record.stock || 0, record.minStockAlert || 0, record.unit || 'pcs',
-          record.location || null, dataJson, record.createdAt || now, now, version
+          record.id, orgId, orgId, jobNo, jobNo, record.clientId || null, clientName, clientPhone, clientMobile,
+          inwardDate, inwardDate, expDate, equipType, equipType, prodName, brand, model, brandModel,
+          serialNo, serialNo, imei, probDesc, physCond, accRec, ramHdd,
+          compSpecs, probsJson, compChecklist, addDetails, imgs,
+          estCost, estCost, estCost, advPaid, advPaid, advMode,
+          advRef, advRefMode, finBill, actTaken, delStat, delType,
+          courName, trkNo, delTo, delBy, isRet, payStat, repOut,
+          priority, status, assignedTo, assignedTo, rackLoc, rackLoc, remarks, remarks,
+          createdBy, dataJson, record.createdAt || now, now, compAt, outDate, canAt, version
+        ]
+      );
+
+      // Record job status audit history
+      try {
+        const histId = `hist_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        db.run(
+          `INSERT INTO job_status_history (id, organization_id, job_id, old_status, new_status, changed_by, remarks, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [histId, orgId, record.id, record.previousStatus || null, status, assignedTo || createdBy || 'System', remarks, now]
+        );
+      } catch (e) {}
+      break;
+    }
+
+    case 'invoices': {
+      const invNo = record.invoiceNo || record.invoiceNumber || record.invoice_no || record.id;
+      const clientName = record.clientName || record.client_name || null;
+      const clientPhone = record.clientPhone || record.client_phone || record.clientMobile || null;
+      const clientMobile = record.clientMobile || record.client_mobile || record.clientPhone || null;
+      const clientAddr = record.clientAddress || record.client_address || record.address || null;
+      const clientState = record.clientState || record.client_state || null;
+      const clientGst = record.clientGstin || record.client_gstin || null;
+      const invDate = record.date || record.invoiceDate || record.invoice_date || now;
+      const dueDate = record.dueDate || record.due_date || null;
+      const subtotal = Number(record.subtotal || 0);
+      const discount = Number(record.discount || 0);
+      const taxPercent = Number(record.taxPercent || record.tax_percent || 0);
+      const taxAmt = Number(record.tax || record.taxAmount || record.tax_amount || 0);
+      const taxableAmt = Number(record.taxableAmount || record.taxable_amount || (subtotal - discount));
+      const cgst = Number(record.cgst || 0);
+      const sgst = Number(record.sgst || 0);
+      const igst = Number(record.igst || 0);
+      const delCharges = Number(record.deliveryCharges || record.delivery_charges || 0);
+      const roundOff = Number(record.roundOff || record.round_off || 0);
+      const grandTotal = Number(record.grandTotal || record.total || 0);
+      const paidAmt = Number(record.paidAmount || record.paid_amount || 0);
+      const balDue = Number(record.balanceDue || record.balanceAmount || record.balance_due || 0);
+      const dedAdv = Number(record.deductedAdvance || record.deducted_advance || 0);
+      const payMode = record.paymentMode || record.payment_mode || 'Cash';
+      const isPaid = (record.isPaid || paidAmt >= grandTotal || balDue <= 0) ? 1 : 0;
+      const status = record.status || (isPaid ? 'Paid' : 'Unpaid');
+      const notes = record.notes || record.remarks || null;
+      const createdBy = record.createdBy || record.created_by || null;
+
+      db.run(
+        `INSERT OR REPLACE INTO invoices (
+          id, organization_id, tenant_id, invoice_number, invoice_no, job_id, client_id,
+          client_name, client_phone, client_mobile, client_address, client_state, client_gstin,
+          invoice_date, date, due_date, subtotal, discount, tax_percent, taxable_amount,
+          tax, tax_amount, cgst, sgst, igst, delivery_charges, round_off, total, grand_total,
+          paid_amount, balance_due, balance_amount, deducted_advance, payment_mode, is_paid,
+          status, notes, created_by, data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, NULL, ?
+        )`,
+        [
+          record.id, orgId, orgId, invNo, invNo, record.jobId || record.linkedJobId || null, record.clientId || null,
+          clientName, clientPhone, clientMobile, clientAddr, clientState, clientGst,
+          invDate, invDate, dueDate, subtotal, discount, taxPercent, taxableAmt,
+          taxAmt, taxAmt, cgst, sgst, igst, delCharges, roundOff, grandTotal, grandTotal,
+          paidAmt, balDue, balDue, dedAdv, payMode, isPaid,
+          status, notes, createdBy, dataJson, record.createdAt || now, now, version
+        ]
+      );
+
+      // Decompose and insert relational line items if present
+      if (Array.isArray(record.items) && record.items.length > 0) {
+        db.run('DELETE FROM invoice_items WHERE invoice_id = ?', [record.id]);
+        for (let i = 0; i < record.items.length; i++) {
+          const item = record.items[i];
+          const itemId = item.id || `item_${record.id}_${i}`;
+          const qty = Number(item.qty || item.quantity || 1);
+          const rate = Number(item.rate || item.unitPrice || item.price || 0);
+          const disc = Number(item.discount || 0);
+          const itemTaxRate = Number(item.taxRate || item.tax_rate || 0);
+          const itemTaxAmt = Number(item.taxAmount || item.tax_amount || 0);
+          const lineTot = Number(item.total || item.lineTotal || (qty * rate - disc));
+
+          db.run(
+            `INSERT OR REPLACE INTO invoice_items (
+              id, organization_id, invoice_id, item_type, product_id, product_name, serial_no,
+              description, quantity, qty, unit_price, rate, discount, tax_rate, tax_amount,
+              line_total, total, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              itemId, orgId, record.id, item.type || 'Product', item.productId || item.product_id || null,
+              item.productName || item.name || 'Item', item.serialNo || item.serial_no || null,
+              item.description || null, qty, qty, rate, rate, disc, itemTaxRate, itemTaxAmt,
+              lineTot, lineTot, now, now
+            ]
+          );
+        }
+      }
+      break;
+    }
+
+    case 'payments': {
+      const payNo = record.paymentNo || record.paymentNumber || record.payment_no || record.id;
+      const clientName = record.clientName || record.client_name || null;
+      const amt = Number(record.amount || 0);
+      const payDate = record.date || record.paymentDate || record.payment_date || now;
+      const payMode = record.mode || record.paymentMode || record.payment_mode || 'Cash';
+      const refNo = record.refNo || record.transactionRef || record.transactionReference || record.transaction_reference || null;
+      const bankName = record.bankName || record.bank_name || null;
+      const notes = record.remarks || record.notes || null;
+      const recBy = record.receivedBy || record.received_by || null;
+
+      db.run(
+        `INSERT OR REPLACE INTO payments (
+          id, organization_id, tenant_id, payment_number, payment_no, client_id, client_name,
+          invoice_id, job_id, linked_job_id, amount, payment_date, date, payment_mode, mode,
+          transaction_reference, transaction_ref, ref_no, bank_name, notes, remarks, received_by,
+          data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, NULL, ?
+        )`,
+        [
+          record.id, orgId, orgId, payNo, payNo, record.clientId || null, clientName,
+          record.invoiceId || null, record.jobId || record.linkedJobId || null, record.linkedJobId || record.jobId || null,
+          amt, payDate, payDate, payMode, payMode,
+          refNo, refNo, refNo, bankName, notes, notes, recBy,
+          dataJson, record.createdAt || now, now, version
         ]
       );
       break;
+    }
 
-    case 'expenses':
+    case 'products': {
+      const prodCode = record.code || record.productCode || record.sku || null;
+      const catId = record.categoryId || record.category_id || null;
+      const catName = record.category || null;
+      const hsn = record.hsnCode || record.hsn_code || null;
+      const costPr = Number(record.costPrice || record.purchasePrice || record.purchase_price || 0);
+      const sellPr = Number(record.sellingPrice || record.price || 0);
+      const taxR = Number(record.taxRate || record.tax_rate || 0);
+      const minStk = Number(record.minStockAlert || record.minQtyAlert || record.minimum_stock || 0);
+      const curStk = Number(record.stockQuantity || record.stock || record.currentStock || 0);
+      const unit = record.unit || 'pcs';
+      const loc = record.location || record.rackId || null;
+      const stat = record.status || 'active';
+
       db.run(
-        `INSERT OR REPLACE INTO expenses (id, tenant_id, expense_no, category, amount, payment_mode, description, paid_to, date, recorded_by, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        `INSERT OR REPLACE INTO products (
+          id, organization_id, tenant_id, product_code, code, sku, name, category_id, category,
+          description, unit, hsn_code, purchase_price, cost_price, selling_price, price,
+          tax_rate, minimum_stock, min_stock_alert, min_qty_alert, current_stock, stock_quantity, stock,
+          rack_id, location, status, data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, NULL, ?
+        )`,
         [
-          record.id, tenantId, record.expenseNo || record.id, record.category || 'General', record.amount || 0,
-          record.paymentMode || 'Cash', record.description || null, record.paidTo || null, record.date || now,
-          record.recordedBy || null, dataJson, record.createdAt || now, now, version
+          record.id, orgId, orgId, prodCode, prodCode, prodCode, record.name || 'Product', catId, catName,
+          record.description || null, unit, hsn, costPr, costPr, sellPr, sellPr,
+          taxR, minStk, minStk, minStk, curStk, curStk, curStk,
+          loc, loc, stat, dataJson, record.createdAt || now, now, version
         ]
       );
       break;
+    }
+
+    case 'expenses': {
+      const expNo = record.expenseNo || record.expenseNumber || record.expense_no || record.id;
+      const cat = record.category || 'General';
+      const amt = Number(record.amount || 0);
+      const expDate = record.date || record.expenseDate || record.expense_date || now;
+      const payMode = record.paymentMode || record.payment_mode || 'Cash';
+      const paidTo = record.paidTo || record.paid_to || null;
+      const desc = record.description || record.remarks || null;
+      const recBy = record.recordedBy || record.recorded_by || record.createdBy || null;
+
+      db.run(
+        `INSERT OR REPLACE INTO expenses (
+          id, organization_id, tenant_id, expense_number, expense_no, category, amount,
+          expense_date, date, payment_mode, paid_to, description, remarks, recorded_by, created_by,
+          data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, NULL, ?
+        )`,
+        [
+          record.id, orgId, orgId, expNo, expNo, cat, amt,
+          expDate, expDate, payMode, paidTo, desc, desc, recBy, recBy,
+          dataJson, record.createdAt || now, now, version
+        ]
+      );
+      break;
+    }
 
     case 'ledger':
+    case 'ledger_entries': {
+      const eType = record.type || record.entryType || record.entry_type || 'Debit';
+      const amt = Number(record.amount || record.debit || record.credit || 0);
+      const debit = eType === 'Debit' ? amt : Number(record.debit || 0);
+      const credit = eType === 'Credit' ? amt : Number(record.credit || 0);
+      const refId = record.refNo || record.referenceId || record.reference_id || null;
+      const desc = record.description || null;
+      const balAfter = Number(record.balance || record.balanceAfter || record.balance_after || 0);
+      const eDate = record.date || now;
+      const createdBy = record.createdBy || record.created_by || null;
+
       db.run(
-        `INSERT OR REPLACE INTO ledger (id, tenant_id, client_id, entry_type, amount, reference_id, description, balance_after, date, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        `INSERT OR REPLACE INTO ledger (
+          id, tenant_id, client_id, entry_type, amount, reference_id, description,
+          balance_after, date, data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [
-          record.id, tenantId, record.clientId || null, record.entryType || 'Debit', record.amount || 0,
-          record.referenceId || null, record.description || null, record.balanceAfter || 0, record.date || now,
-          dataJson, record.createdAt || now, now, version
+          record.id, orgId, record.clientId || null, eType, amt, refId, desc,
+          balAfter, eDate, dataJson, record.createdAt || now, now, version
+        ]
+      );
+
+      db.run(
+        `INSERT OR REPLACE INTO ledger_entries (
+          id, organization_id, tenant_id, client_id, entry_type, reference_type, reference_id, ref_no,
+          debit, credit, amount, balance_after, balance, description, date,
+          data_json, created_at, created_by, updated_at, deleted_at, version
+        ) VALUES (?, ?, ?, ?, ?, 'transaction', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        [
+          record.id, orgId, orgId, record.clientId || null, eType, refId, refId,
+          debit, credit, amt, balAfter, balAfter, desc, eDate,
+          dataJson, record.createdAt || now, createdBy, now, version
         ]
       );
       break;
+    }
 
     case 'users':
+    case 'organization_users': {
+      const uName = record.name || record.fullName || 'User';
+      const uname = record.username || record.name?.toLowerCase().replace(/\s+/g, '') || 'user';
+      const mob = record.mobile || record.phone || '';
+      const email = record.email || null;
+      const role = record.role || 'Technician';
+      const status = record.status || 'Active';
+      const perms = record.permissions ? JSON.stringify(record.permissions) : null;
+
       db.run(
-        `INSERT OR REPLACE INTO users (id, tenant_id, name, username, mobile, role, status, permissions_json, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        `INSERT OR REPLACE INTO users (
+          id, tenant_id, name, username, mobile, email, role, status, permissions_json,
+          data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [
-          record.id, tenantId, record.name || 'User', record.username || record.name?.toLowerCase() || 'user',
-          record.mobile || record.phone || '', record.role || 'Technician', record.status || 'Active',
-          record.permissions ? JSON.stringify(record.permissions) : null,
+          record.id, orgId, uName, uname, mob, email, role, status, perms,
           dataJson, record.createdAt || now, now, version
         ]
       );
-      break;
 
-    case 'logs':
-    case 'audit_logs':
       db.run(
-        `INSERT OR REPLACE INTO audit_logs (id, tenant_id, user_id, user_name, action, entity, entity_id, details_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO organization_users (
+          id, organization_id, tenant_id, name, full_name, username, mobile, email, role, status,
+          permissions_json, data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [
-          record.id, tenantId, record.userId || null, record.user || record.userName || 'System',
-          record.action || 'ACTIVITY', record.entity || 'general', record.entityId || record.id,
-          JSON.stringify(record), record.timestamp || record.createdAt || now
+          record.id, orgId, orgId, uName, uName, uname, mob, email, role, status,
+          perms, dataJson, record.createdAt || now, now, version
         ]
       );
       break;
+    }
 
-    case 'config':
+    case 'outward': {
+      const outNo = record.outwardNo || record.outwardNumber || record.outward_number || record.id;
+      const outDate = record.outwardDate || record.outward_date || record.date || now;
+      const delDate = record.deliveryDate || record.delivery_date || null;
+      const delTo = record.deliveredTo || record.delivered_to || null;
+      const recBy = record.receivedBy || record.received_by || null;
+      const delType = record.deliveryType || record.delivery_type || 'Direct';
+      const courName = record.courierName || record.courier_name || null;
+      const trkNo = record.trackingNo || record.tracking_no || null;
+      const remarks = record.remarks || record.notes || null;
+      const createdBy = record.createdBy || record.created_by || null;
+
       db.run(
-        `INSERT OR REPLACE INTO tenant_configs (tenant_id, id, name, phone, email, address, gstin, upi_id, config_json, data_json, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        `INSERT OR REPLACE INTO outward (
+          id, organization_id, tenant_id, outward_number, job_id, client_id,
+          outward_date, delivery_date, delivered_to, received_by, delivery_type,
+          courier_name, tracking_no, remarks, created_by, created_at, updated_at, deleted_at, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [
-          tenantId, record.id || tenantId, record.name || null, record.phone || null, record.email || null,
+          record.id, orgId, orgId, outNo, record.jobId || null, record.clientId || null,
+          outDate, delDate, delTo, recBy, delType,
+          courName, trkNo, remarks, createdBy, record.createdAt || now, now, version
+        ]
+      );
+      break;
+    }
+
+    case 'config': {
+      db.run(
+        `INSERT OR REPLACE INTO tenant_configs (
+          tenant_id, organization_id, id, name, phone, email, address, gstin, upi_id,
+          config_json, data_json, updated_at, deleted_at, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        [
+          orgId, orgId, record.id || orgId, record.name || null, record.phone || null, record.email || null,
           record.address || null, record.gstin || null, record.upiId || null,
           dataJson, dataJson, now, version
         ]
       );
       break;
+    }
 
-    case 'categories':
+    case 'categories': {
       db.run(
-        `INSERT OR REPLACE INTO categories (id, tenant_id, name, type, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-        [record.id, tenantId, record.name || 'Category', record.type || 'Job', dataJson, record.createdAt || now, now, version]
-      );
-      break;
-
-    case 'racks':
-      db.run(
-        `INSERT OR REPLACE INTO racks (id, tenant_id, name, capacity, location, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-        [record.id, tenantId, record.name || 'Rack', record.capacity || null, record.location || null, dataJson, record.createdAt || now, now, version]
-      );
-      break;
-
-    case 'equipments':
-      db.run(
-        `INSERT OR REPLACE INTO equipments (id, tenant_id, name, brand, model, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-        [record.id, tenantId, record.name || 'Equipment', record.brand || null, record.model || null, dataJson, record.createdAt || now, now, version]
-      );
-      break;
-
-    case 'problems':
-      db.run(
-        `INSERT OR REPLACE INTO problems (id, tenant_id, title, name, description, common_solution, standard_cost, data_json, created_at, updated_at, deleted_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        `INSERT OR REPLACE INTO categories (
+          id, organization_id, tenant_id, name, type, description, status,
+          data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [
-          record.id,
-          tenantId,
-          record.title || record.name || 'Problem',
-          record.name || record.title || 'Problem',
-          record.description || null,
-          record.commonSolution || null,
-          record.standardCost || 0,
-          dataJson,
-          record.createdAt || now,
-          now,
-          version
+          record.id, orgId, orgId, record.name || 'Category', record.type || 'Job',
+          record.description || null, record.status || 'active',
+          dataJson, record.createdAt || now, now, version
         ]
       );
       break;
+    }
+
+    case 'racks': {
+      db.run(
+        `INSERT OR REPLACE INTO racks (
+          id, organization_id, tenant_id, rack_code, name, capacity, location, description, status,
+          data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        [
+          record.id, orgId, orgId, record.rackCode || record.rack_code || null, record.name || 'Rack',
+          record.capacity || null, record.location || null, record.description || null, record.status || 'active',
+          dataJson, record.createdAt || now, now, version
+        ]
+      );
+      break;
+    }
+
+    case 'equipments': {
+      db.run(
+        `INSERT OR REPLACE INTO equipments (
+          id, organization_id, tenant_id, name, brand, model,
+          data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        [
+          record.id, orgId, orgId, record.name || 'Equipment', record.brand || null, record.model || null,
+          dataJson, record.createdAt || now, now, version
+        ]
+      );
+      break;
+    }
+
+    case 'problems': {
+      db.run(
+        `INSERT OR REPLACE INTO problems (
+          id, organization_id, tenant_id, title, name, description, common_solution, standard_cost,
+          data_json, created_at, updated_at, deleted_at, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        [
+          record.id, orgId, orgId, record.title || record.name || 'Problem', record.name || record.title || 'Problem',
+          record.description || null, record.commonSolution || null, Number(record.standardCost || 0),
+          dataJson, record.createdAt || now, now, version
+        ]
+      );
+      break;
+    }
+
+    case 'logs':
+    case 'audit_logs': {
+      db.run(
+        `INSERT OR REPLACE INTO audit_logs (
+          id, organization_id, tenant_id, user_id, user_name, action, entity, entity_id,
+          details_json, ip_address, device_info, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          record.id, orgId, orgId, record.userId || null, record.user || record.userName || 'System',
+          record.action || 'ACTIVITY', record.entity || 'general', record.entityId || record.id,
+          JSON.stringify(record), record.ipAddress || null, record.deviceInfo || null,
+          record.timestamp || record.createdAt || now
+        ]
+      );
+      break;
+    }
 
     default:
       break;
@@ -1704,7 +2050,7 @@ export function upsertEntityRecord(db: any, tenantId: string, entity: string, re
 
   // Write-through mirror to PostgreSQL if active
   if (isPostgresActive()) {
-    syncEntityToPostgres(entity, record, tenantId).catch((err) => {
+    syncEntityToPostgres(entity, record, orgId).catch((err) => {
       console.warn(`[Postgres Mirror Error for ${entity}]:`, err?.message);
     });
   }
@@ -2248,7 +2594,7 @@ function getOrgPdfDirectory(tenantId: string, subfolder: string = 'invoices'): s
 apiRouter.post('/docs/upload-pdf', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
   try {
     const tenantId = req.user!.tenantId;
-    const { subfolder = 'invoices', filename, base64Pdf } = req.body || {};
+    const { subfolder = 'invoices', filename, base64Pdf, entityType = 'invoice', entityId } = req.body || {};
     if (!filename || !base64Pdf) {
       return res.status(400).json({ success: false, message: 'filename and base64Pdf are required' });
     }
@@ -2265,6 +2611,33 @@ apiRouter.post('/docs/upload-pdf', authMiddleware, (req: AuthenticatedRequest, r
     const cleanTenant = tenantId.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
     const cleanSub = (subfolder || 'invoices').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
     const publicUrl = `/api/docs/public/${cleanTenant}/${cleanSub}/${cleanFilename}`;
+
+    // Record document in SQLite documents table
+    try {
+      const db = getDatabase();
+      const docId = `doc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      db.run(
+        `INSERT INTO documents (
+          id, organization_id, entity_type, entity_id, document_type,
+          file_name, file_path, file_size, mime_type, created_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'application/pdf', ?, ?)`,
+        [
+          docId,
+          tenantId,
+          entityType,
+          entityId || cleanFilename,
+          cleanSub,
+          cleanFilename,
+          publicUrl,
+          buffer.length,
+          req.user?.username || 'system',
+          new Date().toISOString()
+        ]
+      );
+      scheduleDbSave();
+    } catch (docErr) {
+      console.warn('[Documents Table Warning]:', docErr);
+    }
 
     res.json({
       success: true,
@@ -2310,4 +2683,313 @@ apiRouter.get('/docs/public/:tenantId/:subfolder/:filename', (req, res) => {
     res.status(500).send('Error serving PDF document');
   }
 });
+
+// -------------------------------------------------------------
+// RELATIONAL CRUD API ENDPOINTS (Strict Organization Isolation)
+// -------------------------------------------------------------
+
+// Helper generic CRUD handlers for standard tenant entities
+function registerTenantCrudRoutes(
+  entityName: string,
+  tableName: string,
+  singularLabel: string
+) {
+  // GET: List all active records for organization
+  apiRouter.get(`/${entityName}`, authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const orgId = req.user!.tenantId;
+      const db = getDatabase();
+      const records = getEntityRecords(db, tableName, orgId);
+      res.json({ success: true, count: records.length, data: records });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // GET /:id: Get single record
+  apiRouter.get(`/${entityName}/:id`, authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const orgId = req.user!.tenantId;
+      const { id } = req.params;
+      const db = getDatabase();
+      const stmt = db.prepare(`SELECT * FROM ${tableName} WHERE id = ? AND (organization_id = ? OR tenant_id = ?) AND (deleted_at IS NULL OR deleted_at = '')`);
+      stmt.bind([id, orgId, orgId]);
+      if (stmt.step()) {
+        const row = stmt.getAsObject();
+        let parsed = row;
+        if (row.data_json) {
+          try {
+            parsed = { ...row, ...JSON.parse(row.data_json as string), id: row.id };
+          } catch (e) {}
+        }
+        stmt.free();
+        return res.json({ success: true, data: parsed });
+      }
+      stmt.free();
+      res.status(404).json({ success: false, message: `${singularLabel} not found` });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // POST: Create new record
+  apiRouter.post(`/${entityName}`, authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const orgId = req.user!.tenantId;
+      const db = getDatabase();
+      const body = req.body || {};
+      const id = body.id || `${tableName.substring(0, 3)}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const record = { ...body, id, organizationId: orgId, tenantId: orgId, createdAt: body.createdAt || new Date().toISOString() };
+      const now = new Date().toISOString();
+      const rev = getNextRevision(orgId);
+
+      upsertEntityRecord(db, orgId, tableName, record, now, rev);
+      scheduleDbSave();
+
+      recordAuditLog({
+        tenantId: orgId,
+        organizationId: orgId,
+        userId: req.user?.id,
+        userName: req.user?.username,
+        action: `CREATE_${singularLabel.toUpperCase()}`,
+        entity: tableName,
+        entityId: id,
+        details: { id, name: record.name || record.jobNo || record.invoiceNo }
+      });
+
+      res.status(201).json({ success: true, data: record, message: `${singularLabel} created successfully` });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // PUT /:id: Update record
+  apiRouter.put(`/${entityName}/:id`, authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const orgId = req.user!.tenantId;
+      const { id } = req.params;
+      const db = getDatabase();
+      const body = req.body || {};
+      const record = { ...body, id, organizationId: orgId, tenantId: orgId };
+      const now = new Date().toISOString();
+      const rev = getNextRevision(orgId);
+
+      upsertEntityRecord(db, orgId, tableName, record, now, rev);
+      scheduleDbSave();
+
+      recordAuditLog({
+        tenantId: orgId,
+        organizationId: orgId,
+        userId: req.user?.id,
+        userName: req.user?.username,
+        action: `UPDATE_${singularLabel.toUpperCase()}`,
+        entity: tableName,
+        entityId: id,
+        details: { id, changes: body }
+      });
+
+      res.json({ success: true, data: record, message: `${singularLabel} updated successfully` });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // DELETE /:id: Soft delete record
+  apiRouter.delete(`/${entityName}/:id`, authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const orgId = req.user!.tenantId;
+      const { id } = req.params;
+      const db = getDatabase();
+      const now = new Date().toISOString();
+      const rev = getNextRevision(orgId);
+
+      db.run(
+        `UPDATE ${tableName} SET deleted_at = ?, updated_at = ?, version = ? WHERE id = ? AND (organization_id = ? OR tenant_id = ?)`,
+        [now, now, rev, id, orgId, orgId]
+      );
+      scheduleDbSave();
+
+      recordAuditLog({
+        tenantId: orgId,
+        organizationId: orgId,
+        userId: req.user?.id,
+        userName: req.user?.username,
+        action: `DELETE_${singularLabel.toUpperCase()}`,
+        entity: tableName,
+        entityId: id
+      });
+
+      res.json({ success: true, message: `${singularLabel} deleted successfully` });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+}
+
+// Register CRUD routes for core business entities
+registerTenantCrudRoutes('clients', 'clients', 'Client');
+registerTenantCrudRoutes('jobs', 'jobs', 'Job');
+registerTenantCrudRoutes('outward', 'outward', 'Outward');
+registerTenantCrudRoutes('invoices', 'invoices', 'Invoice');
+registerTenantCrudRoutes('payments', 'payments', 'Payment');
+registerTenantCrudRoutes('products', 'products', 'Product');
+registerTenantCrudRoutes('expenses', 'expenses', 'Expense');
+registerTenantCrudRoutes('categories', 'categories', 'Category');
+registerTenantCrudRoutes('racks', 'racks', 'Rack');
+registerTenantCrudRoutes('equipments', 'equipments', 'Equipment');
+registerTenantCrudRoutes('problems', 'problems', 'Problem');
+
+// Custom endpoint: Job Status History
+apiRouter.get('/jobs/:id/status-history', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const orgId = req.user!.tenantId;
+    const { id } = req.params;
+    const db = getDatabase();
+    const stmt = db.prepare('SELECT * FROM job_status_history WHERE job_id = ? AND organization_id = ? ORDER BY created_at ASC');
+    stmt.bind([id, orgId]);
+    const history: any[] = [];
+    while (stmt.step()) {
+      history.push(stmt.getAsObject());
+    }
+    stmt.free();
+    res.json({ success: true, data: history });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Custom endpoint: Invoice Line Items
+apiRouter.get('/invoices/:id/items', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const orgId = req.user!.tenantId;
+    const { id } = req.params;
+    const db = getDatabase();
+    const stmt = db.prepare('SELECT * FROM invoice_items WHERE invoice_id = ? AND organization_id = ? ORDER BY created_at ASC');
+    stmt.bind([id, orgId]);
+    const items: any[] = [];
+    while (stmt.step()) {
+      items.push(stmt.getAsObject());
+    }
+    stmt.free();
+    res.json({ success: true, data: items });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Custom endpoint: Ledger Entries for Client
+apiRouter.get('/ledger-entries', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const orgId = req.user!.tenantId;
+    const { clientId } = req.query;
+    const db = getDatabase();
+    let stmt;
+    if (clientId) {
+      stmt = db.prepare('SELECT * FROM ledger_entries WHERE (organization_id = ? OR tenant_id = ?) AND client_id = ? AND (deleted_at IS NULL OR deleted_at = "") ORDER BY date DESC, created_at DESC');
+      stmt.bind([orgId, orgId, clientId as string]);
+    } else {
+      stmt = db.prepare('SELECT * FROM ledger_entries WHERE (organization_id = ? OR tenant_id = ?) AND (deleted_at IS NULL OR deleted_at = "") ORDER BY date DESC, created_at DESC');
+      stmt.bind([orgId, orgId]);
+    }
+    const entries: any[] = [];
+    while (stmt.step()) {
+      entries.push(stmt.getAsObject());
+    }
+    stmt.free();
+    res.json({ success: true, count: entries.length, data: entries });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Custom endpoint: Inventory Stock Transactions
+apiRouter.get('/inventory/transactions', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const orgId = req.user!.tenantId;
+    const { productId } = req.query;
+    const db = getDatabase();
+    let stmt;
+    if (productId) {
+      stmt = db.prepare('SELECT * FROM inventory_transactions WHERE organization_id = ? AND product_id = ? ORDER BY created_at DESC');
+      stmt.bind([orgId, productId as string]);
+    } else {
+      stmt = db.prepare('SELECT * FROM inventory_transactions WHERE organization_id = ? ORDER BY created_at DESC LIMIT 100');
+      stmt.bind([orgId]);
+    }
+    const txs: any[] = [];
+    while (stmt.step()) {
+      txs.push(stmt.getAsObject());
+    }
+    stmt.free();
+    res.json({ success: true, count: txs.length, data: txs });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Custom endpoint: Documents & PDFs List
+apiRouter.get('/documents', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const orgId = req.user!.tenantId;
+    const { entityType, entityId } = req.query;
+    const db = getDatabase();
+    let stmt;
+    if (entityType && entityId) {
+      stmt = db.prepare('SELECT * FROM documents WHERE organization_id = ? AND entity_type = ? AND entity_id = ? ORDER BY created_at DESC');
+      stmt.bind([orgId, entityType as string, entityId as string]);
+    } else {
+      stmt = db.prepare('SELECT * FROM documents WHERE organization_id = ? ORDER BY created_at DESC');
+      stmt.bind([orgId]);
+    }
+    const docs: any[] = [];
+    while (stmt.step()) {
+      docs.push(stmt.getAsObject());
+    }
+    stmt.free();
+    res.json({ success: true, count: docs.length, data: docs });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Custom endpoint: Audit Logs (System Activity & Security History)
+apiRouter.get('/audit-logs', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const orgId = req.user!.tenantId;
+    const db = getDatabase();
+    const stmt = db.prepare('SELECT * FROM audit_logs WHERE organization_id = ? OR tenant_id = ? ORDER BY created_at DESC LIMIT 100');
+    stmt.bind([orgId, orgId]);
+    const logs: any[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      let details = row.details_json;
+      if (typeof details === 'string') {
+        try {
+          details = JSON.parse(details);
+        } catch (e) {}
+      }
+      logs.push({ ...row, details });
+    }
+    stmt.free();
+    res.json({ success: true, count: logs.length, data: logs });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Download SQLite database file for direct DB Browser inspection
+apiRouter.get('/admin/download-sqlite', (req: Request, res: Response) => {
+  try {
+    const dbPath = path.join(process.cwd(), 'data', 'inoms_primary.db');
+    if (!fs.existsSync(dbPath)) {
+      return res.status(404).json({ success: false, message: 'Database file not found' });
+    }
+    // Flush current in-memory database to disk
+    persistDatabase();
+    res.download(dbPath, 'inoms_primary.db');
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
 
