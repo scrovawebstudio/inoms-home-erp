@@ -18,7 +18,10 @@ import {
   persistDatabase,
   scanAndImportDataFolder,
   uploadAndImportOrgsBatch,
-  exportTenantToDisk
+  exportTenantToDisk,
+  deleteOrganizationFromDatabaseAndDisk,
+  purgeAllOrganizationsExceptMasterAdmin,
+  clearOrganizationDataInDb
 } from './sqliteDb';
 import { isPostgresActive, syncEntityToPostgres, syncDeleteToPostgres } from './postgresDb';
 
@@ -1144,8 +1147,8 @@ apiRouter.put('/auth/organizations/:id', (req, res) => {
   }
 });
 
-// Delete Organization (Master Admin)
-apiRouter.post('/auth/delete-org', (req, res) => {
+// Delete Organization (Master Admin - Complete Deletion from DB & Disk)
+apiRouter.post('/auth/delete-org', async (req, res) => {
   try {
     const { id } = req.body || {};
     if (!id) return res.status(400).json({ success: false, message: 'Organization ID required' });
@@ -1153,30 +1156,63 @@ apiRouter.post('/auth/delete-org', (req, res) => {
       return res.status(403).json({ success: false, message: 'Master System Admin cannot be deleted' });
     }
 
-    const db = getDatabase();
-    db.run('DELETE FROM organizations WHERE id = ?', [id]);
-    scheduleDbSave();
-
-    res.json({ success: true, message: `Organization ${id} deleted successfully` });
+    await deleteOrganizationFromDatabaseAndDisk(id);
+    res.json({ success: true, message: `Organization ${id} permanently deleted from database and disk` });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message || 'Delete error' });
   }
 });
 
-apiRouter.delete('/auth/organizations/:id', (req, res) => {
+apiRouter.delete('/auth/organizations/:id', async (req, res) => {
   try {
     const id = req.params.id;
     if (id === 'org-admin') {
       return res.status(403).json({ success: false, message: 'Master System Admin cannot be deleted' });
     }
 
-    const db = getDatabase();
-    db.run('DELETE FROM organizations WHERE id = ?', [id]);
-    scheduleDbSave();
-
-    res.json({ success: true, message: `Organization ${id} deleted successfully` });
+    await deleteOrganizationFromDatabaseAndDisk(id);
+    res.json({ success: true, message: `Organization ${id} permanently deleted from database and disk` });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message || 'Delete error' });
+  }
+});
+
+// Master Admin: Factory Reset & Purge All Organizations Except Master Admin
+apiRouter.post('/admin/purge-all-data', async (req, res) => {
+  try {
+    const { wipeMasterData } = req.body || {};
+    const result = await purgeAllOrganizationsExceptMasterAdmin(!!wipeMasterData);
+    res.json({
+      success: true,
+      message: result.message,
+      purgedCount: result.purgedCount,
+      tenants: [
+        {
+          id: 'org-admin',
+          name: 'Master System Admin',
+          code: 'ADMIN-00',
+          ownerMobile: '+91 8149862034',
+          ownerName: 'Master Admin',
+          status: 'active',
+          createdAt: '2026-01-01'
+        }
+      ]
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to purge system data' });
+  }
+});
+
+// Single Organization Owner: Clear Own Workspace Transactional Data
+apiRouter.post('/org/clear-workspace', async (req, res) => {
+  try {
+    const { tenantId } = req.body || {};
+    if (!tenantId) return res.status(400).json({ success: false, message: 'Organization ID is required' });
+
+    await clearOrganizationDataInDb(tenantId);
+    res.json({ success: true, message: `Workspace data for ${tenantId} cleared successfully` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Clear workspace error' });
   }
 });
 

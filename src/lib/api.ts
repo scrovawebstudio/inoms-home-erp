@@ -517,3 +517,55 @@ export async function getDataFolderStatusApi(): Promise<any> {
     return { success: false, error: err?.message };
   }
 }
+
+export async function deleteOrgApi(orgId: string): Promise<{ success: boolean; message?: string; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch('/api/auth/delete-org', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ id: orgId })
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to delete organization' };
+  }
+}
+
+export async function purgeAllDataApi(wipeMasterData: boolean = false): Promise<{ success: boolean; message?: string; purgedCount?: number; tenants?: any[]; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch('/api/admin/purge-all-data', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ wipeMasterData })
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to purge database' };
+  }
+}
+
+export async function clearOrgWorkspaceApi(tenantId: string): Promise<{ success: boolean; message?: string; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch('/api/org/clear-workspace', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ tenantId })
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to clear workspace' };
+  }
+}
+

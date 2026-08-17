@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import MicrosoftAuthQR, { generateBase32Secret } from './MicrosoftAuthQR';
 import { TenantOrg, SystemAnnouncement, getTenantFeatures, TenantFeatures } from './AuthModal';
-import { fetchAdminOrganizationsViaApi } from '../lib/api';
+import { fetchAdminOrganizationsViaApi, purgeAllDataApi } from '../lib/api';
 import {
   Building,
   Plus,
@@ -198,6 +198,13 @@ export default function MasterAdminDashboard({
       }
     }).catch(() => {});
   }, []);
+
+  // Purge System Data Modal State
+  const [showPurgeModal, setShowPurgeModal] = useState<boolean>(false);
+  const [purgeWipeMasterData, setPurgeWipeMasterData] = useState<boolean>(false);
+  const [purgeConfirmationText, setPurgeConfirmationText] = useState<string>('');
+  const [isPurgingData, setIsPurgingData] = useState<boolean>(false);
+  const [purgeResultMsg, setPurgeResultMsg] = useState<string>('');
 
   // Register New Org Modal state
   const [showRegisterModal, setShowRegisterModal] = useState<boolean>(false);
@@ -458,13 +465,28 @@ Login Page: Access with registered mobile and PIN on the portal.`;
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={handleOpenRegisterModal}
-          className="w-full sm:w-auto bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs px-4 py-3 rounded-2xl shadow-lg transition cursor-pointer flex items-center justify-center gap-2 shrink-0"
-        >
-          <Plus className="w-4 h-4" /> Register New Organization
-        </button>
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              setPurgeConfirmationText('');
+              setPurgeResultMsg('');
+              setShowPurgeModal(true);
+            }}
+            className="w-full sm:w-auto bg-rose-600/90 hover:bg-rose-600 text-white font-bold text-xs px-3.5 py-3 rounded-2xl shadow-lg transition cursor-pointer flex items-center justify-center gap-2 border border-rose-500/50"
+            title="Clean all organization records and reset to clean production state (Master Admin only)"
+          >
+            <Trash2 className="w-4 h-4 text-rose-200" /> Factory Reset / Clean DB
+          </button>
+
+          <button
+            type="button"
+            onClick={handleOpenRegisterModal}
+            className="w-full sm:w-auto bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs px-4 py-3 rounded-2xl shadow-lg transition cursor-pointer flex items-center justify-center gap-2"
+          >
+            <Plus className="w-4 h-4" /> Register New Organization
+          </button>
+        </div>
       </div>
 
       {/* Top Sub-Navigation Tabs */}
@@ -1917,6 +1939,115 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Purge / Factory Reset Database Modal */}
+      {showPurgeModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 space-y-5 shadow-2xl border border-rose-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-rose-100 text-rose-700 rounded-xl">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-slate-900">Factory Reset &amp; Purge Organizations</h3>
+                  <p className="text-[10px] text-slate-400">Master System Admin Control</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPurgeModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl space-y-2 text-xs text-rose-950 leading-relaxed">
+              <p className="font-bold flex items-center gap-1.5 text-rose-900">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                <span>Master System Admin (+91 8149862034) Is 100% Protected</span>
+              </p>
+              <p>
+                This operation will permanently delete all demo and tenant organizations, their clients, job sheets, invoices, ledger entries, and disk data folders from the SQLite database and disk storage.
+              </p>
+              <p className="font-semibold text-rose-800">
+                Once executed, only your Master System Admin account remains active.
+              </p>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <label className="flex items-start gap-2.5 p-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={purgeWipeMasterData}
+                  onChange={e => setPurgeWipeMasterData(e.target.checked)}
+                  className="w-4 h-4 text-rose-600 rounded focus:ring-rose-500 mt-0.5"
+                />
+                <div>
+                  <p className="font-bold text-slate-800">Also Clear Master Admin Sample Operational Tables</p>
+                  <p className="text-[11px] text-slate-500">Wipes sample invoices and demo clients so your system starts with 0 records.</p>
+                </div>
+              </label>
+
+              <div className="space-y-1">
+                <label className="block font-bold text-slate-700">
+                  Type <span className="font-mono text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">PURGE</span> to confirm:
+                </label>
+                <input
+                  type="text"
+                  placeholder="Type PURGE in all caps"
+                  value={purgeConfirmationText}
+                  onChange={e => setPurgeConfirmationText(e.target.value)}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-800 outline-none focus:ring-2 focus:ring-rose-500"
+                />
+              </div>
+
+              {purgeResultMsg && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl font-medium text-xs">
+                  {purgeResultMsg}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowPurgeModal(false)}
+                className="px-4 py-2 border border-slate-200 text-slate-600 rounded-xl font-semibold hover:bg-slate-50 cursor-pointer text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={purgeConfirmationText.trim() !== 'PURGE' || isPurgingData}
+                onClick={async () => {
+                  setIsPurgingData(true);
+                  try {
+                    const res = await purgeAllDataApi(purgeWipeMasterData);
+                    if (res.success) {
+                      setPurgeResultMsg(res.message || 'Database successfully purged. Reloading...');
+                      setTimeout(() => {
+                        window.location.reload();
+                      }, 1500);
+                    } else {
+                      alert(`Purge Error: ${res.error || 'Failed to purge data'}`);
+                    }
+                  } catch (err: any) {
+                    alert(`Error: ${err?.message || 'Purge request failed'}`);
+                  } finally {
+                    setIsPurgingData(false);
+                  }
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl font-bold transition shadow-sm cursor-pointer text-xs flex items-center gap-1.5"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>{isPurgingData ? 'Purging All Data...' : 'Execute Complete Purge'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

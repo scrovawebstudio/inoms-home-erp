@@ -1079,7 +1079,7 @@ async function migrateSqliteSchema(database: Database): Promise<void> {
       console.warn('[Schema Migration] Admin seeding check:', err);
     }
 
-    // Ensure Master System Admin and initial organizations exist if not already present
+    // Ensure Master System Admin exists if not already present
     try {
       const defaultOrgs = [
         {
@@ -1091,18 +1091,6 @@ async function migrateSqliteSchema(database: Database): Promise<void> {
           status: 'active',
           pin: '1234',
           subscription_plan: 'lifetime',
-          trial_days: 0,
-          is_trial: 0
-        },
-        {
-          id: 'org-nibban',
-          name: 'Nibban Technologies',
-          code: 'NIBBAN-01',
-          owner_name: 'Nibban Admin',
-          owner_mobile: '+91 9876543210',
-          status: 'active',
-          pin: '1234',
-          subscription_plan: 'monthly',
           trial_days: 0,
           is_trial: 0
         }
@@ -1687,7 +1675,7 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
   };
 }
 
-// Migrate legacy JSON on first startup
+// Migrate legacy JSON on first startup - ensures Master Admin is in place without resurrecting deleted demo orgs
 async function migrateLegacyDataIfPresent(): Promise<void> {
   if (!db) return;
   try {
@@ -1698,10 +1686,20 @@ async function migrateLegacyDataIfPresent(): Promise<void> {
     }
     orgCountStmt.free();
 
-    // If zero organizations in database, perform full initial scan
+    // If zero organizations in database, ensure Master Admin exists
     if (orgCount === 0) {
-      console.log('[SQLite Seed] Empty database detected. Seeding data from files...');
-      await scanAndImportDataFolder(true);
+      console.log('[SQLite Seed] Clean database detected. Ensuring Master Admin only...');
+      const now = new Date().toISOString();
+      const { hash, salt } = hashPassword('1234');
+      db.run(
+        `INSERT OR IGNORE INTO organizations (
+          id, organization_code, organization_name, name, code, owner_name, owner_mobile,
+          status, is_active, subscription_plan, subscription_status, subscription_start_date,
+          trial_days, is_trial, pin_hash, pin_salt, created_at, updated_at, version
+        ) VALUES ('org-admin', 'ADMIN-00', 'Master System Admin', 'Master System Admin', 'ADMIN-00', 'Master Admin', '+91 8149862034', 'active', 1, 'lifetime', 'active', ?, 0, 0, ?, ?, ?, ?, 1)`,
+        [now, hash, salt, now, now]
+      );
+      scheduleDbSave();
     }
   } catch (err) {
     console.warn('[SQLite Legacy Migration Error]:', err);
@@ -1933,3 +1931,205 @@ export function getDatabase(): Database {
   if (!db) throw new Error('Database is not initialized yet. Call initDatabase() first.');
   return db;
 }
+
+// Complete Deletion of an Organization: deletes all DB rows across all tables & deletes disk folder
+export async function deleteOrganizationFromDatabaseAndDisk(orgId: string): Promise<boolean> {
+  if (!db) return false;
+  if (!orgId || orgId === 'org-admin') {
+    throw new Error('Master System Admin (org-admin) cannot be deleted.');
+  }
+
+  try {
+    db.run('BEGIN TRANSACTION');
+
+    // 1. Delete from organizations table
+    db.run('DELETE FROM organizations WHERE id = ?', [orgId]);
+
+    // 2. Cascade delete from all operational and master tables
+    const tenantTables = [
+      'users', 'clients', 'jobs', 'invoices', 'payments', 'products', 'expenses',
+      'ledger', 'categories', 'racks', 'equipments', 'problems', 'tenant_configs',
+      'audit_logs', 'sync_revisions', 'sessions', 'cash_register_shifts'
+    ];
+
+    for (const tbl of tenantTables) {
+      try {
+        db.run(`DELETE FROM ${tbl} WHERE tenant_id = ? OR organization_id = ?`, [orgId, orgId]);
+      } catch (tblErr) {
+        try {
+          db.run(`DELETE FROM ${tbl} WHERE tenant_id = ?`, [orgId]);
+        } catch (e) {}
+      }
+    }
+
+    db.run('COMMIT');
+
+    // 3. Save SQLite database immediately
+    persistDatabase();
+
+    // 4. Remove physical organization directory from disk if exists
+    const orgFolder = path.join(DATA_DIR, 'orgs', orgId);
+    if (fs.existsSync(orgFolder)) {
+      try {
+        fs.rmSync(orgFolder, { recursive: true, force: true });
+        console.log(`[Disk Cleanup] Deleted directory: ${orgFolder}`);
+      } catch (rmErr) {
+        console.warn(`[Disk Cleanup] Could not delete folder ${orgFolder}:`, rmErr);
+      }
+    }
+
+    // 5. If data/organizations.json exists, remove org from it
+    const orgsJsonPath = path.join(DATA_DIR, 'organizations.json');
+    if (fs.existsSync(orgsJsonPath)) {
+      try {
+        const raw = fs.readFileSync(orgsJsonPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const filtered = parsed.filter((item: any) => item && item.id !== orgId);
+          fs.writeFileSync(orgsJsonPath, JSON.stringify(filtered, null, 2), 'utf-8');
+        }
+      } catch (jsonErr) {}
+    }
+
+    console.log(`[Org Deletion] Successfully deleted organization ${orgId} from DB and disk.`);
+    return true;
+  } catch (err) {
+    try { db.run('ROLLBACK'); } catch (rb) {}
+    console.error(`[Org Deletion] Error deleting organization ${orgId}:`, err);
+    throw err;
+  }
+}
+
+// Purge all organizations and their records except Master Admin (org-admin)
+export async function purgeAllOrganizationsExceptMasterAdmin(wipeMasterData: boolean = false): Promise<{ success: boolean; purgedCount: number; message: string }> {
+  if (!db) return { success: false, purgedCount: 0, message: 'Database not initialized' };
+
+  try {
+    // 1. Get all non-admin organizations
+    const stmt = db.prepare("SELECT id FROM organizations WHERE id != 'org-admin'");
+    const nonAdminOrgIds: string[] = [];
+    while (stmt.step()) {
+      nonAdminOrgIds.push(stmt.getAsObject().id as string);
+    }
+    stmt.free();
+
+    console.log(`[Purge] Found ${nonAdminOrgIds.length} non-admin organization(s) to purge.`);
+
+    db.run('BEGIN TRANSACTION');
+
+    // 2. Delete non-admin organizations
+    db.run("DELETE FROM organizations WHERE id != 'org-admin'");
+
+    const tenantTables = [
+      'users', 'clients', 'jobs', 'invoices', 'payments', 'products', 'expenses',
+      'ledger', 'categories', 'racks', 'equipments', 'problems', 'tenant_configs',
+      'audit_logs', 'sync_revisions', 'sessions', 'cash_register_shifts'
+    ];
+
+    for (const tbl of tenantTables) {
+      if (wipeMasterData) {
+        if (tbl === 'users') {
+          // Keep only Master Admin user
+          try {
+            db.run("DELETE FROM users WHERE tenant_id != 'org-admin' AND username != 'masteradmin'");
+          } catch (e) {}
+        } else {
+          try {
+            db.run(`DELETE FROM ${tbl}`);
+          } catch (e) {}
+        }
+      } else {
+        // Delete only non-admin rows
+        for (const orgId of nonAdminOrgIds) {
+          try {
+            db.run(`DELETE FROM ${tbl} WHERE tenant_id = ? OR organization_id = ?`, [orgId, orgId]);
+          } catch (e) {
+            try { db.run(`DELETE FROM ${tbl} WHERE tenant_id = ?`, [orgId]); } catch (e2) {}
+          }
+        }
+      }
+    }
+
+    db.run('COMMIT');
+    persistDatabase();
+
+    // 3. Clean disk folders in data/orgs/
+    const orgsDir = path.join(DATA_DIR, 'orgs');
+    if (fs.existsSync(orgsDir)) {
+      try {
+        const entries = fs.readdirSync(orgsDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && entry.name !== 'org-admin') {
+            const folderToDelete = path.join(orgsDir, entry.name);
+            fs.rmSync(folderToDelete, { recursive: true, force: true });
+            console.log(`[Purge Disk] Removed folder: ${folderToDelete}`);
+          }
+        }
+      } catch (diskErr) {
+        console.warn('[Purge Disk] Error cleaning orgs directory:', diskErr);
+      }
+    }
+
+    // 4. Reset organizations.json if present
+    const orgsJsonPath = path.join(DATA_DIR, 'organizations.json');
+    if (fs.existsSync(orgsJsonPath)) {
+      try {
+        fs.writeFileSync(orgsJsonPath, JSON.stringify([
+          {
+            id: 'org-admin',
+            name: 'Master System Admin',
+            code: 'ADMIN-00',
+            ownerMobile: '+91 8149862034',
+            ownerName: 'Master Admin',
+            status: 'active',
+            createdAt: '2026-01-01'
+          }
+        ], null, 2), 'utf-8');
+      } catch (e) {}
+    }
+
+    return {
+      success: true,
+      purgedCount: nonAdminOrgIds.length,
+      message: `Successfully purged ${nonAdminOrgIds.length} organization(s) and their data. Master Admin is clean.`
+    };
+  } catch (err: any) {
+    try { db.run('ROLLBACK'); } catch (rb) {}
+    console.error('[Purge Error]:', err);
+    throw err;
+  }
+}
+
+// Clear all transactional and operational data for a single organization
+export async function clearOrganizationDataInDb(orgId: string): Promise<boolean> {
+  if (!db || !orgId) return false;
+  try {
+    db.run('BEGIN TRANSACTION');
+    const clearTables = ['clients', 'jobs', 'invoices', 'payments', 'products', 'expenses', 'ledger', 'cash_register_shifts'];
+    for (const tbl of clearTables) {
+      try {
+        db.run(`DELETE FROM ${tbl} WHERE tenant_id = ? OR organization_id = ?`, [orgId, orgId]);
+      } catch (e) {
+        try { db.run(`DELETE FROM ${tbl} WHERE tenant_id = ?`, [orgId]); } catch (e2) {}
+      }
+    }
+    db.run('COMMIT');
+    persistDatabase();
+
+    // Update data.json for this organization on disk
+    try {
+      const orgFolder = path.join(DATA_DIR, 'orgs', orgId);
+      if (fs.existsSync(orgFolder)) {
+        const emptyData: Record<string, any> = { tenantId: orgId };
+        clearTables.forEach(t => { emptyData[t] = []; });
+        fs.writeFileSync(path.join(orgFolder, 'data.json'), JSON.stringify(emptyData, null, 2), 'utf-8');
+      }
+    } catch (diskErr) {}
+
+    return true;
+  } catch (err) {
+    try { db.run('ROLLBACK'); } catch (rb) {}
+    throw err;
+  }
+}
+

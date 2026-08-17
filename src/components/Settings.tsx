@@ -8,7 +8,8 @@ import * as XLSX from 'xlsx';
 import MicrosoftAuthQR from './MicrosoftAuthQR';
 import { saveDirectoryHandle, getDirectoryHandle, removeDirectoryHandle, writeBackupToDirectoryHandle } from '../lib/directoryHandleStorage';
 import { getBackupOrgPrefix } from '../lib/backupUtils';
-import { getAppStorageItem, setAppStorageItem } from '../lib/storage';
+import { getAppStorageItem, setAppStorageItem, removeAppStorageItem } from '../lib/storage';
+import { clearOrgWorkspaceApi } from '../lib/api';
 import {
   Settings,
   Plus,
@@ -2508,6 +2509,31 @@ export default function SettingsComponent({
                       }}
                     />
                   </label>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const confirmPrompt = window.prompt(`⚠️ CLEAR ALL WORKSPACE DATA FOR: "${companyConfig.name}"\n\nThis will permanently remove all clients, job sheets, invoices, ledger entries, and products for this organization only, leaving your organization login and account intact.\n\nType CLEAR in uppercase to proceed:`);
+                      if (confirmPrompt === 'CLEAR') {
+                        try {
+                          await clearOrgWorkspaceApi(currentTenantId);
+                        } catch (err) {
+                          console.warn('[Clear Workspace DB error]:', err);
+                        }
+                        const collectionsToPurge = ['clients', 'jobs', 'invoices', 'products', 'ledger', 'payments', 'expenses', 'categories', 'racks', 'equipments', 'problems'];
+                        collectionsToPurge.forEach(c => {
+                          removeAppStorageItem(`${c}_${currentTenantId}`);
+                        });
+                        alert(`✓ Workspace data for "${companyConfig.name}" cleared successfully!`);
+                        window.location.reload();
+                      }
+                    }}
+                    className="bg-rose-900/60 hover:bg-rose-800 text-rose-200 text-xs font-bold py-2.5 px-3.5 rounded-xl transition text-center flex items-center gap-1.5 border border-rose-700/60 cursor-pointer"
+                    title="Clear all job sheets, clients, and transactional data for this organization only"
+                  >
+                    <Trash2 className="w-4 h-4 text-rose-300" />
+                    <span>Clear Workspace Data</span>
+                  </button>
                 </div>
               </div>
             </div>

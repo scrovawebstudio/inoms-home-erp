@@ -41,6 +41,7 @@ import { getOrgPrefix } from './lib/orgUtils';
 import {
   getAppStorageItem,
   setAppStorageItem,
+  removeAppStorageItem,
   getAppSessionItem,
   setAppSessionItem,
   removeAppSessionItem
@@ -97,6 +98,7 @@ import {
   clearPendingQueue,
   retryPendingCloudSync
 } from './lib/firebase';
+import { deleteOrgApi, purgeAllDataApi, clearOrgWorkspaceApi } from './lib/api';
 
 // Data Mock repos
 import {
@@ -853,8 +855,21 @@ export default function App() {
       return next;
     });
 
+    // Remove local storage cached collections for this tenant
+    const collectionsToPurge = ['clients', 'jobs', 'invoices', 'products', 'ledger', 'payments', 'expenses', 'users', 'categories', 'racks', 'equipments', 'problems', 'company_config'];
+    collectionsToPurge.forEach(c => {
+      removeAppStorageItem(`${c}_${tenantId}`);
+    });
+
+    // Permanently remove from Server SQLite DB & Disk
+    try {
+      await deleteOrgApi(tenantId);
+    } catch (e) {
+      console.warn('[Delete Org Server Error]:', e);
+    }
+
     await deleteTenantFromFirestore(tenantId);
-    triggerSaveNotification(`✓ Account "${targetOrg?.name || tenantId}" permanently deleted!`);
+    triggerSaveNotification(`✓ Account "${targetOrg?.name || tenantId}" permanently deleted from server & disk!`);
   };
 
   // ACTIVE SESSION SECURITY GUARD: Log out active user if non-admin organization is deactivated or deleted
