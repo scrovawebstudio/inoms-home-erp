@@ -54,7 +54,7 @@ import {
 import { SystemUser, ActivityLog, Equipment, Problem, CompanyConfig, Client, RepairJob, Invoice, Product, Payment, Expense, DEFAULT_THEME_PALETTE, TenantThemePalette } from '../types';
 import { TenantFeatures, getTenantFeatures, TenantOrg } from './AuthModal';
 import { updateOrgViaApi, scanAndImportDataFolderApi, uploadOrgsFolderApi, getDataFolderStatusApi } from '../lib/api';
-import { bootstrapTenantFromHomeServer } from '../lib/localDb';
+import { bootstrapTenantFromHomeServer, replaceLocalCollection } from '../lib/localDb';
 
 interface SettingsProps {
   activeTenantId?: string;
@@ -233,6 +233,61 @@ export default function SettingsComponent({
             if (orgUsers.length > 0) setAppStorageItem(`users_${org.id}`, JSON.stringify(orgUsers));
           }
         }
+
+        // Persist restored data to Home Server DB via API for each tenant included in the import
+        try {
+          const tenantIds = res.organizations.map((o: any) => o.id).filter((id: any) => !!id);
+          const savePromises = tenantIds.map(async (tid: string) => {
+            const tenantCollections: Record<string, any[]> = {
+              clients: getTenantRecords(col.clients, tid),
+              jobs: getTenantRecords(col.jobs, tid),
+              invoices: getTenantRecords(col.invoices, tid),
+              payments: getTenantRecords(col.payments, tid),
+              products: getTenantRecords(col.products, tid),
+              expenses: getTenantRecords(col.expenses, tid),
+              ledger: getTenantRecords(col.ledger, tid),
+              users: getTenantRecords(col.users, tid),
+              categories: getTenantRecords(col.categories, tid),
+              racks: getTenantRecords(col.racks, tid),
+              equipments: getTenantRecords(col.equipments, tid),
+              problems: getTenantRecords(col.problems, tid)
+            };
+            // Try to source companyConfig for tenant if present in collections
+            const cfg = (col.config && Array.isArray(col.config)) ? getTenantRecords(col.config, tid)[0] : undefined;
+
+            // First: immediately persist into local IndexedDB replica for instant local consistency (local-first)
+            try {
+              for (const [cName, items] of Object.entries(tenantCollections)) {
+                await replaceLocalCollection(tid, cName, Array.isArray(items) ? items : [], false, true);
+              }
+              // Also persist company config if present
+              if (cfg) {
+                await replaceLocalCollection(tid, 'config', [cfg], false, true);
+              }
+            } catch (e: any) {
+              console.warn(`[Import] Failed to write tenant ${tid} collections to local IndexedDB:`, e);
+            }
+
+            // Then: push to Home Server if tenant config enables cloud sync
+            let apiResult: any = null;
+            try {
+              const shouldSyncToServer = cfg?.cloudSyncEnabled === true || (cfg?.syncMode && cfg.syncMode !== 'offline');
+              if (shouldSyncToServer) {
+                apiResult = await saveAllTenantDataViaApi(tid, cfg || {}, tenantCollections);
+              } else {
+                // Skip server sync for this tenant (local-only)
+                apiResult = { success: true, message: 'Local-only mode, server sync skipped' };
+              }
+            } catch (e: any) {
+              console.warn(`[Import] Failed to save tenant ${tid} to Home Server:`, e);
+            }
+
+            return apiResult;
+          });
+          await Promise.allSettled(savePromises);
+        } catch (err: any) {
+          console.warn('[Import] Error while saving restored tenants to Home Server:', err);
+        }
       }
 
       if (onRestoreData) {
@@ -254,6 +309,55 @@ export default function SettingsComponent({
     }
 
     window.dispatchEvent(new CustomEvent('inoms_data_imported', { detail: res }));
+    
+    // Ensure current tenant's restored payload is persisted to Home Server DB if not already handled above
+    try {
+      if (col) {
+        const included = Array.isArray(res.organizations) && res.organizations.some((o: any) => o.id === currentTenantId);
+        if (!included) {
+          const tenantCollections: Record<string, any[]> = {
+            clients: getTenantRecords(col.clients, currentTenantId),
+            jobs: getTenantRecords(col.jobs, currentTenantId),
+            invoices: getTenantRecords(col.invoices, currentTenantId),
+            payments: getTenantRecords(col.payments, currentTenantId),
+            products: getTenantRecords(col.products, currentTenantId),
+            expenses: getTenantRecords(col.expenses, currentTenantId),
+            ledger: getTenantRecords(col.ledger, currentTenantId),
+            users: getTenantRecords(col.users, currentTenantId),
+            categories: getTenantRecords(col.categories, currentTenantId),
+            racks: getTenantRecords(col.racks, currentTenantId),
+            equipments: getTenantRecords(col.equipments, currentTenantId),
+            problems: getTenantRecords(col.problems, currentTenantId)
+          };
+          const cfg = (col.config && Array.isArray(col.config)) ? getTenantRecords(col.config, currentTenantId)[0] : undefined;
+          // First write to local IndexedDB for immediate local-first behavior
+          try {
+            for (const [cName, items] of Object.entries(tenantCollections)) {
+              await replaceLocalCollection(currentTenantId, cName, Array.isArray(items) ? items : [], false, true);
+            }
+            if (cfg) {
+              await replaceLocalCollection(currentTenantId, 'config', [cfg], false, true);
+            }
+          } catch (e: any) {
+            console.warn('[Import] Failed to write current tenant collections to local IndexedDB:', e);
+          }
+
+          // Then push to Home Server only if tenant config allows cloud sync
+          try {
+            const shouldSyncToServer = cfg?.cloudSyncEnabled === true || (cfg?.syncMode && cfg.syncMode !== 'offline');
+            if (shouldSyncToServer) {
+              await saveAllTenantDataViaApi(currentTenantId, cfg || {}, tenantCollections);
+            } else {
+              console.info('[Import] Current tenant is configured for local-only mode; server sync skipped.');
+            }
+          } catch (e: any) {
+            console.warn('[Import] Failed to save current tenant to Home Server:', e);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Import] Error during server persistence of restored data:', e);
+    }
     
     // Also trigger bootstrapTenantFromHomeServer to populate IndexedDB & listeners
     await bootstrapTenantFromHomeServer(currentTenantId);

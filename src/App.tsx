@@ -1307,7 +1307,7 @@ export default function App() {
     const unSubEquipments = subscribeTenantCollection<Equipment>(tId, 'equipments', handleCloudCollectionUpdate('equipments', setEquipments), () => equipmentsRef.current);
     const unSubProblems = subscribeTenantCollection<Problem>(tId, 'problems', handleCloudCollectionUpdate('problems', setProblems), () => problemsRef.current);
 
-    // 1. Initial Authoritative Bootstrap from Home Server SQLite Database
+    // 1. Initial authoritative bootstrap and a single lightweight delta pull per tenant session.
     bootstrapTenantFromHomeServer(tId)
       .then(bData => {
         if (bData && bData.collections) {
@@ -1330,20 +1330,28 @@ export default function App() {
         console.info('Home Server bootstrap info:', err?.message || err);
       });
 
-    // 2. Periodic Home Server Delta Synchronization (Every 10 seconds)
+    // 2. Reduced periodic Home Server sync: once every 30s and no duplicate online-triggered work.
+    let deltaSyncInFlight = false;
     const deltaSyncInterval = setInterval(() => {
-      if (navigator.onLine && getAuthToken()) {
-        pullDeltaFromHomeServer(tId).catch(() => {});
-        pushPendingOperations(tId).catch(() => {});
-      }
-    }, 10000);
+      if (!navigator.onLine || !getAuthToken() || deltaSyncInFlight) return;
+      deltaSyncInFlight = true;
+      Promise.allSettled([
+        pullDeltaFromHomeServer(tId),
+        pushPendingOperations(tId)
+      ]).finally(() => {
+        deltaSyncInFlight = false;
+      });
+    }, 30000);
 
-    // 3. Online event listener to immediately flush pending offline queue
     const handleOnline = () => {
-      if (getAuthToken()) {
-        pushPendingOperations(tId).catch(() => {});
-        pullDeltaFromHomeServer(tId).catch(() => {});
-      }
+      if (!navigator.onLine || !getAuthToken() || deltaSyncInFlight) return;
+      deltaSyncInFlight = true;
+      Promise.allSettled([
+        pullDeltaFromHomeServer(tId),
+        pushPendingOperations(tId)
+      ]).finally(() => {
+        deltaSyncInFlight = false;
+      });
     };
     window.addEventListener('online', handleOnline);
 
@@ -1405,70 +1413,59 @@ export default function App() {
   }, [saveStatus]);
 
   // Auto-sync states to tenant-isolated localStorage & Cloud Firestore (Guarded by local-first persistence)
+  const tenantCollectionPersistRef = React.useRef<string | null>(null);
   React.useEffect(() => {
-    setAppStorageItem(`clients_${activeTenant.id}`, JSON.stringify(clients));
-    saveTenantCollectionToFirestore(activeTenant.id, 'clients', clients);
-  }, [clients, activeTenant.id]);
+    if (!activeTenant?.id) return;
 
-  React.useEffect(() => {
-    setAppStorageItem(`ledger_${activeTenant.id}`, JSON.stringify(ledger));
-    saveTenantCollectionToFirestore(activeTenant.id, 'ledger', ledger);
-  }, [ledger, activeTenant.id]);
+    const collectionBundle = {
+      clients,
+      ledger,
+      jobs,
+      payments,
+      invoices,
+      products,
+      expenses,
+      users,
+      logs,
+      categories,
+      racks,
+      equipments,
+      problems
+    };
 
-  React.useEffect(() => {
-    setAppStorageItem(`jobs_${activeTenant.id}`, JSON.stringify(jobs));
-    saveTenantCollectionToFirestore(activeTenant.id, 'jobs', jobs);
-  }, [jobs, activeTenant.id]);
+    const snapshot = JSON.stringify(collectionBundle);
+    if (tenantCollectionPersistRef.current === snapshot) return;
+    tenantCollectionPersistRef.current = snapshot;
 
-  React.useEffect(() => {
-    setAppStorageItem(`payments_${activeTenant.id}`, JSON.stringify(payments));
-    saveTenantCollectionToFirestore(activeTenant.id, 'payments', payments);
-  }, [payments, activeTenant.id]);
+    const timer = window.setTimeout(() => {
+      Object.entries(collectionBundle).forEach(([entity, items]) => {
+        setAppStorageItem(`${entity}_${activeTenant.id}`, JSON.stringify(items));
+      });
 
-  React.useEffect(() => {
-    setAppStorageItem(`invoices_${activeTenant.id}`, JSON.stringify(invoices));
-    saveTenantCollectionToFirestore(activeTenant.id, 'invoices', invoices);
-  }, [invoices, activeTenant.id]);
+      if (isAuthenticated) {
+        saveAllTenantDataViaApi(activeTenant.id, companyConfig, collectionBundle).catch(() => {});
+      }
+    }, 400);
 
-  React.useEffect(() => {
-    setAppStorageItem(`products_${activeTenant.id}`, JSON.stringify(products));
-    saveTenantCollectionToFirestore(activeTenant.id, 'products', products);
-  }, [products, activeTenant.id]);
-
-  React.useEffect(() => {
-    setAppStorageItem(`expenses_${activeTenant.id}`, JSON.stringify(expenses));
-    saveTenantCollectionToFirestore(activeTenant.id, 'expenses', expenses);
-  }, [expenses, activeTenant.id]);
-
-  React.useEffect(() => {
-    setAppStorageItem(`users_${activeTenant.id}`, JSON.stringify(users));
-    saveTenantCollectionToFirestore(activeTenant.id, 'users', users);
-  }, [users, activeTenant.id]);
-
-  React.useEffect(() => {
-    setAppStorageItem(`logs_${activeTenant.id}`, JSON.stringify(logs));
-    saveTenantCollectionToFirestore(activeTenant.id, 'logs', logs);
-  }, [logs, activeTenant.id]);
-
-  React.useEffect(() => {
-    setAppStorageItem(`categories_${activeTenant.id}`, JSON.stringify(categories));
-    saveTenantCollectionToFirestore(activeTenant.id, 'categories', categories);
-  }, [categories, activeTenant.id]);
-
-  React.useEffect(() => {
-    setAppStorageItem(`racks_${activeTenant.id}`, JSON.stringify(racks));
-    saveTenantCollectionToFirestore(activeTenant.id, 'racks', racks);
-  }, [racks, activeTenant.id]);
-
-  React.useEffect(() => {
-    setAppStorageItem(`equipments_${activeTenant.id}`, JSON.stringify(equipments));
-    saveTenantCollectionToFirestore(activeTenant.id, 'equipments', equipments);
-  }, [equipments, activeTenant.id]);
-
-  React.useEffect(() => {
-    setAppStorageItem(`problems_${activeTenant.id}`, JSON.stringify(problems));
-    saveTenantCollectionToFirestore(activeTenant.id, 'problems', problems);
-  }, [problems, activeTenant.id]);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeTenant?.id,
+    clients,
+    ledger,
+    jobs,
+    payments,
+    invoices,
+    products,
+    expenses,
+    users,
+    logs,
+    categories,
+    racks,
+    equipments,
+    problems,
+    companyConfig,
+    isAuthenticated
+  ]);
 
   // Silent Background Local PC Auto-Backup Service across all tabs
   const lastBackedUpSnapshotRef = React.useRef<string | null>(null);

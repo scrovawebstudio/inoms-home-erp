@@ -42,6 +42,17 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
+function isMasterAdminSession(user?: { role?: string; tenantId?: string; username?: string; name?: string } | null): boolean {
+  if (!user) return false;
+  if (user.role === 'Master Admin') return true;
+  if (user.tenantId === 'org-admin') {
+    const normalizedName = (user.name || '').toLowerCase();
+    const normalizedUsername = (user.username || '').toLowerCase();
+    return normalizedName.includes('master') || normalizedUsername.includes('master') || normalizedUsername === 'masteradmin';
+  }
+  return false;
+}
+
 export function createSessionForOrg(
   db: any,
   tenantId: string,
@@ -50,8 +61,9 @@ export function createSessionForOrg(
   username = 'admin',
   deviceInfo = 'Web Browser'
 ) {
+  const effectiveRole = tenantId === 'org-admin' ? 'Master Admin' : role;
   let userStmt = db.prepare('SELECT * FROM users WHERE tenant_id = ? AND (role = ? OR username = ?) LIMIT 1');
-  userStmt.bind([tenantId, role, username]);
+  userStmt.bind([tenantId, effectiveRole, username]);
   let user: any = null;
   if (userStmt.step()) {
     user = userStmt.getAsObject();
@@ -64,9 +76,9 @@ export function createSessionForOrg(
     db.run(
       `INSERT INTO users (id, tenant_id, name, username, mobile, role, status, created_at, updated_at, version)
        VALUES (?, ?, ?, ?, '', ?, 'Active', ?, ?, 1)`,
-      [userId, tenantId, name, username, role, now, now]
+      [userId, tenantId, name, username, effectiveRole, now, now]
     );
-    user = { id: userId, name, username, role, tenant_id: tenantId };
+    user = { id: userId, name, username, role: effectiveRole, tenant_id: tenantId };
   }
 
   const token = generateToken();
@@ -75,9 +87,9 @@ export function createSessionForOrg(
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
   db.run(
-    `INSERT INTO sessions (id, tenant_id, user_id, token, device_info, created_at, expires_at, last_active_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [sessionId, tenantId, user.id, token, deviceInfo, now, expiresAt, now]
+    `INSERT INTO sessions (id, organization_id, tenant_id, user_id, token, device_info, created_at, expires_at, last_active_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [sessionId, tenantId, tenantId, user.id, token, deviceInfo, now, expiresAt, now]
   );
   scheduleDbSave();
 
@@ -438,7 +450,8 @@ apiRouter.post('/auth/login', (req, res) => {
       }
 
       // Check or create admin user for this tenant
-      let userStmt = db.prepare('SELECT * FROM users WHERE tenant_id = ? AND role = "Admin" LIMIT 1');
+      const adminRole = tenantId === 'org-admin' ? 'Master Admin' : 'Admin';
+      let userStmt = db.prepare('SELECT * FROM users WHERE tenant_id = ? AND (role = "Admin" OR role = "Master Admin") LIMIT 1');
       userStmt.bind([tenantId]);
       let adminUser: any = null;
       if (userStmt.step()) {
@@ -451,10 +464,10 @@ apiRouter.post('/auth/login', (req, res) => {
         const { hash: pHash, salt: pSalt } = hashPassword(cleanPin);
         db.run(
           `INSERT INTO users (id, tenant_id, name, username, mobile, role, status, password_hash, password_salt, pin_hash, pin_salt, created_at, updated_at, version)
-           VALUES (?, ?, ?, ?, ?, 'Admin', 'Active', ?, ?, ?, ?, ?, ?, 1)`,
-          [adminId, tenantId, org.owner_name || 'Admin', 'admin', org.owner_mobile, pHash, pSalt, pHash, pSalt, new Date().toISOString(), new Date().toISOString()]
+           VALUES (?, ?, ?, ?, ?, ?, 'Active', ?, ?, ?, ?, ?, ?, 1)`,
+          [adminId, tenantId, org.owner_name || 'Admin', 'admin', org.owner_mobile, adminRole, pHash, pSalt, pHash, pSalt, new Date().toISOString(), new Date().toISOString()]
         );
-        adminUser = { id: adminId, name: org.owner_name || 'Admin', role: 'Admin', username: 'admin' };
+        adminUser = { id: adminId, name: org.owner_name || 'Admin', role: adminRole, username: 'admin' };
       }
 
       // Generate Session Token
@@ -464,9 +477,9 @@ apiRouter.post('/auth/login', (req, res) => {
       const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
       db.run(
-        `INSERT INTO sessions (id, tenant_id, user_id, token, device_info, created_at, expires_at, last_active_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [sessionId, tenantId, adminUser.id, token, deviceInfo || 'Web Browser', now, expiresAt, now]
+        `INSERT INTO sessions (id, organization_id, tenant_id, user_id, token, device_info, created_at, expires_at, last_active_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [sessionId, tenantId, tenantId, adminUser.id, token, deviceInfo || 'Web Browser', now, expiresAt, now]
       );
       scheduleDbSave();
 
@@ -493,7 +506,7 @@ apiRouter.post('/auth/login', (req, res) => {
         user: {
           id: adminUser.id,
           name: adminUser.name,
-          role: 'Admin',
+          role: adminRole,
           tenantId
         },
         organization: {
@@ -552,9 +565,9 @@ apiRouter.post('/auth/login', (req, res) => {
       const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
       db.run(
-        `INSERT INTO sessions (id, tenant_id, user_id, token, device_info, created_at, expires_at, last_active_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [sessionId, tenantId, user.id, token, deviceInfo || 'Web Browser', now, expiresAt, now]
+        `INSERT INTO sessions (id, organization_id, tenant_id, user_id, token, device_info, created_at, expires_at, last_active_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [sessionId, tenantId, tenantId, user.id, token, deviceInfo || 'Web Browser', now, expiresAt, now]
       );
       scheduleDbSave();
 
@@ -1220,40 +1233,121 @@ apiRouter.post('/org/clear-workspace', async (req, res) => {
 // AUTHORITATIVE SYNC ENGINE (SQLite Backend)
 // -------------------------------------------------------------
 
-// Helper to query active records for an entity table with STRICT TENANT ISOLATION
+// Helper to query active records for an entity table with STRICT TENANT ISOLATION.
+// Some imported JSON restores can contain tenant ownership inside data_json even when the
+// SQL row columns were left blank or partially populated. We tolerate that by filtering on
+// both direct columns and the serialized payload before returning data to the client.
 function getEntityRecords(db: any, table: string, tenantId: string): any[] {
   const isMasterOrAll = tenantId === 'all';
-  let stmt;
-  if (isMasterOrAll) {
-    stmt = db.prepare(`SELECT * FROM ${table} WHERE (deleted_at IS NULL OR deleted_at = '')`);
-  } else {
-    try {
-      stmt = db.prepare(`SELECT * FROM ${table} WHERE (organization_id = ? OR tenant_id = ?) AND (deleted_at IS NULL OR deleted_at = '')`);
-      stmt.bind([tenantId, tenantId]);
-    } catch (e) {
-      stmt = db.prepare(`SELECT * FROM ${table} WHERE tenant_id = ? AND (deleted_at IS NULL OR deleted_at = '')`);
-      stmt.bind([tenantId]);
-    }
-  }
+  const stmt = db.prepare(`SELECT * FROM ${table} WHERE (deleted_at IS NULL OR deleted_at = '')`);
 
   const results: any[] = [];
   while (stmt.step()) {
     const row = stmt.getAsObject();
-    const orgId = (row.organization_id || row.tenant_id || tenantId) as string;
+    let parsed: any = null;
     if (row.data_json) {
       try {
-        const parsed = JSON.parse(row.data_json as string);
-        results.push({ ...row, ...parsed, id: row.id, tenantId: orgId, organizationId: orgId, version: row.version, updatedAt: row.updated_at });
-        continue;
+        parsed = JSON.parse(row.data_json as string);
       } catch (e) {}
     }
-    // Fallback to table fields
-    results.push({ ...row, tenantId: orgId, organizationId: orgId });
+
+    const normalizedTenantId = (row.tenant_id || row.organization_id || parsed?.tenantId || parsed?.organizationId || parsed?.tenant_id || parsed?.organization_id || tenantId) as string;
+    const normalizedOrgId = (row.organization_id || row.tenant_id || parsed?.organizationId || parsed?.organization_id || normalizedTenantId) as string;
+
+    if (!isMasterOrAll && normalizedTenantId !== tenantId && normalizedOrgId !== tenantId) {
+      continue;
+    }
+
+    const merged = parsed && typeof parsed === 'object' ? { ...row, ...parsed } : { ...row };
+    const orgId = normalizedOrgId || normalizedTenantId || tenantId;
+    results.push({
+      ...merged,
+      id: merged.id ?? row.id,
+      tenantId: merged.tenantId ?? merged.tenant_id ?? orgId,
+      organizationId: merged.organizationId ?? merged.organization_id ?? orgId,
+      version: merged.version ?? row.version,
+      updatedAt: merged.updatedAt ?? merged.updated_at ?? row.updated_at ?? null
+    });
   }
   stmt.free();
 
-  // Strict Tenant Isolation: Never copy records from other organizations
   return results;
+}
+
+function readTenantDataFromDisk(tenantId: string): {
+  companyConfig: any;
+  collections: {
+    clients: any[];
+    jobs: any[];
+    invoices: any[];
+    payments: any[];
+    products: any[];
+    expenses: any[];
+    ledger: any[];
+    users: any[];
+    categories: any[];
+    racks: any[];
+    equipments: any[];
+    problems: any[];
+  };
+} | null {
+  if (!tenantId) return null;
+
+  const candidatePaths = [
+    path.join(process.cwd(), 'data', 'orgs', tenantId, 'data.json'),
+    path.join(process.cwd(), 'data', 'orgs', `${tenantId}.json`),
+    path.join(process.cwd(), 'data', `${tenantId}.json`),
+    path.join(process.cwd(), 'data', 'tenants', tenantId, 'data.json'),
+    path.join(process.cwd(), 'data', 'tenants', `${tenantId}.json`),
+  ];
+
+  const diskFile = candidatePaths.find((p) => fs.existsSync(p));
+  if (!diskFile) return null;
+
+  try {
+    const raw = fs.readFileSync(diskFile, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const payload = parsed.collections && typeof parsed.collections === 'object' ? parsed.collections : parsed;
+    const companyConfig = parsed.companyConfig || parsed.config || payload.companyConfig || payload.config || {
+      name: parsed.name || payload.name || 'Imported Organization',
+      phone: parsed.phone || payload.phone || parsed.ownerMobile || payload.ownerMobile || '',
+      email: parsed.email || payload.email || '',
+      address: parsed.address || payload.address || '',
+      gstin: parsed.gstin || payload.gstin || ''
+    };
+
+    const collections: {
+      clients: any[];
+      jobs: any[];
+      invoices: any[];
+      payments: any[];
+      products: any[];
+      expenses: any[];
+      ledger: any[];
+      users: any[];
+      categories: any[];
+      racks: any[];
+      equipments: any[];
+      problems: any[];
+    } = {
+      clients: Array.isArray(payload.clients) ? payload.clients : Array.isArray(parsed.clients) ? parsed.clients : [],
+      jobs: Array.isArray(payload.jobs) ? payload.jobs : Array.isArray(parsed.jobs) ? parsed.jobs : [],
+      invoices: Array.isArray(payload.invoices) ? payload.invoices : Array.isArray(parsed.invoices) ? parsed.invoices : [],
+      payments: Array.isArray(payload.payments) ? payload.payments : Array.isArray(parsed.payments) ? parsed.payments : [],
+      products: Array.isArray(payload.products) ? payload.products : Array.isArray(parsed.products) ? parsed.products : [],
+      expenses: Array.isArray(payload.expenses) ? payload.expenses : Array.isArray(parsed.expenses) ? parsed.expenses : [],
+      ledger: Array.isArray(payload.ledger) ? payload.ledger : Array.isArray(parsed.ledger) ? parsed.ledger : [],
+      users: Array.isArray(payload.users) ? payload.users : Array.isArray(parsed.users) ? parsed.users : [],
+      categories: Array.isArray(payload.categories) ? payload.categories : Array.isArray(parsed.categories) ? parsed.categories : [],
+      racks: Array.isArray(payload.racks) ? payload.racks : Array.isArray(parsed.racks) ? parsed.racks : [],
+      equipments: Array.isArray(payload.equipments) ? payload.equipments : Array.isArray(parsed.equipments) ? parsed.equipments : [],
+      problems: Array.isArray(payload.problems) ? payload.problems : Array.isArray(parsed.problems) ? parsed.problems : []
+    };
+
+    return { companyConfig, collections };
+  } catch (err) {
+    return null;
+  }
 }
 
 // 1. BOOTSTRAP: Full Authoritative Snapshot for Tenant
@@ -1302,7 +1396,20 @@ apiRouter.get('/sync/bootstrap', (req: Request, res: Response) => {
     configStmt.free();
 
     // Fetch all business collections
-    const collections = {
+    let collections: {
+      clients: any[];
+      jobs: any[];
+      invoices: any[];
+      payments: any[];
+      products: any[];
+      expenses: any[];
+      ledger: any[];
+      users: any[];
+      categories: any[];
+      racks: any[];
+      equipments: any[];
+      problems: any[];
+    } = {
       clients: getEntityRecords(db, 'clients', tenantId),
       jobs: getEntityRecords(db, 'jobs', tenantId),
       invoices: getEntityRecords(db, 'invoices', tenantId),
@@ -1323,6 +1430,15 @@ apiRouter.get('/sync/bootstrap', (req: Request, res: Response) => {
       equipments: getEntityRecords(db, 'equipments', tenantId),
       problems: getEntityRecords(db, 'problems', tenantId)
     };
+
+    const hasAnyCollectionData = Object.values(collections).some((arr: any[]) => Array.isArray(arr) && arr.length > 0);
+    if ((!companyConfig || !hasAnyCollectionData) && tenantId && tenantId !== 'all') {
+      const diskFallback = readTenantDataFromDisk(tenantId);
+      if (diskFallback) {
+        if (!companyConfig) companyConfig = diskFallback.companyConfig;
+        collections = diskFallback.collections;
+      }
+    }
 
     res.json({
       success: true,
@@ -2095,8 +2211,10 @@ export function upsertEntityRecord(db: any, tenantId: string, entity: string, re
 // 4. BATCH SAVE ALL: Full state snapshot sync to Home Server SQLite & PostgreSQL
 apiRouter.post('/sync/save-all', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const tenantId = (req.user?.role === 'Master Admin' && req.body.tenantId) ? req.body.tenantId : (req.body.tenantId || req.user?.tenantId || 'org-admin');
-    if (req.body.tenantId && req.body.tenantId !== req.user?.tenantId && req.user?.role !== 'Master Admin') {
+    const requestTenantId = req.body?.tenantId || req.headers['x-tenant-id'];
+    const isMasterAdmin = isMasterAdminSession(req.user);
+    const tenantId = isMasterAdmin && requestTenantId ? String(requestTenantId) : (requestTenantId || req.user?.tenantId || 'org-admin');
+    if (requestTenantId && req.user?.tenantId && String(requestTenantId) !== String(req.user.tenantId) && !isMasterAdmin) {
       return res.status(403).json({ success: false, message: 'Cross-tenant modification forbidden' });
     }
 
@@ -2179,8 +2297,10 @@ apiRouter.post('/sync/save-all', authMiddleware, (req: AuthenticatedRequest, res
 // 5. SAVE COLLECTION: Update single collection to Home Server SQLite & PostgreSQL
 apiRouter.post('/sync/save-collection', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const tenantId = (req.user?.role === 'Master Admin' && req.body.tenantId) ? req.body.tenantId : (req.body.tenantId || req.user?.tenantId || 'org-admin');
-    if (req.body.tenantId && req.body.tenantId !== req.user?.tenantId && req.user?.role !== 'Master Admin') {
+    const requestTenantId = req.body?.tenantId || req.headers['x-tenant-id'];
+    const isMasterAdmin = isMasterAdminSession(req.user);
+    const tenantId = isMasterAdmin && requestTenantId ? String(requestTenantId) : (requestTenantId || req.user?.tenantId || 'org-admin');
+    if (requestTenantId && req.user?.tenantId && String(requestTenantId) !== String(req.user.tenantId) && !isMasterAdmin) {
       return res.status(403).json({ success: false, message: 'Cross-tenant modification forbidden' });
     }
 

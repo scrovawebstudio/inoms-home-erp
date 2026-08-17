@@ -11,7 +11,7 @@ import {
   getLocalCollection,
   subscribeLocalDb
 } from './localDb';
-
+import { getAppStorageItem } from './storage';
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 export const auth = getAuth(app);
 
@@ -234,12 +234,14 @@ export function subscribeTenantCollection<T>(
     if (items && items.length > 0) {
       onUpdate(items);
     } else {
-      // Check tenant-specific storage cache
+      // Check tenant-specific storage cache (support current `inoms_` prefix and legacy keys)
       try {
-        const cached = localStorage.getItem(`app_storage_${collectionName}_${tenantId}`) || localStorage.getItem(`${collectionName}_${tenantId}`);
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
+                // Prefer helper that understands prefixes and legacy keys
+        const cachedRaw = getAppStorageItem(`${collectionName}_${tenantId}`) || getAppStorageItem(`app_storage_${collectionName}_${tenantId}`) || localStorage.getItem(`${collectionName}_${tenantId}`) || localStorage.getItem(`app_storage_${collectionName}_${tenantId}`);
+        if (cachedRaw) {
+          const parsed = JSON.parse(cachedRaw as string);
+          if (Array.isArray(parsed)) {
+            // Deliver whatever cached data exists (including empty arrays for deterministic behavior)
             onUpdate(parsed);
             return;
           }

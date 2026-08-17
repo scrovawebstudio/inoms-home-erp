@@ -111,22 +111,61 @@ export async function verifyMasterPinViaApi(codeOrPin: string): Promise<boolean>
   }
 }
 
+const tenantSessionRequests = new Map<string, Promise<string | null>>();
+
 export async function ensureTenantSessionViaApi(tenantId: string): Promise<string | null> {
-  try {
-    const res = await fetch('/api/auth/session-for-tenant', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tenantId })
-    });
-    const data = await res.json();
-    if (data.success && data.token) {
-      setAuthToken(data.token, true);
-      return data.token;
+  if (!tenantId) return null;
+
+  const existing = tenantSessionRequests.get(tenantId);
+  if (existing) return existing;
+
+  const request = (async () => {
+    try {
+      const res = await fetch('/api/auth/session-for-tenant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId })
+      });
+      const data = await res.json();
+      if (data.success && data.token) {
+        setAuthToken(data.token, true);
+        return data.token;
+      }
+      return null;
+    } catch (e) {
+      return null;
+    } finally {
+      tenantSessionRequests.delete(tenantId);
     }
-    return null;
+  })();
+
+  tenantSessionRequests.set(tenantId, request);
+  return request;
+}
+
+export async function getValidTenantToken(tenantId: string): Promise<string | null> {
+  if (!tenantId) return getAuthToken();
+
+  const currentToken = getAuthToken();
+  if (!currentToken) return null;
+
+  try {
+    const sessionRes = await fetch('/api/auth/session', {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${currentToken}`
+      }
+    });
+    const sessionData = await sessionRes.json();
+    if (sessionRes.ok && sessionData?.success && sessionData?.user?.tenantId && String(sessionData.user.tenantId) === String(tenantId)) {
+      return currentToken;
+    }
   } catch (e) {
-    return null;
+    // Fall through to tenant re-authentication.
   }
+
+  const refreshedToken = await ensureTenantSessionViaApi(tenantId);
+  return refreshedToken || currentToken;
 }
 
 export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
@@ -138,7 +177,7 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
 }> {
   if (!tenantId) return { success: false, message: 'Tenant ID required' };
   try {
-    const token = getAuthToken();
+    const token = await getValidTenantToken(tenantId);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-tenant-id': tenantId
@@ -170,7 +209,7 @@ export async function pullDeltaFromHomeServerViaApi(tenantId: string, sinceRevis
 }> {
   if (!tenantId) return { success: false, message: 'Tenant ID required' };
   try {
-    const token = getAuthToken();
+    const token = await getValidTenantToken(tenantId);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-tenant-id': tenantId
@@ -194,7 +233,7 @@ export async function saveAllTenantDataViaApi(
   collections: Record<string, any[]>
 ): Promise<{ success: boolean; serverRevision?: number; message?: string }> {
   try {
-    const token = getAuthToken();
+    const token = await getValidTenantToken(tenantId);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-tenant-id': tenantId
@@ -219,6 +258,8 @@ export async function saveAllTenantDataViaApi(
 }
 
 const syncDebounceTimers = new Map<string, any>();
+const inFlightSaveRequests = new Map<string, Promise<{ success: boolean; message?: string }>>();
+const lastSerializedSavePayloads = new Map<string, string>();
 
 export async function saveTenantCollectionViaApi(
   tenantId: string,
@@ -228,7 +269,26 @@ export async function saveTenantCollectionViaApi(
 ): Promise<{ success: boolean; message?: string }> {
   if (!tenantId || !entity) return { success: false, message: 'Tenant and entity required' };
 
-  return new Promise((resolve) => {
+  const requestKey = `${tenantId}:${entity}`;
+  const payloadSignature = JSON.stringify({
+    items: Array.isArray(items) ? items.map(item => ({
+      ...item,
+      __syncKey: item?.id || item?._id || JSON.stringify(item)
+    })) : items,
+    config: config ? { ...config } : null
+  });
+
+  const previousPayload = lastSerializedSavePayloads.get(requestKey);
+  if (previousPayload === payloadSignature) {
+    return { success: true, message: 'Duplicate collection payload suppressed' };
+  }
+
+  const existing = inFlightSaveRequests.get(requestKey);
+  if (existing) return existing;
+
+  lastSerializedSavePayloads.set(requestKey, payloadSignature);
+
+  const request = new Promise<{ success: boolean; message?: string }>((resolve) => {
     const timerKey = `${tenantId}:${entity}`;
     if (syncDebounceTimers.has(timerKey)) {
       clearTimeout(syncDebounceTimers.get(timerKey));
@@ -237,7 +297,7 @@ export async function saveTenantCollectionViaApi(
     const timer = setTimeout(async () => {
       syncDebounceTimers.delete(timerKey);
       try {
-        const token = getAuthToken();
+        const token = await getValidTenantToken(tenantId);
         const headers: Record<string, string> = {
           'Content-Type': 'application/json',
           'x-tenant-id': tenantId
@@ -258,11 +318,16 @@ export async function saveTenantCollectionViaApi(
       } catch (err: any) {
         console.warn(`[Home Server Sync] POST /api/sync/save-collection failed for ${entity}:`, err?.message || err);
         resolve({ success: false, message: err?.message || 'Home Server collection save failed' });
+      } finally {
+        inFlightSaveRequests.delete(requestKey);
       }
-    }, 300);
+    }, 500);
 
     syncDebounceTimers.set(timerKey, timer);
   });
+
+  inFlightSaveRequests.set(requestKey, request);
+  return request;
 }
 
 export async function verifyOrgPinViaApi(tenantId: string, pin: string): Promise<boolean> {

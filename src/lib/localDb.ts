@@ -317,6 +317,55 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
       return null;
     }
 
+    const collections = data.collections || {};
+    const totalServerRecords = Object.values(collections).reduce((acc: number, arr: any) => acc + (Array.isArray(arr) ? arr.length : 0), 0);
+
+    // Safeguard: If server returned 0 records, check if local storage has valid records
+    // Prevent accidental data wipe on refresh when server was newly initialized
+    if (totalServerRecords === 0) {
+      let localHasData = false;
+      const localCollections: Record<string, any[]> = {};
+      const entityList = ['clients', 'jobs', 'invoices', 'products', 'ledger', 'payments', 'expenses', 'users', 'categories', 'racks', 'equipments', 'problems'];
+      for (const entityName of entityList) {
+        const stored = getAppStorageItem(`${entityName}_${tenantId}`) || getAppStorageItem(`app_storage_${entityName}_${tenantId}`);
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              localHasData = true;
+              localCollections[entityName] = parsed;
+            }
+          } catch (e) {}
+        }
+      }
+
+      if (localHasData) {
+        console.info(`[Bootstrap] Home Server has 0 records for ${tenantId}, preserving ${Object.keys(localCollections).length} local collections.`);
+        let cfg: any = null;
+        const cfgStored = getAppStorageItem(`company_config_${tenantId}`);
+        if (cfgStored) {
+          try { cfg = JSON.parse(cfgStored); } catch (e) {}
+        }
+        // Save local collections to server in background
+        if (token) {
+          fetch('/api/sync/save-all', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-tenant-id': tenantId,
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ tenantId, companyConfig: cfg, collections: localCollections })
+          }).catch(() => {});
+        }
+        return {
+          serverRevision: 1,
+          companyConfig: cfg,
+          collections: localCollections
+        };
+      }
+    }
+
     const db = await getLocalDB();
     const tx = db.transaction(['entities', 'metadata'], 'readwrite');
     const entitiesStore = tx.objectStore('entities');
@@ -331,7 +380,6 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
     }
 
     // Populate fresh authoritative entities from Home Server
-    const collections = data.collections || {};
     for (const [entityName, items] of Object.entries(collections)) {
       if (Array.isArray(items)) {
         for (const item of items) {
@@ -370,10 +418,10 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
 
     // Populate app storage and notify UI of fresh authoritative data
     for (const [entityName, items] of Object.entries(collections)) {
-      if (Array.isArray(items)) {
+      if (Array.isArray(items) && items.length > 0) {
         setAppStorageItem(`${entityName}_${tenantId}`, JSON.stringify(items));
       }
-      notifyListeners(tenantId, entityName, items as any[]);
+      notifyListeners(tenantId, entityName, (items || []) as any[]);
     }
 
     return data;

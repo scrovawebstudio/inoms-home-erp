@@ -782,6 +782,20 @@ async function migrateSqliteSchema(database: Database): Promise<void> {
       }
     };
 
+    // Ensure session schema compatibility for older SQLite databases
+    ensureColumns('sessions', [
+      { name: 'organization_id', type: 'TEXT' },
+      { name: 'tenant_id', type: 'TEXT' },
+      { name: 'user_id', type: 'TEXT' },
+      { name: 'token', type: 'TEXT' },
+      { name: 'device_info', type: 'TEXT' },
+      { name: 'ip_address', type: 'TEXT' },
+      { name: 'created_at', type: 'TEXT' },
+      { name: 'expires_at', type: 'TEXT' },
+      { name: 'revoked_at', type: 'TEXT' },
+      { name: 'last_active_at', type: 'TEXT' }
+    ]);
+
     // 1. Ensure columns for organizations
     ensureColumns('organizations', [
       { name: 'organization_code', type: 'TEXT' },
@@ -1373,6 +1387,67 @@ export interface DataFolderImportResult {
   message: string;
 }
 
+function normalizeImportPayload(parsed: any): { tenantId: string | null; companyConfig: any; collections: Record<string, any[]> } {
+  const collectionsMap: Record<string, string> = {
+    clients: 'clients',
+    jobs: 'jobs',
+    invoices: 'invoices',
+    payments: 'payments',
+    products: 'products',
+    expenses: 'expenses',
+    ledger: 'ledger',
+    users: 'users',
+    categories: 'categories',
+    racks: 'racks',
+    equipments: 'equipments',
+    problems: 'problems'
+  };
+
+  const inferredCollections: Record<string, any[]> = {};
+  for (const key of Object.keys(collectionsMap)) {
+    inferredCollections[key] = [];
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return { tenantId: null, companyConfig: null, collections: inferredCollections };
+  }
+
+  const payload = parsed.collections && typeof parsed.collections === 'object' ? parsed.collections : parsed;
+  const tenantId = parsed.tenantId || parsed.tenant_id || parsed.organizationId || parsed.organization_id || null;
+
+  const companyConfig = parsed.companyConfig || parsed.config || parsed.organization || parsed.company || null;
+
+  for (const [key, tbl] of Object.entries(collectionsMap)) {
+    const rootValue = payload?.[key] ?? payload?.[tbl] ?? parsed[key] ?? parsed[tbl];
+    if (Array.isArray(rootValue)) {
+      inferredCollections[key] = rootValue;
+    }
+  }
+
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const itemTenantId = item.tenantId || item.tenant_id || item.organizationId || item.organization_id;
+      for (const [key] of Object.entries(collectionsMap)) {
+        const value = item[key];
+        if (value !== undefined && value !== null) {
+          if (!Array.isArray(inferredCollections[key])) inferredCollections[key] = [];
+          if (Array.isArray(value)) {
+            inferredCollections[key].push(...value);
+          } else if (typeof value === 'object') {
+            inferredCollections[key].push(value);
+          }
+        }
+      }
+      if (itemTenantId && !tenantId) {
+        return { tenantId: itemTenantId, companyConfig, collections: inferredCollections };
+      }
+    }
+  }
+
+  return { tenantId, companyConfig, collections: inferredCollections };
+}
+
 // Scan and import all data files from the data/ folder (JSON files, legacy backups, etc.)
 export async function scanAndImportDataFolder(force: boolean = false): Promise<DataFolderImportResult> {
   if (!db) return { success: false, filesScanned: 0, filesImported: [], counts: {}, message: 'Database not initialized' };
@@ -1479,10 +1554,53 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
         }
 
         // Case 2: Full tenant snapshot or collections data
-        const targetTenantId = parsed.tenantId || (filePath.includes('/orgs/') ? path.basename(path.dirname(filePath)) : null) || 'org-admin';
+        const normalizedPayload = normalizeImportPayload(parsed);
+        const targetTenantId = normalizedPayload.tenantId || (filePath.includes('/orgs/') ? path.basename(path.dirname(filePath)) : null) || 'org-admin';
 
-        if (parsed.companyConfig || parsed.name && parsed.phone && !parsed.jobNo) {
-          const cfg = parsed.companyConfig || parsed;
+        if (targetTenantId && targetTenantId !== 'org-admin') {
+          const orgName = normalizedPayload.companyConfig?.name || parsed.companyConfig?.name || parsed.name || parsed.organizationName || parsed.organization_name || 'Imported Organization';
+          const orgCode = normalizedPayload.companyConfig?.code || parsed.companyConfig?.code || parsed.code || parsed.organizationCode || parsed.organization_code || targetTenantId;
+          const ownerMobile = normalizedPayload.companyConfig?.phone || parsed.companyConfig?.phone || parsed.ownerMobile || parsed.owner_mobile || '';
+          const ownerName = normalizedPayload.companyConfig?.ownerName || parsed.companyConfig?.ownerName || parsed.ownerName || parsed.owner_name || orgName;
+          const orgStatus = parsed.status || 'active';
+          const createdAt = parsed.createdAt || parsed.created_at || new Date().toISOString();
+          const rowCheck = db.prepare('SELECT id FROM organizations WHERE id = ?');
+          rowCheck.bind([targetTenantId]);
+          const orgExists = rowCheck.step();
+          rowCheck.free();
+
+          if (!orgExists) {
+            db.run(
+              `INSERT OR REPLACE INTO organizations (
+                id, organization_code, organization_name, name, code, owner_mobile, owner_name, status,
+                subscription_plan, subscription_start_date, subscription_end_date, trial_days, is_trial,
+                features_json, data_json, created_at, updated_at, version
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+              [
+                targetTenantId,
+                orgCode,
+                orgName,
+                orgName,
+                orgCode,
+                ownerMobile,
+                ownerName,
+                orgStatus,
+                parsed.subscriptionPlan || 'trial',
+                parsed.subscriptionStartDate || createdAt.split('T')[0],
+                parsed.subscriptionEndDate || new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0],
+                parsed.trialDays || 7,
+                parsed.isTrial ? 1 : 0,
+                parsed.features ? JSON.stringify(parsed.features) : null,
+                JSON.stringify({ ...parsed, targetTenantId }),
+                createdAt,
+                createdAt
+              ]
+            );
+          }
+        }
+
+        const cfg = normalizedPayload.companyConfig || parsed.companyConfig || parsed;
+        if (cfg && (cfg.name || cfg.phone || cfg.email || cfg.address) && (!parsed.jobNo || parsed.companyConfig)) {
           db.run(
             `INSERT OR REPLACE INTO tenant_configs (tenant_id, organization_id, id, name, phone, email, address, gstin, upi_id, config_json, data_json, updated_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
@@ -1510,13 +1628,16 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
         };
 
         for (const [key, tbl] of Object.entries(collectionsMap)) {
-          const items = parsed[key] || (Array.isArray(parsed) && path.basename(filePath).startsWith(key) ? parsed : null);
+          const rootItems = normalizedPayload.collections?.[key];
+          const fallbackItems = parsed[key] || (Array.isArray(parsed) && path.basename(filePath).startsWith(key) ? parsed : null);
+          const items = Array.isArray(rootItems) && rootItems.length ? rootItems : fallbackItems;
           if (Array.isArray(items)) {
             for (const item of items) {
               if (!item || !item.id) continue;
               const now = item.createdAt || new Date().toISOString();
-              const orgId = item.tenantId || targetTenantId;
-              const dataJson = JSON.stringify(item);
+              const orgId = item.tenantId || item.organizationId || item.organization_id || targetTenantId;
+              const normalizedItem = { ...item, tenantId: orgId, organizationId: orgId, tenant_id: orgId, organization_id: orgId };
+              const dataJson = JSON.stringify(normalizedItem);
 
               if (tbl === 'clients') {
                 db.run(
@@ -1658,6 +1779,7 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
       }
     }
     db.run('COMMIT');
+    normalizeImportedTenantOwnership(db);
     persistDatabase();
     console.log('[DataFolderScanner] Import transaction committed successfully.');
   } catch (txErr) {
@@ -1741,6 +1863,23 @@ function cleanupDuplicateOrgs(database: Database): void {
     }
   } catch (err) {
     console.warn('[Dedupe] Error cleaning up duplicates:', err);
+  }
+}
+
+function normalizeImportedTenantOwnership(database: Database): void {
+  const tables = [
+    'users', 'clients', 'jobs', 'invoices', 'payments', 'products', 'expenses', 'ledger',
+    'categories', 'racks', 'equipments', 'problems', 'tenant_configs', 'sessions',
+    'audit_logs', 'sync_revisions', 'organization_users', 'documents', 'documents_meta'
+  ];
+
+  for (const tbl of tables) {
+    try {
+      database.run(`UPDATE ${tbl} SET organization_id = tenant_id WHERE (organization_id IS NULL OR organization_id = '') AND tenant_id IS NOT NULL;`);
+    } catch (e) {}
+    try {
+      database.run(`UPDATE ${tbl} SET tenant_id = organization_id WHERE (tenant_id IS NULL OR tenant_id = '') AND organization_id IS NOT NULL;`);
+    } catch (e) {}
   }
 }
 
