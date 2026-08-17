@@ -15,6 +15,7 @@ import {
   restoreBackupFile,
   deleteBackupFile,
   scheduleDbSave,
+  persistDatabase,
   scanAndImportDataFolder,
   uploadAndImportOrgsBatch,
   exportTenantToDisk
@@ -1359,7 +1360,7 @@ apiRouter.get('/sync/pull', (req: Request, res: Response) => {
 // 3. PUSH: Transactional Batch Changes from Client
 apiRouter.post('/sync/push', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const tenantId = req.user!.tenantId;
+    const tenantId = (req.user?.role === 'Master Admin' && req.body.tenantId) ? req.body.tenantId : (req.body.tenantId || req.user?.tenantId || 'org-admin');
     const { operations } = req.body || {};
 
     if (!Array.isArray(operations) || operations.length === 0) {
@@ -1712,8 +1713,8 @@ export function upsertEntityRecord(db: any, tenantId: string, entity: string, re
 // 4. BATCH SAVE ALL: Full state snapshot sync to Home Server SQLite & PostgreSQL
 apiRouter.post('/sync/save-all', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const tenantId = req.user!.tenantId;
-    if (req.body.tenantId && req.body.tenantId !== tenantId && req.user?.role !== 'Master Admin') {
+    const tenantId = (req.user?.role === 'Master Admin' && req.body.tenantId) ? req.body.tenantId : (req.body.tenantId || req.user?.tenantId || 'org-admin');
+    if (req.body.tenantId && req.body.tenantId !== req.user?.tenantId && req.user?.role !== 'Master Admin') {
       return res.status(403).json({ success: false, message: 'Cross-tenant modification forbidden' });
     }
 
@@ -1721,6 +1722,21 @@ apiRouter.post('/sync/save-all', authMiddleware, (req: AuthenticatedRequest, res
     const db = getDatabase();
     const now = new Date().toISOString();
     const nextRev = getNextRevision(tenantId);
+
+    const tableMap: Record<string, string> = {
+      clients: 'clients',
+      jobs: 'jobs',
+      invoices: 'invoices',
+      payments: 'payments',
+      products: 'products',
+      expenses: 'expenses',
+      ledger: 'ledger',
+      users: 'users',
+      categories: 'categories',
+      racks: 'racks',
+      equipments: 'equipments',
+      problems: 'problems'
+    };
 
     db.run('BEGIN TRANSACTION');
     try {
@@ -1731,6 +1747,25 @@ apiRouter.post('/sync/save-all', authMiddleware, (req: AuthenticatedRequest, res
       if (collections && typeof collections === 'object') {
         for (const [entity, items] of Object.entries(collections)) {
           if (!Array.isArray(items)) continue;
+          const table = tableMap[entity];
+          if (table) {
+            // Find existing active IDs in SQLite to detect deletions
+            const stmt = db.prepare(`SELECT id FROM ${table} WHERE tenant_id = ? AND (deleted_at IS NULL OR deleted_at = '')`);
+            stmt.bind([tenantId]);
+            const existingIds: string[] = [];
+            while (stmt.step()) {
+              existingIds.push(stmt.getAsObject().id as string);
+            }
+            stmt.free();
+
+            const currentIdSet = new Set(items.map((it: any) => it?.id).filter(Boolean));
+            for (const oldId of existingIds) {
+              if (!currentIdSet.has(oldId)) {
+                db.run(`UPDATE ${table} SET deleted_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`, [now, now, oldId, tenantId]);
+              }
+            }
+          }
+
           for (const record of items) {
             if (!record || !record.id) continue;
             upsertEntityRecord(db, tenantId, entity, record, now, 1);
@@ -1762,8 +1797,8 @@ apiRouter.post('/sync/save-all', authMiddleware, (req: AuthenticatedRequest, res
 // 5. SAVE COLLECTION: Update single collection to Home Server SQLite & PostgreSQL
 apiRouter.post('/sync/save-collection', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const tenantId = req.user!.tenantId;
-    if (req.body.tenantId && req.body.tenantId !== tenantId && req.user?.role !== 'Master Admin') {
+    const tenantId = (req.user?.role === 'Master Admin' && req.body.tenantId) ? req.body.tenantId : (req.body.tenantId || req.user?.tenantId || 'org-admin');
+    if (req.body.tenantId && req.body.tenantId !== req.user?.tenantId && req.user?.role !== 'Master Admin') {
       return res.status(403).json({ success: false, message: 'Cross-tenant modification forbidden' });
     }
 
@@ -1771,11 +1806,45 @@ apiRouter.post('/sync/save-collection', authMiddleware, (req: AuthenticatedReque
     const db = getDatabase();
     const now = new Date().toISOString();
 
+    const tableMap: Record<string, string> = {
+      clients: 'clients',
+      jobs: 'jobs',
+      invoices: 'invoices',
+      payments: 'payments',
+      products: 'products',
+      expenses: 'expenses',
+      ledger: 'ledger',
+      users: 'users',
+      categories: 'categories',
+      racks: 'racks',
+      equipments: 'equipments',
+      problems: 'problems'
+    };
+
     db.run('BEGIN TRANSACTION');
     try {
       if (entity === 'config' && config) {
         upsertEntityRecord(db, tenantId, 'config', config, now, 1);
       } else if (entity && Array.isArray(items)) {
+        const table = tableMap[entity];
+        if (table) {
+          // Detect deleted IDs in SQLite
+          const stmt = db.prepare(`SELECT id FROM ${table} WHERE tenant_id = ? AND (deleted_at IS NULL OR deleted_at = '')`);
+          stmt.bind([tenantId]);
+          const existingIds: string[] = [];
+          while (stmt.step()) {
+            existingIds.push(stmt.getAsObject().id as string);
+          }
+          stmt.free();
+
+          const currentIdSet = new Set(items.map((it: any) => it?.id).filter(Boolean));
+          for (const oldId of existingIds) {
+            if (!currentIdSet.has(oldId)) {
+              db.run(`UPDATE ${table} SET deleted_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`, [now, now, oldId, tenantId]);
+            }
+          }
+        }
+
         for (const record of items) {
           if (!record || !record.id) continue;
           upsertEntityRecord(db, tenantId, entity, record, now, 1);
@@ -1884,6 +1953,42 @@ apiRouter.post('/admin/backups/delete', authMiddleware, (req: AuthenticatedReque
     res.json({ success: true, message: `Backup file ${filename} deleted successfully` });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message || 'Backup deletion failed' });
+  }
+});
+
+// Download primary SQLite binary database file for inspection in DB Browser for SQLite
+apiRouter.get('/admin/download-sqlite', (_req: Request, res: Response) => {
+  try {
+    // Flush current in-memory SQLite state to disk binary file
+    persistDatabase();
+    const dbPath = path.join(process.cwd(), 'data', 'inoms_primary.db');
+    if (!fs.existsSync(dbPath)) {
+      return res.status(404).json({ success: false, message: 'SQLite database file not found on server disk' });
+    }
+    res.setHeader('Content-Type', 'application/x-sqlite3');
+    res.setHeader('Content-Disposition', 'attachment; filename="inoms_primary.db"');
+    const stream = fs.createReadStream(dbPath);
+    stream.pipe(res);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to stream SQLite database' });
+  }
+});
+
+// Download backup snapshot binary file
+apiRouter.get('/admin/backups/download/:filename', (req: Request, res: Response) => {
+  try {
+    const { filename } = req.params;
+    const safeFilename = path.basename(filename);
+    const filePath = path.join(process.cwd(), 'data', 'backups', safeFilename);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, message: 'Backup snapshot not found' });
+    }
+    res.setHeader('Content-Type', 'application/x-sqlite3');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    const stream = fs.createReadStream(filePath);
+    stream.pipe(res);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to stream backup file' });
   }
 });
 

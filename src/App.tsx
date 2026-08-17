@@ -1683,17 +1683,17 @@ export default function App() {
       const bootstrap = await bootstrapTenantFromHomeServer(activeTenant.id);
       if (bootstrap && bootstrap.collections) {
         const col = bootstrap.collections;
-        if (Array.isArray(col.clients) && col.clients.length > 0) setClients(col.clients);
-        if (Array.isArray(col.jobs) && col.jobs.length > 0) setJobs(col.jobs);
-        if (Array.isArray(col.invoices) && col.invoices.length > 0) setInvoices(col.invoices);
-        if (Array.isArray(col.payments) && col.payments.length > 0) setPayments(col.payments);
-        if (Array.isArray(col.products) && col.products.length > 0) setProducts(col.products);
-        if (Array.isArray(col.expenses) && col.expenses.length > 0) setExpenses(col.expenses);
-        if (Array.isArray(col.ledger) && col.ledger.length > 0) setLedger(col.ledger);
-        if (Array.isArray(col.categories) && col.categories.length > 0) setCategories(col.categories);
-        if (Array.isArray(col.racks) && col.racks.length > 0) setRacks(col.racks);
-        if (Array.isArray(col.equipments) && col.equipments.length > 0) setEquipments(col.equipments);
-        if (Array.isArray(col.problems) && col.problems.length > 0) setProblems(col.problems);
+        if (Array.isArray(col.clients)) setClients(col.clients);
+        if (Array.isArray(col.jobs)) setJobs(col.jobs);
+        if (Array.isArray(col.invoices)) setInvoices(col.invoices);
+        if (Array.isArray(col.payments)) setPayments(col.payments);
+        if (Array.isArray(col.products)) setProducts(col.products);
+        if (Array.isArray(col.expenses)) setExpenses(col.expenses);
+        if (Array.isArray(col.ledger)) setLedger(col.ledger);
+        if (Array.isArray(col.categories)) setCategories(col.categories);
+        if (Array.isArray(col.racks)) setRacks(col.racks);
+        if (Array.isArray(col.equipments)) setEquipments(col.equipments);
+        if (Array.isArray(col.problems)) setProblems(col.problems);
         if (Array.isArray(col.users) && col.users.length > 0) setUsers(col.users);
         if (bootstrap.companyConfig) {
           setCompanyConfig(prev => ({ ...prev, ...bootstrap.companyConfig }));
@@ -1813,11 +1813,14 @@ export default function App() {
     }
   };
 
-  const deleteClient = (id: string) => {
+  const deleteClient = async (id: string) => {
     try {
       const client = clients.find(c => c.id === id);
-      setClients(clients.filter(c => c.id !== id));
-      triggerSaveNotification(`✓ Client "${client?.name || id}" removed!`);
+      const nextClients = clients.filter(c => c.id !== id);
+      setClients(nextClients);
+      setAppStorageItem(`clients_${activeTenant.id}`, JSON.stringify(nextClients));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'clients', nextClients);
+      triggerSaveNotification(`✓ Client "${client?.name || id}" removed & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to delete client: ${err.message}`, true);
     }
@@ -2149,7 +2152,7 @@ export default function App() {
     }
   };
 
-  const deleteJob = (id: string) => {
+  const deleteJob = async (id: string) => {
     try {
       const targetJob = jobs.find(j => j.id === id);
       if (targetJob && targetJob.paymentStatus !== 'Paid') {
@@ -2169,10 +2172,12 @@ export default function App() {
       setAppStorageItem(`jobs_${activeTenant.id}`, JSON.stringify(nextJobs));
 
       // Remove any linked advance / outward payments associated with deleted job
-      setPayments(prevPayments => prevPayments.filter(p => 
+      const nextPayments = payments.filter(p => 
         p.linkedJobId !== id && 
         !(p.refNo && (p.refNo.includes(`Inward Advance ${id}`) || p.refNo.includes(`ADV-${id}`) || p.refNo.includes(`Outward Bill ${id}`)))
-      ));
+      );
+      setPayments(nextPayments);
+      setAppStorageItem(`payments_${activeTenant.id}`, JSON.stringify(nextPayments));
 
       const audit: ActivityLog = {
         id: `log-${Date.now()}`,
@@ -2183,7 +2188,9 @@ export default function App() {
         details: `Deleted job ticket #${targetJob?.id || id}`
       };
       setLogs(prev => [audit, ...prev]);
-      triggerSaveNotification(`✓ Job card ${targetJob?.id ? '#' + targetJob.id : ''} permanently deleted.`);
+      await saveTenantCollectionToFirestore(activeTenant.id, 'jobs', nextJobs);
+      await saveTenantCollectionToFirestore(activeTenant.id, 'payments', nextPayments);
+      triggerSaveNotification(`✓ Job card ${targetJob?.id ? '#' + targetJob.id : ''} permanently deleted & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to delete job card: ${err.message}`, true);
     }
@@ -2274,16 +2281,17 @@ export default function App() {
     }
   };
 
-  const deletePayment = (paymentId: string) => {
+  const deletePayment = async (paymentId: string) => {
     try {
       const targetPayment = payments.find(p => p.id === paymentId);
       if (!targetPayment) return;
 
-      // Remove from payments list
-      setPayments(prev => prev.filter(p => p.id !== paymentId));
+      const nextPayments = payments.filter(p => p.id !== paymentId);
+      setPayments(nextPayments);
+      setAppStorageItem(`payments_${activeTenant.id}`, JSON.stringify(nextPayments));
 
       // Restore client outstanding balance
-      setClients(prev => prev.map(c => {
+      const nextClients = clients.map(c => {
         if (c.id === targetPayment.clientId) {
           return {
             ...c,
@@ -2291,7 +2299,9 @@ export default function App() {
           };
         }
         return c;
-      }));
+      });
+      setClients(nextClients);
+      setAppStorageItem(`clients_${activeTenant.id}`, JSON.stringify(nextClients));
 
       // Log audit
       const audit: ActivityLog = {
@@ -2304,6 +2314,8 @@ export default function App() {
       };
       setLogs(prev => [audit, ...prev]);
 
+      await saveTenantCollectionToFirestore(activeTenant.id, 'payments', nextPayments);
+      await saveTenantCollectionToFirestore(activeTenant.id, 'clients', nextClients);
       triggerSaveNotification(`✓ Payment receipt of ₹${targetPayment.amount} deleted & client balance restored!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to delete payment: ${err.message}`, true);
@@ -2582,18 +2594,27 @@ export default function App() {
     }
   };
 
-  const deleteInvoice = (id: string) => {
+  const deleteInvoice = async (id: string) => {
     try {
       const targetInvoice = invoices.find(inv => inv.id === id);
-      setInvoices(prev => prev.filter(inv => inv.id !== id));
+      const nextInvoices = invoices.filter(inv => inv.id !== id);
+      setInvoices(nextInvoices);
+      setAppStorageItem(`invoices_${activeTenant.id}`, JSON.stringify(nextInvoices));
+
+      let nextPayments = payments;
+      let nextClients = clients;
+      let nextJobs = jobs;
+      let nextProducts = products;
 
       if (targetInvoice) {
         if (targetInvoice.paidAmount > 0) {
           // Remove payments recorded for this invoice
-          setPayments(prev => prev.filter(p => !(p.refNo && p.refNo.includes(targetInvoice.id)) && p.invoiceId !== targetInvoice.id));
+          nextPayments = payments.filter(p => !(p.refNo && p.refNo.includes(targetInvoice.id)) && p.invoiceId !== targetInvoice.id);
+          setPayments(nextPayments);
+          setAppStorageItem(`payments_${activeTenant.id}`, JSON.stringify(nextPayments));
 
           // Restore client outstanding balance
-          setClients(prev => prev.map(c => {
+          nextClients = clients.map(c => {
             if (c.id === targetInvoice.clientId) {
               return {
                 ...c,
@@ -2601,7 +2622,9 @@ export default function App() {
               };
             }
             return c;
-          }));
+          });
+          setClients(nextClients);
+          setAppStorageItem(`clients_${activeTenant.id}`, JSON.stringify(nextClients));
 
           // Ledger reversal
           const reversalLog: ClientLedgerEntry = {
@@ -2619,7 +2642,7 @@ export default function App() {
         }
 
         if (targetInvoice.linkedJobId) {
-          setJobs(prevJobs => prevJobs.map(job => {
+          nextJobs = jobs.map(job => {
             if (job.id === targetInvoice.linkedJobId) {
               return {
                 ...job,
@@ -2627,27 +2650,26 @@ export default function App() {
               };
             }
             return job;
-          }));
+          });
+          setJobs(nextJobs);
+          setAppStorageItem(`jobs_${activeTenant.id}`, JSON.stringify(nextJobs));
         }
 
         // Restore inventory product stock counts for items in deleted invoice
         if (targetInvoice.items && targetInvoice.items.length > 0) {
-          setProducts(prevProducts => {
-            const updated = prevProducts.map(prod => {
-              const matched = targetInvoice.items.filter(item => isInvoiceItemProductMatch(item, prod));
-              if (matched.length > 0) {
-                const totalQtyToRestore = matched.reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
-                return {
-                  ...prod,
-                  stock: prod.stock + totalQtyToRestore
-                };
-              }
-              return prod;
-            });
-            setAppStorageItem(`products_${activeTenant.id}`, JSON.stringify(updated));
-            saveTenantCollectionToFirestore(activeTenant.id, 'products', updated);
-            return updated;
+          nextProducts = products.map(prod => {
+            const matched = targetInvoice.items.filter(item => isInvoiceItemProductMatch(item, prod));
+            if (matched.length > 0) {
+              const totalQtyToRestore = matched.reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
+              return {
+                ...prod,
+                stock: prod.stock + totalQtyToRestore
+              };
+            }
+            return prod;
           });
+          setProducts(nextProducts);
+          setAppStorageItem(`products_${activeTenant.id}`, JSON.stringify(nextProducts));
         }
       }
 
@@ -2660,49 +2682,67 @@ export default function App() {
         details: `Deleted tax invoice ${id} for ${targetInvoice?.clientName || 'Client'}.`
       };
       setLogs(prev => [audit, ...prev]);
-      triggerSaveNotification(`✓ Tax Invoice ${id} deleted!`);
+
+      await saveTenantCollectionToFirestore(activeTenant.id, 'invoices', nextInvoices);
+      if (nextPayments !== payments) await saveTenantCollectionToFirestore(activeTenant.id, 'payments', nextPayments);
+      if (nextClients !== clients) await saveTenantCollectionToFirestore(activeTenant.id, 'clients', nextClients);
+      if (nextJobs !== jobs) await saveTenantCollectionToFirestore(activeTenant.id, 'jobs', nextJobs);
+      if (nextProducts !== products) await saveTenantCollectionToFirestore(activeTenant.id, 'products', nextProducts);
+
+      triggerSaveNotification(`✓ Tax Invoice ${id} deleted & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to delete invoice: ${err.message}`, true);
     }
   };
 
-  const addProduct = (newProd: Omit<Product, 'id'>) => {
+  const addProduct = async (newProd: Omit<Product, 'id'>) => {
     try {
       const prod: Product = {
         id: `prod-${Date.now()}`,
         tenantId: activeTenant.id,
         ...newProd
       };
-      setProducts([...products, prod]);
+      const nextProducts = [...products, prod];
+      setProducts(nextProducts);
+      setAppStorageItem(`products_${activeTenant.id}`, JSON.stringify(nextProducts));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'products', nextProducts);
       triggerSaveNotification(`✓ Product "${newProd.name}" added to inventory & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to add product: ${err.message}`, true);
     }
   };
 
-  const editProduct = (updatedProd: Product) => {
+  const editProduct = async (updatedProd: Product) => {
     try {
-      setProducts(products.map(p => p.id === updatedProd.id ? updatedProd : p));
+      const nextProducts = products.map(p => p.id === updatedProd.id ? updatedProd : p);
+      setProducts(nextProducts);
+      setAppStorageItem(`products_${activeTenant.id}`, JSON.stringify(nextProducts));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'products', nextProducts);
       triggerSaveNotification(`✓ Product "${updatedProd.name}" updated & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to edit product: ${err.message}`, true);
     }
   };
 
-  const deleteProduct = (id: string) => {
+  const deleteProduct = async (id: string) => {
     try {
       const p = products.find(prod => prod.id === id);
-      setProducts(products.filter(p => p.id !== id));
-      triggerSaveNotification(`✓ Product "${p?.name || id}" removed!`);
+      const nextProducts = products.filter(prod => prod.id !== id);
+      setProducts(nextProducts);
+      setAppStorageItem(`products_${activeTenant.id}`, JSON.stringify(nextProducts));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'products', nextProducts);
+      triggerSaveNotification(`✓ Product "${p?.name || id}" removed & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to delete product: ${err.message}`, true);
     }
   };
 
-  const updateLedgerEntry = (updatedEntry: ClientLedgerEntry) => {
+  const updateLedgerEntry = async (updatedEntry: ClientLedgerEntry) => {
     try {
       const updatedLedger = ledger.map(l => l.id === updatedEntry.id ? updatedEntry : l);
       setLedger(updatedLedger);
+      setAppStorageItem(`ledger_${activeTenant.id}`, JSON.stringify(updatedLedger));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'ledger', updatedLedger);
 
       if (updatedEntry.clientId) {
         const clientLogs = updatedLedger.filter(l => l.clientId === updatedEntry.clientId);
@@ -2710,7 +2750,10 @@ export default function App() {
         const totalCredit = clientLogs.reduce((sum, l) => sum + (l.credit || 0), 0);
         const newBalance = totalDebit - totalCredit;
 
-        setClients(clients.map(c => c.id === updatedEntry.clientId ? { ...c, outstandingBalance: newBalance } : c));
+        const nextClients = clients.map(c => c.id === updatedEntry.clientId ? { ...c, outstandingBalance: newBalance } : c);
+        setClients(nextClients);
+        setAppStorageItem(`clients_${activeTenant.id}`, JSON.stringify(nextClients));
+        await saveTenantCollectionToFirestore(activeTenant.id, 'clients', nextClients);
       }
       triggerSaveNotification(`✓ Client ledger transaction updated & balance recalculation completed!`);
     } catch (err: any) {
@@ -2718,29 +2761,35 @@ export default function App() {
     }
   };
 
-  const addExpense = (newExp: Omit<Expense, 'id'>) => {
+  const addExpense = async (newExp: Omit<Expense, 'id'>) => {
     try {
       const exp: Expense = {
         id: `exp-${Date.now()}`,
         ...newExp
       };
-      setExpenses([exp, ...expenses]);
+      const nextExpenses = [exp, ...expenses];
+      setExpenses(nextExpenses);
+      setAppStorageItem(`expenses_${activeTenant.id}`, JSON.stringify(nextExpenses));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'expenses', nextExpenses);
       triggerSaveNotification(`✓ Expense ₹${newExp.amount} recorded & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to save expense: ${err.message}`, true);
     }
   };
 
-  const deleteExpense = (id: string) => {
+  const deleteExpense = async (id: string) => {
     try {
-      setExpenses(expenses.filter(e => e.id !== id));
-      triggerSaveNotification(`✓ Expense entry deleted!`);
+      const nextExpenses = expenses.filter(e => e.id !== id);
+      setExpenses(nextExpenses);
+      setAppStorageItem(`expenses_${activeTenant.id}`, JSON.stringify(nextExpenses));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'expenses', nextExpenses);
+      triggerSaveNotification(`✓ Expense entry deleted & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to delete expense: ${err.message}`, true);
     }
   };
 
-  const addUser = (newUser: Omit<SystemUser, 'id'>) => {
+  const addUser = async (newUser: Omit<SystemUser, 'id'>) => {
     try {
       const u: SystemUser = {
         id: `user-${Date.now()}`,
@@ -2752,13 +2801,14 @@ export default function App() {
       const updatedUsers = [...users, u];
       setUsers(updatedUsers);
       setAppStorageItem(`users_${activeTenant.id}`, JSON.stringify(updatedUsers));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'users', updatedUsers);
       triggerSaveNotification(`✓ User account "${newUser.name}" (${newUser.role}) created & activated!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to save user account: ${err.message}`, true);
     }
   };
 
-  const updateUser = (updatedUser: SystemUser) => {
+  const updateUser = async (updatedUser: SystemUser) => {
     try {
       const updatedUsers = users.map(usr => usr.id === updatedUser.id ? { ...usr, ...updatedUser, tenantId: activeTenant.id } : usr);
       setUsers(updatedUsers);
@@ -2775,13 +2825,14 @@ export default function App() {
         }
       }
 
+      await saveTenantCollectionToFirestore(activeTenant.id, 'users', updatedUsers);
       triggerSaveNotification(`✓ Account "${updatedUser.name}" (${updatedUser.role}) updated successfully!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to update user account: ${err.message}`, true);
     }
   };
 
-  const toggleUserStatus = (id: string) => {
+  const toggleUserStatus = async (id: string) => {
     try {
       const u = users.find(usr => usr.id === id);
       if (!u) return;
@@ -2820,6 +2871,7 @@ export default function App() {
 
       setUsers(updatedUsers);
       setAppStorageItem(`users_${activeTenant.id}`, JSON.stringify(updatedUsers));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'users', updatedUsers);
       const actionLabel = isCurrentlyDeactivated ? 'Activated' : 'Deactivated';
       triggerSaveNotification(`✓ Account "${u.name}" (${u.role}) ${actionLabel}!`);
     } catch (err: any) {
@@ -2827,7 +2879,7 @@ export default function App() {
     }
   };
 
-  const deleteUser = (id: string) => {
+  const deleteUser = async (id: string) => {
     try {
       const u = users.find(usr => usr.id === id);
       if (u) {
@@ -2850,73 +2902,104 @@ export default function App() {
       const updatedUsers = users.filter(usr => usr.id !== id);
       setUsers(updatedUsers);
       setAppStorageItem(`users_${activeTenant.id}`, JSON.stringify(updatedUsers));
-      triggerSaveNotification(`✓ Account "${u?.name || id}" (${u?.role || 'User'}) permanently deleted!`);
+      await saveTenantCollectionToFirestore(activeTenant.id, 'users', updatedUsers);
+      triggerSaveNotification(`✓ Account "${u?.name || id}" (${u?.role || 'User'}) permanently deleted & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Failed to delete user: ${err.message}`, true);
     }
   };
 
-  const addCategory = (name: string) => {
+  const addCategory = async (name: string) => {
     try {
       const next = [...categories, { id: `cat-${Date.now()}`, tenantId: activeTenant.id, name: name.toUpperCase() }];
       setCategories(next);
       setAppStorageItem(`categories_${activeTenant.id}`, JSON.stringify(next));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'categories', next);
       triggerSaveNotification(`✓ Category "${name}" added & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Error adding category: ${err.message}`, true);
     }
   };
 
-  const addRack = (name: string) => {
+  const deleteCategory = async (id: string) => {
+    try {
+      const next = categories.filter(c => c.id !== id);
+      setCategories(next);
+      setAppStorageItem(`categories_${activeTenant.id}`, JSON.stringify(next));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'categories', next);
+      triggerSaveNotification(`✓ Category removed & saved!`);
+    } catch (err: any) {
+      triggerSaveNotification(`⚠️ Error deleting category: ${err.message}`, true);
+    }
+  };
+
+  const addRack = async (name: string) => {
     try {
       const next = [...racks, { id: `rack-${Date.now()}`, tenantId: activeTenant.id, name }];
       setRacks(next);
       setAppStorageItem(`racks_${activeTenant.id}`, JSON.stringify(next));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'racks', next);
       triggerSaveNotification(`✓ Location rack "${name}" added & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Error adding rack: ${err.message}`, true);
     }
   };
 
-  const addEquipment = (name: string) => {
+  const deleteRack = async (id: string) => {
+    try {
+      const next = racks.filter(r => r.id !== id);
+      setRacks(next);
+      setAppStorageItem(`racks_${activeTenant.id}`, JSON.stringify(next));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'racks', next);
+      triggerSaveNotification(`✓ Rack location removed & saved!`);
+    } catch (err: any) {
+      triggerSaveNotification(`⚠️ Error deleting rack: ${err.message}`, true);
+    }
+  };
+
+  const addEquipment = async (name: string) => {
     try {
       const next = [...equipments, { id: `eq-${Date.now()}`, tenantId: activeTenant.id, name: name.toUpperCase() }];
       setEquipments(next);
       setAppStorageItem(`equipments_${activeTenant.id}`, JSON.stringify(next));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'equipments', next);
       triggerSaveNotification(`✓ Equipment type "${name}" saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Error adding equipment: ${err.message}`, true);
     }
   };
 
-  const deleteEquipment = (id: string) => {
+  const deleteEquipment = async (id: string) => {
     try {
       const next = equipments.filter(e => e.id !== id);
       setEquipments(next);
       setAppStorageItem(`equipments_${activeTenant.id}`, JSON.stringify(next));
-      triggerSaveNotification(`✓ Equipment type deleted!`);
+      await saveTenantCollectionToFirestore(activeTenant.id, 'equipments', next);
+      triggerSaveNotification(`✓ Equipment type deleted & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Error deleting equipment: ${err.message}`, true);
     }
   };
 
-  const addProblem = (name: string) => {
+  const addProblem = async (name: string) => {
     try {
       const next = [...problems, { id: `pb-${Date.now()}`, tenantId: activeTenant.id, name: name.toUpperCase() }];
       setProblems(next);
       setAppStorageItem(`problems_${activeTenant.id}`, JSON.stringify(next));
+      await saveTenantCollectionToFirestore(activeTenant.id, 'problems', next);
       triggerSaveNotification(`✓ Problem fault "${name}" saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Error adding problem: ${err.message}`, true);
     }
   };
 
-  const deleteProblem = (id: string) => {
+  const deleteProblem = async (id: string) => {
     try {
       const next = problems.filter(p => p.id !== id);
       setProblems(next);
       setAppStorageItem(`problems_${activeTenant.id}`, JSON.stringify(next));
-      triggerSaveNotification(`✓ Problem fault deleted!`);
+      await saveTenantCollectionToFirestore(activeTenant.id, 'problems', next);
+      triggerSaveNotification(`✓ Problem fault deleted & saved!`);
     } catch (err: any) {
       triggerSaveNotification(`⚠️ Error deleting problem: ${err.message}`, true);
     }
@@ -3765,7 +3848,9 @@ export default function App() {
               onEditProduct={editProduct}
               onDeleteProduct={deleteProduct}
               onAddCategory={addCategory}
+              onDeleteCategory={deleteCategory}
               onAddRack={addRack}
+              onDeleteRack={deleteRack}
             />
           )}
 

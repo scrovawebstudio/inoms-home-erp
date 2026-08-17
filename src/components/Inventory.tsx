@@ -30,7 +30,9 @@ interface InventoryProps {
   onEditProduct: (product: Product) => void;
   onDeleteProduct: (id: string) => void;
   onAddCategory: (name: string) => void;
+  onDeleteCategory?: (id: string) => void;
   onAddRack: (name: string) => void;
+  onDeleteRack?: (id: string) => void;
 }
 
 export default function Inventory({
@@ -44,7 +46,9 @@ export default function Inventory({
   onEditProduct,
   onDeleteProduct,
   onAddCategory,
-  onAddRack
+  onDeleteCategory,
+  onAddRack,
+  onDeleteRack
 }: InventoryProps) {
   const isAdmin = userRole === 'Admin' || currentUser?.role === 'Admin';
   const canEditInventory = isAdmin || currentUser?.permissions?.inventoryEditStock !== false || currentUser?.permissions?.inventoryEdit !== false;
@@ -570,8 +574,24 @@ export default function Inventory({
                 <table className="w-full text-left">
                   <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
                     {categories.map(c => (
-                      <tr key={c.id}>
+                      <tr key={c.id} className="hover:bg-slate-50/80 transition">
                         <td className="p-3 capitalize">{c.name}</td>
+                        <td className="p-3 text-right">
+                          {onDeleteCategory && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (window.confirm(`Delete category "${c.name}"?`)) {
+                                  onDeleteCategory(c.id);
+                                }
+                              }}
+                              className="text-rose-500 hover:text-rose-700 p-1 rounded-lg hover:bg-rose-50 cursor-pointer transition"
+                              title="Delete Category"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -645,8 +665,24 @@ export default function Inventory({
                 <table className="w-full text-left">
                   <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
                     {racks.map(r => (
-                      <tr key={r.id}>
+                      <tr key={r.id} className="hover:bg-slate-50/80 transition">
                         <td className="p-3">{r.name}</td>
+                        <td className="p-3 text-right">
+                          {onDeleteRack && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (window.confirm(`Delete rack location "${r.name}"?`)) {
+                                  onDeleteRack(r.id);
+                                }
+                              }}
+                              className="text-rose-500 hover:text-rose-700 p-1 rounded-lg hover:bg-rose-50 cursor-pointer transition"
+                              title="Delete Location Rack"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

@@ -80,8 +80,8 @@ export function clearAuthToken(): void {
   sessionStorage.removeItem(SESSION_TOKEN_KEY);
 }
 
-// Event notification bus for reactive UI updates
-type EntityListener = (entity: string, data: any[]) => void;
+// Event notification bus for reactive UI updates with strict tenant scoping
+type EntityListener = (tenantId: string, entity: string, data: any[]) => void;
 const listeners = new Set<EntityListener>();
 
 export function subscribeLocalDb(listener: EntityListener): () => void {
@@ -91,10 +91,10 @@ export function subscribeLocalDb(listener: EntityListener): () => void {
   };
 }
 
-function notifyListeners(entity: string, data: any[]) {
+function notifyListeners(tenantId: string, entity: string, data: any[]) {
   listeners.forEach(l => {
     try {
-      l(entity, data);
+      l(tenantId, entity, data);
     } catch (e) {
       console.warn('Listener notification error:', e);
     }
@@ -212,14 +212,38 @@ export async function replaceLocalCollection<T extends { id: string }>(
   queuePush = false,
   notify = false
 ): Promise<void> {
-  if (!items || !Array.isArray(items)) return;
+  if (!tenantId || !entity) return;
+  const safeItems = Array.isArray(items) ? items : [];
   const db = await getLocalDB();
   const tx = db.transaction(['entities', 'pending_ops'], 'readwrite');
   const entitiesStore = tx.objectStore('entities');
   const pendingStore = tx.objectStore('pending_ops');
   const now = new Date().toISOString();
 
-  for (const item of items) {
+  // 1. Clear out records that are no longer in items for this tenant and entity
+  const index = entitiesStore.index('by_tenant_entity');
+  const existingRecords = await index.getAll([tenantId, entity]);
+  const newItemIdSet = new Set(safeItems.map(it => it.id));
+
+  for (const existing of existingRecords) {
+    if (!newItemIdSet.has(existing.id)) {
+      await entitiesStore.delete(existing.key);
+      if (queuePush && getAuthToken()) {
+        await pendingStore.put({
+          id: `op_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          tenantId,
+          entity,
+          operation: 'delete',
+          record: { id: existing.id },
+          timestamp: now,
+          retryCount: 0
+        });
+      }
+    }
+  }
+
+  // 2. Put fresh/updated items
+  for (const item of safeItems) {
     if (!item?.id) continue;
     const key = `${tenantId}:${entity}:${item.id}`;
     await entitiesStore.put({
@@ -227,8 +251,8 @@ export async function replaceLocalCollection<T extends { id: string }>(
       tenantId,
       entity,
       id: item.id,
-      version: 1,
-      updatedAt: now,
+      version: (item as any).version || 1,
+      updatedAt: (item as any).updatedAt || now,
       deletedAt: null,
       data: item
     });
@@ -254,7 +278,7 @@ export async function replaceLocalCollection<T extends { id: string }>(
 
   if (notify) {
     const all = await getLocalCollection(tenantId, entity);
-    notifyListeners(entity, all);
+    notifyListeners(tenantId, entity, all);
   }
 }
 
@@ -349,7 +373,7 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
       if (Array.isArray(items)) {
         setAppStorageItem(`${entityName}_${tenantId}`, JSON.stringify(items));
       }
-      notifyListeners(entityName, items as any[]);
+      notifyListeners(tenantId, entityName, items as any[]);
     }
 
     return data;
@@ -428,7 +452,7 @@ export async function pullDeltaFromHomeServer(tenantId: string): Promise<number>
     // Notify affected UI components
     for (const ent of affectedEntities) {
       const fresh = await getLocalCollection(tenantId, ent);
-      notifyListeners(ent, fresh);
+      notifyListeners(tenantId, ent, fresh);
     }
 
     return data.currentRevision;

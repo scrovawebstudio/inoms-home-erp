@@ -2400,6 +2400,18 @@ export default function SettingsComponent({
 
                   <button
                     type="button"
+                    onClick={() => {
+                      window.open('/api/admin/download-sqlite', '_blank');
+                    }}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-3.5 rounded-xl transition text-center flex items-center gap-1.5 cursor-pointer shadow-xs"
+                    title="Download primary SQLite database file (inoms_primary.db) to inspect in DB Browser for SQLite"
+                  >
+                    <Database className="w-4 h-4 text-indigo-100" />
+                    <span>Download SQLite (.db)</span>
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={triggerExcelExport}
                     className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2.5 px-3.5 rounded-xl transition text-center flex items-center gap-1.5 cursor-pointer shadow-xs"
                     title="Export all collections into an Excel Workbook (.xlsx)"

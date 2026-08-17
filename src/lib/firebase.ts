@@ -175,10 +175,10 @@ export async function deleteAnnouncementFromFirestore(id: string): Promise<void>
 export function subscribeCompanyConfig(tenantId: string, onUpdate: (config: CompanyConfig) => void) {
   if (!tenantId) return () => {};
   
-  // Listen to localDb updates for config
-  const unsub = subscribeLocalDb((entity, data) => {
-    if (entity === 'config' && data.length > 0) {
-      onUpdate(data[0] as CompanyConfig);
+  // Listen to localDb updates for config scoped to tenantId
+  const unsub = subscribeLocalDb((tId, entity, data) => {
+    if (tId === tenantId && entity === 'config' && data.length > 0) {
+      onUpdate(data[0] as unknown as CompanyConfig);
     }
   });
 
@@ -233,21 +233,36 @@ export function subscribeTenantCollection<T>(
 ) {
   if (!tenantId || !collectionName) return () => {};
 
-  // 1. Immediately load from local IndexedDB replica
+  // 1. Immediately load from local IndexedDB replica strictly scoped to tenantId
   getLocalCollection<T>(tenantId, collectionName).then(items => {
     if (items && items.length > 0) {
       onUpdate(items);
-    } else if (getLocalData) {
-      const fallback = getLocalData();
-      if (fallback && fallback.length > 0) {
-        onUpdate(fallback);
+    } else {
+      // Check tenant-specific storage cache
+      try {
+        const cached = localStorage.getItem(`app_storage_${collectionName}_${tenantId}`) || localStorage.getItem(`${collectionName}_${tenantId}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            onUpdate(parsed);
+            return;
+          }
+        }
+      } catch (e) {}
+
+      // ONLY for Master Admin org allow initial seed fallback; all real tenant orgs remain strictly isolated & empty
+      if (tenantId === 'org-admin' && getLocalData) {
+        const fallback = getLocalData();
+        if (fallback && fallback.length > 0) {
+          onUpdate(fallback);
+        }
       }
     }
   });
 
-  // 2. Subscribe to reactive local replica updates
-  const unsubscribe = subscribeLocalDb((entity, data) => {
-    if (entity === collectionName) {
+  // 2. Subscribe to reactive local replica updates with strict tenant isolation
+  const unsubscribe = subscribeLocalDb((tId, entity, data) => {
+    if (tId === tenantId && entity === collectionName) {
       onUpdate(data as T[]);
     }
   });
