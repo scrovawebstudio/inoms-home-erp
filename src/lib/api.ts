@@ -438,3 +438,40 @@ export async function checkHomeServerSession(
 ): Promise<{ activeSessionId?: string; deviceInfo?: string } | null> {
   return null;
 }
+
+export async function scanAndImportDataFolderApi(): Promise<{
+  success: boolean;
+  filesScanned: number;
+  filesImported: string[];
+  counts: Record<string, number>;
+  message: string;
+}> {
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch('/api/admin/scan-import-data-folder', {
+      method: 'POST',
+      headers
+    });
+    return await res.json();
+  } catch (err: any) {
+    return {
+      success: false,
+      filesScanned: 0,
+      filesImported: [],
+      counts: {},
+      message: err?.message || 'Failed to scan and import data folder'
+    };
+  }
+}
+
+export async function getDataFolderStatusApi(): Promise<any> {
+  try {
+    const res = await fetch('/api/admin/data-folder-status');
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err?.message };
+  }
+}

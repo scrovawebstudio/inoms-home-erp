@@ -1,4 +1,5 @@
 import { openDB, IDBPDatabase } from 'idb';
+import { setAppStorageItem } from './storage';
 
 const DB_NAME = 'inoms_local_replica_v2';
 const DB_VERSION = 1;
@@ -338,12 +339,16 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
         key: `config_${tenantId}`,
         config: data.companyConfig
       });
+      setAppStorageItem(`company_config_${tenantId}`, JSON.stringify(data.companyConfig));
     }
 
     await tx.done;
 
-    // Notify UI of fresh authoritative data
+    // Populate app storage and notify UI of fresh authoritative data
     for (const [entityName, items] of Object.entries(collections)) {
+      if (Array.isArray(items)) {
+        setAppStorageItem(`${entityName}_${tenantId}`, JSON.stringify(items));
+      }
       notifyListeners(entityName, items as any[]);
     }
 

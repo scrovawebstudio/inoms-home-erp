@@ -14,7 +14,8 @@ import {
   listBackups,
   restoreBackupFile,
   deleteBackupFile,
-  scheduleDbSave
+  scheduleDbSave,
+  scanAndImportDataFolder
 } from './sqliteDb';
 import { isPostgresActive, syncEntityToPostgres, syncDeleteToPostgres } from './postgresDb';
 
@@ -1295,10 +1296,21 @@ apiRouter.post('/sync/push', authMiddleware, (req: AuthenticatedRequest, res: Re
         const table = tableMap[entity];
         if (!table) continue;
 
+        const isConfig = entity === 'config' || table === 'tenant_configs';
+        const recordId = record.id || tenantId;
+
         // Check for concurrency conflicts on updates/deletions
         if (operation === 'update' || operation === 'delete') {
-          const checkStmt = db.prepare(`SELECT version, updated_at FROM ${table} WHERE id = ? AND tenant_id = ?`);
-          checkStmt.bind([record.id, tenantId]);
+          const checkStmt = isConfig
+            ? db.prepare(`SELECT version, updated_at FROM tenant_configs WHERE tenant_id = ?`)
+            : db.prepare(`SELECT version, updated_at FROM ${table} WHERE id = ? AND tenant_id = ?`);
+          
+          if (isConfig) {
+            checkStmt.bind([tenantId]);
+          } else {
+            checkStmt.bind([recordId, tenantId]);
+          }
+
           if (checkStmt.step()) {
             const currentRec = checkStmt.getAsObject();
             const serverVersion = currentRec.version as number || 1;
@@ -1306,10 +1318,10 @@ apiRouter.post('/sync/push', authMiddleware, (req: AuthenticatedRequest, res: Re
               // Concurrency conflict detected!
               conflicts.push({
                 entity,
-                id: record.id,
+                id: recordId,
                 serverVersion,
                 clientVersion: expectedVersion,
-                message: `Conflict: Record ${record.id} was updated on server (v${serverVersion}) after client version (v${expectedVersion}).`
+                message: `Conflict: Record ${recordId} was updated on server (v${serverVersion}) after client version (v${expectedVersion}).`
               });
               checkStmt.free();
               continue; // Do not overwrite conflicting record
@@ -1321,6 +1333,7 @@ apiRouter.post('/sync/push', authMiddleware, (req: AuthenticatedRequest, res: Re
         const newVersion = (record.version || 0) + 1;
         const recordWithMeta = {
           ...record,
+          id: recordId,
           tenantId,
           version: newVersion,
           updatedAt: now
@@ -1328,19 +1341,26 @@ apiRouter.post('/sync/push', authMiddleware, (req: AuthenticatedRequest, res: Re
         const dataJson = JSON.stringify(recordWithMeta);
 
         if (operation === 'delete') {
-          db.run(
-            `UPDATE ${table} SET deleted_at = ?, version = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
-            [now, newVersion, now, record.id, tenantId]
-          );
+          if (isConfig) {
+            db.run(
+              `UPDATE tenant_configs SET deleted_at = ?, version = ?, updated_at = ? WHERE tenant_id = ?`,
+              [now, newVersion, now, tenantId]
+            );
+          } else {
+            db.run(
+              `UPDATE ${table} SET deleted_at = ?, version = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
+              [now, newVersion, now, recordId, tenantId]
+            );
+          }
         } else {
-          upsertEntityRecord(db, tenantId, entity, record, now, newVersion);
+          upsertEntityRecord(db, tenantId, entity, recordWithMeta, now, newVersion);
         }
 
         // Record into change_log for delta pull
         db.run(
           `INSERT INTO change_log (tenant_id, revision, entity, entity_id, operation, data_json, timestamp)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [tenantId, nextRev, entity, record.id, operation, operation === 'delete' ? null : dataJson, now]
+          [tenantId, nextRev, entity, recordId, operation, operation === 'delete' ? null : dataJson, now]
         );
 
         // Record Audit log
@@ -1350,13 +1370,13 @@ apiRouter.post('/sync/push', authMiddleware, (req: AuthenticatedRequest, res: Re
           userName: req.user!.name,
           action: `${operation.toUpperCase()}_${entity.toUpperCase()}`,
           entity,
-          entityId: record.id,
+          entityId: recordId,
           details: { version: newVersion }
         });
 
         committed.push({
           entity,
-          id: record.id,
+          id: recordId,
           operation,
           version: newVersion,
           updatedAt: now
@@ -1516,12 +1536,12 @@ export function upsertEntityRecord(db: any, tenantId: string, entity: string, re
 
     case 'config':
       db.run(
-        `INSERT OR REPLACE INTO tenant_configs (tenant_id, name, phone, email, address, gstin, upi_id, config_json, updated_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO tenant_configs (tenant_id, id, name, phone, email, address, gstin, upi_id, config_json, data_json, updated_at, deleted_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [
-          tenantId, record.name || null, record.phone || null, record.email || null,
+          tenantId, record.id || tenantId, record.name || null, record.phone || null, record.email || null,
           record.address || null, record.gstin || null, record.upiId || null,
-          dataJson, now, version
+          dataJson, dataJson, now, version
         ]
       );
       break;
@@ -1751,6 +1771,95 @@ apiRouter.post('/admin/backups/delete', authMiddleware, (req: AuthenticatedReque
     res.json({ success: true, message: `Backup file ${filename} deleted successfully` });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message || 'Backup deletion failed' });
+  }
+});
+
+// Scan and import all data files from the data/ folder (JSON files, legacy backups, etc.)
+apiRouter.post('/admin/scan-import-data-folder', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const result = await scanAndImportDataFolder(true);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Data folder scan and import failed' });
+  }
+});
+
+// Check status of data/ folder
+apiRouter.get('/admin/data-folder-status', (req: Request, res: Response) => {
+  try {
+    const dataDir = path.join(process.cwd(), 'data');
+    const dbPath = path.join(dataDir, 'inoms_primary.db');
+    let dbExists = false;
+    let dbSizeBytes = 0;
+    let dbModifiedAt: string | null = null;
+
+    if (fs.existsSync(dbPath)) {
+      const stats = fs.statSync(dbPath);
+      dbExists = true;
+      dbSizeBytes = stats.size;
+      dbModifiedAt = stats.mtime.toISOString();
+    }
+
+    const filesInDir: string[] = [];
+    function scanFiles(dir: string) {
+      if (!fs.existsSync(dir)) return;
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            scanFiles(full);
+          } else if (entry.isFile()) {
+            filesInDir.push(path.relative(dataDir, full));
+          }
+        }
+      } catch (e) {}
+    }
+    scanFiles(dataDir);
+
+    const db = getDatabase();
+    let orgCount = 0;
+    let clientCount = 0;
+    let jobCount = 0;
+    let invoiceCount = 0;
+
+    try {
+      const orgStmt = db.prepare('SELECT COUNT(*) as count FROM organizations');
+      if (orgStmt.step()) orgCount = orgStmt.getAsObject().count as number || 0;
+      orgStmt.free();
+
+      const cStmt = db.prepare('SELECT COUNT(*) as count FROM clients WHERE deleted_at IS NULL');
+      if (cStmt.step()) clientCount = cStmt.getAsObject().count as number || 0;
+      cStmt.free();
+
+      const jStmt = db.prepare('SELECT COUNT(*) as count FROM jobs WHERE deleted_at IS NULL');
+      if (jStmt.step()) jobCount = jStmt.getAsObject().count as number || 0;
+      jStmt.free();
+
+      const iStmt = db.prepare('SELECT COUNT(*) as count FROM invoices WHERE deleted_at IS NULL');
+      if (iStmt.step()) invoiceCount = iStmt.getAsObject().count as number || 0;
+      iStmt.free();
+    } catch (e) {}
+
+    res.json({
+      success: true,
+      dataDirectory: dataDir,
+      sqliteDatabase: {
+        exists: dbExists,
+        sizeBytes: dbSizeBytes,
+        modifiedAt: dbModifiedAt
+      },
+      filesFound: filesInDir,
+      jsonFilesCount: filesInDir.filter(f => f.toLowerCase().endsWith('.json')).length,
+      currentCounts: {
+        organizations: orgCount,
+        clients: clientCount,
+        jobs: jobCount,
+        invoices: invoiceCount
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message });
   }
 });
 

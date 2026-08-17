@@ -52,7 +52,7 @@ import {
 } from 'lucide-react';
 import { SystemUser, ActivityLog, Equipment, Problem, CompanyConfig, Client, RepairJob, Invoice, Product, Payment, Expense, DEFAULT_THEME_PALETTE, TenantThemePalette } from '../types';
 import { TenantFeatures, getTenantFeatures, TenantOrg } from './AuthModal';
-import { updateOrgViaApi } from '../lib/api';
+import { updateOrgViaApi, scanAndImportDataFolderApi, getDataFolderStatusApi } from '../lib/api';
 
 interface SettingsProps {
   activeTenantId?: string;
@@ -134,6 +134,57 @@ export default function SettingsComponent({
   const [isSavingOrgPin, setIsSavingOrgPin] = useState<boolean>(false);
   const [orgPinStatusMsg, setOrgPinStatusMsg] = useState<{ text: string; isError?: boolean } | null>(null);
   const [copiedSecret, setCopiedSecret] = useState<boolean>(false);
+
+  // Data Folder scan & migration state
+  const [isScanningDataFolder, setIsScanningDataFolder] = useState<boolean>(false);
+  const [dataFolderResult, setDataFolderResult] = useState<{
+    success: boolean;
+    filesScanned: number;
+    filesImported: string[];
+    counts: Record<string, number>;
+    message: string;
+  } | null>(null);
+  const [dataFolderStatus, setDataFolderStatus] = useState<any>(null);
+
+  const loadDataFolderStatus = async () => {
+    try {
+      const res = await getDataFolderStatusApi();
+      if (res && res.success) {
+        setDataFolderStatus(res);
+      }
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    if (activeSubTab === 'backup') {
+      loadDataFolderStatus();
+    }
+  }, [activeSubTab]);
+
+  const handleScanDataFolder = async () => {
+    setIsScanningDataFolder(true);
+    setDataFolderResult(null);
+    try {
+      const res = await scanAndImportDataFolderApi();
+      setDataFolderResult(res);
+      await loadDataFolderStatus();
+      if (res.success && res.filesImported && res.filesImported.length > 0) {
+        setTimeout(() => {
+          window.location.reload();
+        }, 2200);
+      }
+    } catch (err: any) {
+      setDataFolderResult({
+        success: false,
+        filesScanned: 0,
+        filesImported: [],
+        counts: {},
+        message: err?.message || 'Error scanning data folder'
+      });
+    } finally {
+      setIsScanningDataFolder(false);
+    }
+  };
 
   useEffect(() => {
     if (activeTenant?.pin !== undefined) {
@@ -2052,6 +2103,103 @@ export default function SettingsComponent({
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Section 1.5: Copied data Folder Auto-Import & Detection */}
+          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <FolderSync className="w-5 h-5 text-teal-600" />
+                  <h4 className="font-bold text-sm text-slate-800">
+                    Copied <code className="text-xs bg-slate-100 text-teal-700 px-1.5 py-0.5 rounded font-mono">data/</code> Folder Auto-Import &amp; Migration
+                  </h4>
+                  <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-teal-50 text-teal-700 rounded-full border border-teal-200">
+                    Host Disk Scanner
+                  </span>
+                </div>
+                <p className="text-slate-500 text-xs max-w-2xl">
+                  If you copied your <code className="font-mono font-semibold text-slate-700">data</code> folder from <code className="font-mono text-slate-700">C:\INOMS</code> to <code className="font-mono text-slate-700">D:\INOMS-WebApp\data</code>, click below to scan and automatically import all organizations, clients, jobs, invoices, and ledger records into the active database.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleScanDataFolder}
+                  disabled={isScanningDataFolder}
+                  className="bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-xs font-bold py-2.5 px-4 rounded-xl transition flex items-center gap-2 shadow-xs cursor-pointer"
+                >
+                  <RefreshCw className={`w-4 h-4 ${isScanningDataFolder ? 'animate-spin' : ''}`} />
+                  <span>{isScanningDataFolder ? 'Scanning data folder...' : 'Scan & Import data/ Folder'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Folder Status Summary */}
+            {dataFolderStatus && (
+              <div className="bg-slate-50 border border-slate-200/70 rounded-xl p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Primary Database</span>
+                  <div className="font-semibold text-slate-700 flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${dataFolderStatus.sqliteDatabase?.exists ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                    <span>{dataFolderStatus.sqliteDatabase?.exists ? `${Math.round((dataFolderStatus.sqliteDatabase?.sizeBytes || 0) / 1024)} KB on disk` : 'In-Memory Only'}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Data Files Found</span>
+                  <div className="font-semibold text-slate-700">
+                    <span>{dataFolderStatus.filesFound?.length || 0} file(s) ({dataFolderStatus.jsonFilesCount || 0} JSON)</span>
+                  </div>
+                </div>
+
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Clients in Database</span>
+                  <div className="font-semibold text-slate-700">
+                    <span className="text-teal-700 font-bold">{dataFolderStatus.currentCounts?.clients || 0}</span> clients
+                  </div>
+                </div>
+
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Jobs &amp; Invoices</span>
+                  <div className="font-semibold text-slate-700">
+                    <span className="text-teal-700 font-bold">{dataFolderStatus.currentCounts?.jobs || 0}</span> jobs / <span className="text-teal-700 font-bold">{dataFolderStatus.currentCounts?.invoices || 0}</span> inv
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Scan / Import Result Banner */}
+            {dataFolderResult && (
+              <div className={`p-4 rounded-xl border text-xs space-y-2 ${dataFolderResult.success ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-rose-50 border-rose-200 text-rose-900'}`}>
+                <div className="flex items-center gap-2 font-bold">
+                  {dataFolderResult.success ? <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" /> : <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />}
+                  <span>{dataFolderResult.message}</span>
+                </div>
+                {dataFolderResult.filesImported && dataFolderResult.filesImported.length > 0 && (
+                  <div className="space-y-1 text-[11px] pt-1">
+                    <p className="font-semibold">Imported files:</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {dataFolderResult.filesImported.map((file, idx) => (
+                        <span key={idx} className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-mono text-[10px]">
+                          {file}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 pt-2 text-[11px] font-semibold text-emerald-800">
+                      <div>Orgs: {dataFolderResult.counts?.organizations || 0}</div>
+                      <div>Clients: {dataFolderResult.counts?.clients || 0}</div>
+                      <div>Jobs: {dataFolderResult.counts?.jobs || 0}</div>
+                      <div>Invoices: {dataFolderResult.counts?.invoices || 0}</div>
+                      <div>Products: {dataFolderResult.counts?.products || 0}</div>
+                      <div>Payments: {dataFolderResult.counts?.payments || 0}</div>
+                    </div>
+                    <p className="text-[10px] text-emerald-700 italic pt-1">Refreshing page with imported data...</p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Section 2: Local Database Backup & Disk Export */}

@@ -105,6 +105,7 @@ export async function initDatabase(): Promise<Database> {
 
     CREATE TABLE IF NOT EXISTS tenant_configs (
       tenant_id TEXT PRIMARY KEY,
+      id TEXT,
       name TEXT,
       phone TEXT,
       email TEXT,
@@ -112,6 +113,8 @@ export async function initDatabase(): Promise<Database> {
       gstin TEXT,
       upi_id TEXT,
       config_json TEXT,
+      data_json TEXT,
+      deleted_at TEXT,
       updated_at TEXT,
       version INTEGER DEFAULT 1
     );
@@ -437,6 +440,17 @@ export async function initDatabase(): Promise<Database> {
         db.run(`ALTER TABLE ${tbl} ADD COLUMN data_json TEXT;`);
       } catch (e) {}
     }
+
+    const configCols = ['id', 'data_json', 'deleted_at'];
+    for (const col of configCols) {
+      try {
+        db.run(`ALTER TABLE tenant_configs ADD COLUMN ${col} TEXT;`);
+      } catch (e) {}
+    }
+
+    try {
+      db.run(`UPDATE tenant_configs SET id = tenant_id WHERE id IS NULL OR id = '';`);
+    } catch (e) {}
   } catch (err) {}
 
   // Run automatic data migration from legacy JSON if database is new or needs seeding
@@ -551,75 +565,403 @@ export function recordAuditLog(log: {
   }
 }
 
-// Migrate legacy JSON data (inoms_db.json & data/orgs) to SQLite
-async function migrateLegacyDataIfPresent(): Promise<void> {
-  if (!db) return;
+// Migrate legacy JSON data & scan all JSON files in data/ to SQLite
+export interface DataFolderImportResult {
+  success: boolean;
+  filesScanned: number;
+  filesImported: string[];
+  counts: Record<string, number>;
+  message: string;
+}
 
-  // Check if organizations already exist in SQLite
-  const checkStmt = db.prepare('SELECT COUNT(*) as count FROM organizations');
-  let orgCount = 0;
-  if (checkStmt.step()) {
-    orgCount = checkStmt.getAsObject().count as number || 0;
-  }
-  checkStmt.free();
+export async function scanAndImportDataFolder(force: boolean = false): Promise<DataFolderImportResult> {
+  if (!db) return { success: false, filesScanned: 0, filesImported: [], counts: {}, message: 'Database not initialized' };
 
-  if (orgCount > 0) {
-    console.log(`[Migration] SQLite database already populated with ${orgCount} organization(s).`);
-    return;
-  }
+  console.log('[DataFolderScanner] Beginning scan of data/ directory for database files and legacy JSON...');
 
-  console.log('[Migration] Beginning migration of legacy JSON data to SQLite primary database...');
+  const counts: Record<string, number> = {
+    organizations: 0,
+    clients: 0,
+    jobs: 0,
+    invoices: 0,
+    payments: 0,
+    products: 0,
+    expenses: 0,
+    ledger: 0,
+    users: 0,
+    categories: 0,
+    racks: 0,
+    equipments: 0,
+    problems: 0,
+    tenant_configs: 0
+  };
 
-  let legacyDb: Record<string, any> = {};
-  if (fs.existsSync(LEGACY_JSON_PATH)) {
-    try {
-      const content = fs.readFileSync(LEGACY_JSON_PATH, 'utf-8');
-      legacyDb = JSON.parse(content);
-    } catch (e) {
-      console.warn('[Migration] Error reading legacy JSON:', e);
-    }
-  }
-
-  // Also check individual org files in data/orgs
-  const orgsDir = path.join(DATA_DIR, 'orgs');
-  if (fs.existsSync(orgsDir)) {
-    const folders = fs.readdirSync(orgsDir, { withFileTypes: true });
-    for (const folder of folders) {
-      if (folder.isDirectory()) {
-        const orgFilePath = path.join(orgsDir, folder.name, 'data.json');
-        if (fs.existsSync(orgFilePath)) {
-          try {
-            const orgData = JSON.parse(fs.readFileSync(orgFilePath, 'utf-8'));
-            legacyDb = { ...legacyDb, ...orgData };
-          } catch (e) {}
-        }
-      }
-    }
-  }
-
+  const filesImported: string[] = [];
+  let filesScanned = 0;
   const now = new Date().toISOString();
 
-  // 1. Migrate Tenants / Organizations
-  const tenantsList = legacyDb['tenants_all'] || legacyDb['tenants'] || [];
-  const orgMap = new Map<string, any>();
+  // Helper to recursively collect all .json files in DATA_DIR
+  function collectJsonFiles(dir: string): string[] {
+    const results: string[] = [];
+    if (!fs.existsSync(dir)) return results;
+    try {
+      const list = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of list) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          results.push(...collectJsonFiles(fullPath));
+        } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.json')) {
+          results.push(fullPath);
+        }
+      }
+    } catch (e) {
+      console.warn(`[DataFolderScanner] Error reading directory ${dir}:`, e);
+    }
+    return results;
+  }
 
-  if (Array.isArray(tenantsList)) {
-    for (const t of tenantsList) {
-      if (t && t.id) orgMap.set(t.id, t);
+  const jsonFiles = collectJsonFiles(DATA_DIR);
+  filesScanned = jsonFiles.length;
+  console.log(`[DataFolderScanner] Found ${jsonFiles.length} JSON file(s) in data folder.`);
+
+  // Helper to process a single organization
+  function importOrg(org: any) {
+    if (!org || !org.id || !db) return;
+    try {
+      const pin = (org.pin || '1234').toString();
+      const { hash: pinHash, salt: pinSalt } = hashPassword(pin);
+      db.run(
+        `INSERT OR REPLACE INTO organizations (id, name, code, owner_mobile, owner_name, status, secret_key, pin_hash, pin_salt, created_at, updated_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        [
+          org.id,
+          org.name || 'Organization',
+          org.code || 'ORG',
+          org.ownerMobile || org.mobile || '',
+          org.ownerName || org.owner || 'Owner',
+          org.status || 'active',
+          org.secretKey || null,
+          pinHash,
+          pinSalt,
+          org.createdAt || now,
+          org.updatedAt || now
+        ]
+      );
+      db.run(
+        `INSERT OR IGNORE INTO sync_revisions (tenant_id, current_revision, last_updated) VALUES (?, 1, ?)`,
+        [org.id, now]
+      );
+      counts.organizations = (counts.organizations || 0) + 1;
+    } catch (e) {
+      console.warn(`[DataFolderScanner] Error importing organization ${org.id}:`, e);
     }
   }
 
-  // Scan keys like tenant_ORG...
-  for (const key of Object.keys(legacyDb)) {
-    if (key.startsWith('tenant_') && key !== 'tenant_configs' && key !== 'tenants_all') {
-      const t = legacyDb[key];
-      if (t && t.id) orgMap.set(t.id, t);
+  // Helper to process a single company config
+  function importCompanyConfig(tenantId: string, cfg: any) {
+    if (!tenantId || !cfg || !db) return;
+    try {
+      const dataJson = JSON.stringify(cfg);
+      db.run(
+        `INSERT OR REPLACE INTO tenant_configs (id, tenant_id, name, phone, email, address, gstin, upi_id, config_json, data_json, updated_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        [
+          tenantId,
+          tenantId,
+          cfg.name || null,
+          cfg.phone || null,
+          cfg.email || null,
+          cfg.address || null,
+          cfg.gstin || null,
+          cfg.upiId || null,
+          dataJson,
+          dataJson,
+          now
+        ]
+      );
+      counts.tenant_configs = (counts.tenant_configs || 0) + 1;
+    } catch (e) {
+      console.warn(`[DataFolderScanner] Error importing config for ${tenantId}:`, e);
     }
   }
 
-  // Ensure default demo organizations exist if empty
-  if (orgMap.size === 0) {
-    orgMap.set('org-admin', {
+  // Helper to process a record item in a collection
+  function importCollectionItem(tenantId: string, colName: string, item: any) {
+    if (!item || !item.id || !db) return;
+    const targetTenant = item.tenantId || tenantId || 'org-admin';
+    const dataJson = JSON.stringify(item);
+    const itemCreatedAt = item.createdAt || now;
+    const itemUpdatedAt = item.updatedAt || now;
+
+    try {
+      switch (colName) {
+        case 'clients':
+          db.run(
+            `INSERT OR REPLACE INTO clients (id, tenant_id, name, phone, email, address, city, gstin, credit_limit, opening_balance, current_balance, notes, data_json, created_at, updated_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [
+              item.id, targetTenant, item.name || 'Unknown', item.phone || null, item.email || null,
+              item.address || null, item.city || null, item.gstin || null, item.creditLimit || 0,
+              item.openingBalance || 0, item.currentBalance || 0, item.notes || null, dataJson,
+              itemCreatedAt, itemUpdatedAt
+            ]
+          );
+          counts.clients = (counts.clients || 0) + 1;
+          break;
+
+        case 'jobs':
+          db.run(
+            `INSERT OR REPLACE INTO jobs (id, tenant_id, job_no, client_id, client_name, client_phone, equipment_type, brand_model, serial_no, problem_description, estimated_cost, advance_paid, status, priority, assigned_to, rack_location, data_json, created_at, updated_at, completed_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [
+              item.id, targetTenant, item.jobNo || item.id, item.clientId || null, item.clientName || null,
+              item.clientPhone || null, item.equipmentType || null, item.brandModel || item.model || null,
+              item.serialNo || null, item.problemDescription || item.problem || null, item.estimatedCost || 0,
+              item.advancePaid || 0, item.status || 'Pending', item.priority || 'Normal', item.assignedTo || null,
+              item.rackLocation || null, dataJson, itemCreatedAt, itemUpdatedAt, item.completedAt || null
+            ]
+          );
+          counts.jobs = (counts.jobs || 0) + 1;
+          break;
+
+        case 'invoices':
+          db.run(
+            `INSERT OR REPLACE INTO invoices (id, tenant_id, invoice_no, job_id, client_id, client_name, client_phone, subtotal, discount, tax, total, paid_amount, balance_due, payment_mode, status, data_json, created_at, updated_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [
+              item.id, targetTenant, item.invoiceNo || item.id, item.jobId || null, item.clientId || null,
+              item.clientName || null, item.clientPhone || null, item.subtotal || 0, item.discount || 0,
+              item.tax || 0, item.total || item.grandTotal || 0, item.paidAmount || 0, item.balanceDue || 0,
+              item.paymentMode || 'Cash', item.status || 'Paid', dataJson, itemCreatedAt, itemUpdatedAt
+            ]
+          );
+          counts.invoices = (counts.invoices || 0) + 1;
+          break;
+
+        case 'payments':
+          db.run(
+            `INSERT OR REPLACE INTO payments (id, tenant_id, payment_no, client_id, client_name, invoice_id, job_id, amount, payment_mode, transaction_ref, notes, received_by, date, data_json, created_at, updated_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [
+              item.id, targetTenant, item.paymentNo || item.id, item.clientId || null, item.clientName || null,
+              item.invoiceId || null, item.jobId || null, item.amount || 0, item.paymentMode || 'Cash',
+              item.transactionRef || null, item.notes || null, item.receivedBy || null, item.date || itemCreatedAt,
+              dataJson, itemCreatedAt, itemUpdatedAt
+            ]
+          );
+          counts.payments = (counts.payments || 0) + 1;
+          break;
+
+        case 'products':
+          db.run(
+            `INSERT OR REPLACE INTO products (id, tenant_id, code, name, category, description, cost_price, selling_price, stock_quantity, min_stock_alert, unit, location, data_json, created_at, updated_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [
+              item.id, targetTenant, item.code || item.sku || null, item.name || 'Product', item.category || null,
+              item.description || null, item.costPrice || 0, item.sellingPrice || item.price || 0,
+              item.stockQuantity || item.stock || 0, item.minStockAlert || 0, item.unit || 'pcs',
+              item.location || null, dataJson, itemCreatedAt, itemUpdatedAt
+            ]
+          );
+          counts.products = (counts.products || 0) + 1;
+          break;
+
+        case 'expenses':
+          db.run(
+            `INSERT OR REPLACE INTO expenses (id, tenant_id, expense_no, category, amount, payment_mode, description, paid_to, date, recorded_by, data_json, created_at, updated_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [
+              item.id, targetTenant, item.expenseNo || item.id, item.category || 'General', item.amount || 0,
+              item.paymentMode || 'Cash', item.description || null, item.paidTo || null, item.date || itemCreatedAt,
+              item.recordedBy || null, dataJson, itemCreatedAt, itemUpdatedAt
+            ]
+          );
+          counts.expenses = (counts.expenses || 0) + 1;
+          break;
+
+        case 'ledger':
+          db.run(
+            `INSERT OR REPLACE INTO ledger (id, tenant_id, client_id, entry_type, amount, reference_id, description, balance_after, date, data_json, created_at, updated_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [
+              item.id, targetTenant, item.clientId || null, item.entryType || item.type || 'Debit', item.amount || 0,
+              item.referenceId || null, item.description || null, item.balanceAfter || 0, item.date || itemCreatedAt,
+              dataJson, itemCreatedAt, itemUpdatedAt
+            ]
+          );
+          counts.ledger = (counts.ledger || 0) + 1;
+          break;
+
+        case 'users': {
+          const pass = (item.password || item.pin || '1234').toString();
+          const { hash: pHash, salt: pSalt } = hashPassword(pass);
+          db.run(
+            `INSERT OR REPLACE INTO users (id, tenant_id, name, username, mobile, email, role, status, password_hash, password_salt, pin_hash, pin_salt, permissions_json, data_json, created_at, updated_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [
+              item.id, targetTenant, item.name || 'User', item.username || null, item.mobile || null,
+              item.email || null, item.role || 'Technician', item.status || 'Active', pHash, pSalt,
+              pHash, pSalt, item.permissions ? JSON.stringify(item.permissions) : null, dataJson,
+              itemCreatedAt, itemUpdatedAt
+            ]
+          );
+          counts.users = (counts.users || 0) + 1;
+          break;
+        }
+
+        case 'categories':
+          db.run(
+            `INSERT OR REPLACE INTO categories (id, tenant_id, name, type, data_json, created_at, updated_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [item.id, targetTenant, item.name || 'Category', item.type || 'Job', dataJson, itemCreatedAt, itemUpdatedAt]
+          );
+          counts.categories = (counts.categories || 0) + 1;
+          break;
+
+        case 'racks':
+          db.run(
+            `INSERT OR REPLACE INTO racks (id, tenant_id, name, capacity, location, data_json, created_at, updated_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [item.id, targetTenant, item.name || 'Rack', item.capacity || null, item.location || null, dataJson, itemCreatedAt, itemUpdatedAt]
+          );
+          counts.racks = (counts.racks || 0) + 1;
+          break;
+
+        case 'equipments':
+          db.run(
+            `INSERT OR REPLACE INTO equipments (id, tenant_id, name, brand, model, data_json, created_at, updated_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [item.id, targetTenant, item.name || 'Equipment', item.brand || null, item.model || null, dataJson, itemCreatedAt, itemUpdatedAt]
+          );
+          counts.equipments = (counts.equipments || 0) + 1;
+          break;
+
+        case 'problems':
+          db.run(
+            `INSERT OR REPLACE INTO problems (id, tenant_id, title, description, common_solution, standard_cost, data_json, created_at, updated_at, deleted_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
+            [item.id, targetTenant, item.title || 'Problem', item.description || null, item.commonSolution || null, item.standardCost || 0, dataJson, itemCreatedAt, itemUpdatedAt]
+          );
+          counts.problems = (counts.problems || 0) + 1;
+          break;
+      }
+    } catch (e) {
+      console.warn(`[DataFolderScanner] Error importing item ${item.id} in ${colName}:`, e);
+    }
+  }
+
+  // Iterate over all discovered JSON files
+  for (const filePath of jsonFiles) {
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      if (!content || !content.trim()) continue;
+      const parsed = JSON.parse(content);
+      const relativePath = path.relative(DATA_DIR, filePath);
+      let importedSomething = false;
+
+      // Type 1: Keyed legacy format (inoms_db.json or org data.json)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        // Tenants / Organizations
+        const tenants = parsed['tenants_all'] || parsed['tenants'] || parsed['organizations'];
+        if (Array.isArray(tenants)) {
+          for (const t of tenants) {
+            importOrg(t);
+            importedSomething = true;
+          }
+        }
+
+        // Keys starting with tenant_ or config_ or col_
+        for (const [key, val] of Object.entries(parsed)) {
+          if (key.startsWith('tenant_') && key !== 'tenant_configs' && key !== 'tenants_all') {
+            if (val && typeof val === 'object' && (val as any).id) {
+              importOrg(val);
+              importedSomething = true;
+            }
+          } else if (key.startsWith('config_')) {
+            const tId = key.substring(7);
+            if (val && typeof val === 'object') {
+              importCompanyConfig(tId, val);
+              importedSomething = true;
+            }
+          } else if (key.startsWith('col_')) {
+            const parts = key.substring(4).split('_');
+            if (parts.length >= 2) {
+              const tId = parts[0];
+              const colName = parts.slice(1).join('_');
+              const items = Array.isArray((val as any)?.items) ? (val as any).items : (Array.isArray(val) ? val : []);
+              for (const it of items) {
+                importCollectionItem(tId, colName, it);
+                importedSomething = true;
+              }
+            }
+          }
+        }
+
+        // Type 2: Standard JSON Backup export format { tenantId, clients: [], jobs: [], ... }
+        const targetTenantId = parsed.tenantId || 'org-admin';
+        if (parsed.companyConfig) {
+          importCompanyConfig(targetTenantId, parsed.companyConfig);
+          importedSomething = true;
+        }
+
+        const knownCollections = ['clients', 'jobs', 'invoices', 'payments', 'products', 'expenses', 'ledger', 'users', 'categories', 'racks', 'equipments', 'problems'];
+        for (const col of knownCollections) {
+          if (Array.isArray(parsed[col])) {
+            for (const it of parsed[col]) {
+              importCollectionItem(targetTenantId, col, it);
+              importedSomething = true;
+            }
+          }
+        }
+      } else if (Array.isArray(parsed)) {
+        // Type 3: Direct Array JSON file (e.g. clients.json, jobs.json, tenants.json)
+        const filename = path.basename(filePath).toLowerCase();
+        let detectedCol = '';
+        if (filename.includes('client')) detectedCol = 'clients';
+        else if (filename.includes('job')) detectedCol = 'jobs';
+        else if (filename.includes('invoice')) detectedCol = 'invoices';
+        else if (filename.includes('payment')) detectedCol = 'payments';
+        else if (filename.includes('product')) detectedCol = 'products';
+        else if (filename.includes('expense')) detectedCol = 'expenses';
+        else if (filename.includes('ledger')) detectedCol = 'ledger';
+        else if (filename.includes('user')) detectedCol = 'users';
+        else if (filename.includes('categor')) detectedCol = 'categories';
+        else if (filename.includes('rack')) detectedCol = 'racks';
+        else if (filename.includes('equipment')) detectedCol = 'equipments';
+        else if (filename.includes('problem')) detectedCol = 'problems';
+        else if (filename.includes('tenant') || filename.includes('org')) {
+          for (const t of parsed) {
+            importOrg(t);
+            importedSomething = true;
+          }
+        }
+
+        if (detectedCol) {
+          for (const it of parsed) {
+            importCollectionItem('org-admin', detectedCol, it);
+            importedSomething = true;
+          }
+        }
+      }
+
+      if (importedSomething) {
+        filesImported.push(relativePath);
+      }
+    } catch (err) {
+      console.warn(`[DataFolderScanner] Error parsing JSON file ${filePath}:`, err);
+    }
+  }
+
+  // Ensure default organizations exist if still completely empty
+  const countStmt = db.prepare('SELECT COUNT(*) as count FROM organizations');
+  let currentOrgCount = 0;
+  if (countStmt.step()) {
+    currentOrgCount = countStmt.getAsObject().count as number || 0;
+  }
+  countStmt.free();
+
+  if (currentOrgCount === 0) {
+    importOrg({
       id: 'org-admin',
       name: 'Master System Admin',
       code: 'ADMIN-00',
@@ -629,7 +971,7 @@ async function migrateLegacyDataIfPresent(): Promise<void> {
       createdAt: '2026-01-01',
       secretKey: 'MASTERADMIN2FA37'
     });
-    orgMap.set('org-1', {
+    importOrg({
       id: 'org-1',
       name: 'Apex Electronics & Mobile Care',
       code: 'APEX-01',
@@ -640,218 +982,26 @@ async function migrateLegacyDataIfPresent(): Promise<void> {
     });
   }
 
-  for (const [orgId, org] of orgMap.entries()) {
-    const pin = (org.pin || '1234').toString();
-    const { hash: pinHash, salt: pinSalt } = hashPassword(pin);
-    db.run(
-      `INSERT OR REPLACE INTO organizations (id, name, code, owner_mobile, owner_name, status, secret_key, pin_hash, pin_salt, created_at, updated_at, version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-      [
-        org.id,
-        org.name || 'Organization',
-        org.code || 'ORG',
-        org.ownerMobile || '',
-        org.ownerName || 'Owner',
-        org.status || 'active',
-        org.secretKey || null,
-        pinHash,
-        pinSalt,
-        org.createdAt || now,
-        now
-      ]
-    );
-
-    // Initialize sync revision
-    db.run(
-      `INSERT OR IGNORE INTO sync_revisions (tenant_id, current_revision, last_updated) VALUES (?, 1, ?)`,
-      [org.id, now]
-    );
-  }
-
-  // 2. Migrate Tenant Collections
-  for (const [key, value] of Object.entries(legacyDb)) {
-    if (key.startsWith('col_')) {
-      const parts = key.substring(4).split('_');
-      if (parts.length >= 2) {
-        const tenantId = parts[0];
-        const colName = parts.slice(1).join('_');
-        const items = value && Array.isArray(value.items) ? value.items : (Array.isArray(value) ? value : []);
-
-        for (const item of items) {
-          if (!item || !item.id) continue;
-          const dataJson = JSON.stringify(item);
-          const itemCreatedAt = item.createdAt || now;
-          const itemUpdatedAt = item.updatedAt || now;
-
-          switch (colName) {
-            case 'clients':
-              db.run(
-                `INSERT OR REPLACE INTO clients (id, tenant_id, name, phone, email, address, city, gstin, credit_limit, opening_balance, current_balance, notes, data_json, created_at, updated_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [
-                  item.id, tenantId, item.name || 'Unknown', item.phone || null, item.email || null,
-                  item.address || null, item.city || null, item.gstin || null, item.creditLimit || 0,
-                  item.openingBalance || 0, item.currentBalance || 0, item.notes || null, dataJson,
-                  itemCreatedAt, itemUpdatedAt
-                ]
-              );
-              break;
-
-            case 'jobs':
-              db.run(
-                `INSERT OR REPLACE INTO jobs (id, tenant_id, job_no, client_id, client_name, client_phone, equipment_type, brand_model, serial_no, problem_description, estimated_cost, advance_paid, status, priority, assigned_to, rack_location, data_json, created_at, updated_at, completed_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [
-                  item.id, tenantId, item.jobNo || item.id, item.clientId || null, item.clientName || null,
-                  item.clientPhone || null, item.equipmentType || null, item.brandModel || item.model || null,
-                  item.serialNo || null, item.problemDescription || item.problem || null, item.estimatedCost || 0,
-                  item.advancePaid || 0, item.status || 'Pending', item.priority || 'Normal', item.assignedTo || null,
-                  item.rackLocation || null, dataJson, itemCreatedAt, itemUpdatedAt, item.completedAt || null
-                ]
-              );
-              break;
-
-            case 'invoices':
-              db.run(
-                `INSERT OR REPLACE INTO invoices (id, tenant_id, invoice_no, job_id, client_id, client_name, client_phone, subtotal, discount, tax, total, paid_amount, balance_due, payment_mode, status, data_json, created_at, updated_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [
-                  item.id, tenantId, item.invoiceNo || item.id, item.jobId || null, item.clientId || null,
-                  item.clientName || null, item.clientPhone || null, item.subtotal || 0, item.discount || 0,
-                  item.tax || 0, item.total || item.grandTotal || 0, item.paidAmount || 0, item.balanceDue || 0,
-                  item.paymentMode || 'Cash', item.status || 'Paid', dataJson, itemCreatedAt, itemUpdatedAt
-                ]
-              );
-              break;
-
-            case 'payments':
-              db.run(
-                `INSERT OR REPLACE INTO payments (id, tenant_id, payment_no, client_id, client_name, invoice_id, job_id, amount, payment_mode, transaction_ref, notes, received_by, date, data_json, created_at, updated_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [
-                  item.id, tenantId, item.paymentNo || item.id, item.clientId || null, item.clientName || null,
-                  item.invoiceId || null, item.jobId || null, item.amount || 0, item.paymentMode || 'Cash',
-                  item.transactionRef || null, item.notes || null, item.receivedBy || null, item.date || itemCreatedAt,
-                  dataJson, itemCreatedAt, itemUpdatedAt
-                ]
-              );
-              break;
-
-            case 'products':
-              db.run(
-                `INSERT OR REPLACE INTO products (id, tenant_id, code, name, category, description, cost_price, selling_price, stock_quantity, min_stock_alert, unit, location, data_json, created_at, updated_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [
-                  item.id, tenantId, item.code || item.sku || null, item.name || 'Product', item.category || null,
-                  item.description || null, item.costPrice || 0, item.sellingPrice || item.price || 0,
-                  item.stockQuantity || item.stock || 0, item.minStockAlert || 0, item.unit || 'pcs',
-                  item.location || null, dataJson, itemCreatedAt, itemUpdatedAt
-                ]
-              );
-              break;
-
-            case 'expenses':
-              db.run(
-                `INSERT OR REPLACE INTO expenses (id, tenant_id, expense_no, category, amount, payment_mode, description, paid_to, date, recorded_by, data_json, created_at, updated_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [
-                  item.id, tenantId, item.expenseNo || item.id, item.category || 'General', item.amount || 0,
-                  item.paymentMode || 'Cash', item.description || null, item.paidTo || null, item.date || itemCreatedAt,
-                  item.recordedBy || null, dataJson, itemCreatedAt, itemUpdatedAt
-                ]
-              );
-              break;
-
-            case 'ledger':
-              db.run(
-                `INSERT OR REPLACE INTO ledger (id, tenant_id, client_id, entry_type, amount, reference_id, description, balance_after, date, data_json, created_at, updated_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [
-                  item.id, tenantId, item.clientId || null, item.entryType || item.type || 'Debit', item.amount || 0,
-                  item.referenceId || null, item.description || null, item.balanceAfter || 0, item.date || itemCreatedAt,
-                  dataJson, itemCreatedAt, itemUpdatedAt
-                ]
-              );
-              break;
-
-            case 'users': {
-              const pass = (item.password || item.pin || '1234').toString();
-              const { hash: pHash, salt: pSalt } = hashPassword(pass);
-              db.run(
-                `INSERT OR REPLACE INTO users (id, tenant_id, name, username, mobile, email, role, status, password_hash, password_salt, pin_hash, pin_salt, permissions_json, created_at, updated_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [
-                  item.id, tenantId, item.name || 'User', item.username || null, item.mobile || null,
-                  item.email || null, item.role || 'Technician', item.status || 'Active', pHash, pSalt,
-                  pHash, pSalt, item.permissions ? JSON.stringify(item.permissions) : null, itemCreatedAt, itemUpdatedAt
-                ]
-              );
-              break;
-            }
-
-            case 'categories':
-              db.run(
-                `INSERT OR REPLACE INTO categories (id, tenant_id, name, type, data_json, created_at, updated_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [item.id, tenantId, item.name || 'Category', item.type || 'Job', dataJson, itemCreatedAt, itemUpdatedAt]
-              );
-              break;
-
-            case 'racks':
-              db.run(
-                `INSERT OR REPLACE INTO racks (id, tenant_id, name, capacity, location, data_json, created_at, updated_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [item.id, tenantId, item.name || 'Rack', item.capacity || null, item.location || null, dataJson, itemCreatedAt, itemUpdatedAt]
-              );
-              break;
-
-            case 'equipments':
-              db.run(
-                `INSERT OR REPLACE INTO equipments (id, tenant_id, name, brand, model, data_json, created_at, updated_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [item.id, tenantId, item.name || 'Equipment', item.brand || null, item.model || null, dataJson, itemCreatedAt, itemUpdatedAt]
-              );
-              break;
-
-            case 'problems':
-              db.run(
-                `INSERT OR REPLACE INTO problems (id, tenant_id, title, description, common_solution, standard_cost, data_json, created_at, updated_at, deleted_at, version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-                [item.id, tenantId, item.title || 'Problem', item.description || null, item.commonSolution || null, item.standardCost || 0, dataJson, itemCreatedAt, itemUpdatedAt]
-              );
-              break;
-          }
-        }
-      }
-    }
-  }
-
-  // 3. Migrate Company Configs
-  for (const [key, value] of Object.entries(legacyDb)) {
-    if (key.startsWith('config_')) {
-      const tenantId = key.substring(7);
-      if (value && typeof value === 'object') {
-        db.run(
-          `INSERT OR REPLACE INTO tenant_configs (tenant_id, name, phone, email, address, gstin, upi_id, config_json, updated_at, version)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-          [
-            tenantId,
-            value.name || null,
-            value.phone || null,
-            value.email || null,
-            value.address || null,
-            value.gstin || null,
-            value.upiId || null,
-            JSON.stringify(value),
-            now
-          ]
-        );
-      }
-    }
-  }
-
+  // Persist updated SQLite database to disk
   persistDatabase();
-  console.log('[Migration] ✓ SQLite primary database migration completed successfully!');
+
+  const totalImportedItems = Object.values(counts).reduce((a, b) => a + b, 0);
+  console.log(`[DataFolderScanner] ✓ Scan completed. Scanned: ${filesScanned} file(s), Processed: ${filesImported.length} file(s), Total items: ${totalImportedItems}`);
+
+  return {
+    success: true,
+    filesScanned,
+    filesImported,
+    counts,
+    message: totalImportedItems > 0 
+      ? `Successfully imported data from ${filesImported.length} file(s) in data folder (${totalImportedItems} total records).` 
+      : `Data folder scan complete. No new unimported JSON records found.`
+  };
+}
+
+// Migrate legacy JSON data (inoms_db.json & data/orgs) to SQLite
+async function migrateLegacyDataIfPresent(): Promise<void> {
+  await scanAndImportDataFolder(false);
 }
 
 // Scheduled Home Server Backup Engine
