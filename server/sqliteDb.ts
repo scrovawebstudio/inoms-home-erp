@@ -687,119 +687,290 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
 
   // Helper to process a record item in a collection
   function importCollectionItem(tenantId: string, colName: string, item: any) {
-    if (!item || !item.id || !db) return;
+    if (!item || !db) return;
     const targetTenant = item.tenantId || tenantId || 'org-admin';
-    const dataJson = JSON.stringify(item);
-    const itemCreatedAt = item.createdAt || now;
+    const itemId = String(item.id || item.jobNo || item.invoiceNo || item.sku || item.phone || item.mobile || `${colName}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`);
+    const itemCreatedAt = item.createdAt || item.date || item.receivedDate || now;
     const itemUpdatedAt = item.updatedAt || now;
+
+    // Normalize item object for frontend compatibility
+    let normalizedItem = { ...item, id: itemId, tenantId: targetTenant };
 
     try {
       switch (colName) {
-        case 'clients':
+        case 'clients': {
+          const clientName = item.name || item.clientName || 'Unknown Client';
+          const clientPhone = String(item.phone || item.mobile || item.clientMobile || item.contact || '');
+          const clientEmail = item.email || null;
+          const clientAddress = item.address || null;
+          const clientCity = item.city || item.state || null;
+          const clientGstin = item.gstin || item.gst || null;
+          const balance = Number(item.outstandingBalance ?? item.currentBalance ?? item.balance ?? 0);
+          
+          normalizedItem = {
+            ...item,
+            id: itemId,
+            tenantId: targetTenant,
+            name: clientName,
+            mobile: clientPhone,
+            phone: clientPhone,
+            email: clientEmail || '',
+            address: clientAddress || '',
+            city: clientCity || '',
+            gstin: clientGstin || '',
+            outstandingBalance: balance,
+            currentBalance: balance,
+            createdAt: itemCreatedAt
+          };
+
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO clients (id, tenant_id, name, phone, email, address, city, gstin, credit_limit, opening_balance, current_balance, notes, data_json, created_at, updated_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
             [
-              item.id, targetTenant, item.name || 'Unknown', item.phone || null, item.email || null,
-              item.address || null, item.city || null, item.gstin || null, item.creditLimit || 0,
-              item.openingBalance || 0, item.currentBalance || 0, item.notes || null, dataJson,
+              itemId, targetTenant, clientName, clientPhone || null, clientEmail,
+              clientAddress, clientCity, clientGstin, item.creditLimit || 0,
+              item.openingBalance || 0, balance, item.notes || null, dataJson,
               itemCreatedAt, itemUpdatedAt
             ]
           );
           counts.clients = (counts.clients || 0) + 1;
           break;
+        }
 
-        case 'jobs':
+        case 'jobs': {
+          const jobNo = item.jobNo || item.id || itemId;
+          const clientName = item.clientName || item.client || 'Unknown';
+          const clientPhone = String(item.clientMobile || item.clientPhone || item.phone || item.mobile || '');
+          const equipment = item.equipment || item.equipmentType || 'LAPTOP';
+          const brandModel = item.model || item.brandModel || item.brand || '';
+          const serialNo = String(item.serialNo || item.serial_no || item.imei || '');
+          const problem = item.issue || item.problemDescription || item.problem || item.reportedProblem || 'Repair Service';
+          const estCost = Number(item.estimatedCost ?? item.estimateAmount ?? item.estimated_cost ?? 0);
+          const advPaid = Number(item.advancePaid ?? item.advanceAmount ?? item.advance_paid ?? 0);
+          const status = item.status || 'Received';
+
+          normalizedItem = {
+            ...item,
+            id: itemId,
+            jobNo,
+            tenantId: targetTenant,
+            clientId: item.clientId || '',
+            clientName,
+            clientMobile: clientPhone,
+            equipment,
+            model: brandModel,
+            brandModel,
+            serialNo,
+            issue: problem,
+            problemDescription: problem,
+            status,
+            estimatedCost: estCost,
+            advancePaid: advPaid,
+            receivedDate: itemCreatedAt,
+            date: item.date || itemCreatedAt,
+            createdAt: itemCreatedAt
+          };
+
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO jobs (id, tenant_id, job_no, client_id, client_name, client_phone, equipment_type, brand_model, serial_no, problem_description, estimated_cost, advance_paid, status, priority, assigned_to, rack_location, data_json, created_at, updated_at, completed_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
             [
-              item.id, targetTenant, item.jobNo || item.id, item.clientId || null, item.clientName || null,
-              item.clientPhone || null, item.equipmentType || null, item.brandModel || item.model || null,
-              item.serialNo || null, item.problemDescription || item.problem || null, item.estimatedCost || 0,
-              item.advancePaid || 0, item.status || 'Pending', item.priority || 'Normal', item.assignedTo || null,
+              itemId, targetTenant, jobNo, item.clientId || null, clientName,
+              clientPhone || null, equipment, brandModel || null,
+              serialNo || null, problem, estCost,
+              advPaid, status, item.priority || 'Normal', item.assignedTo || item.assignedTechnician || null,
               item.rackLocation || null, dataJson, itemCreatedAt, itemUpdatedAt, item.completedAt || null
             ]
           );
           counts.jobs = (counts.jobs || 0) + 1;
           break;
+        }
 
-        case 'invoices':
+        case 'invoices': {
+          const invNo = item.invoiceNo || item.invoice_no || item.id || itemId;
+          const clientName = item.clientName || item.client || 'Walk-in Client';
+          const clientPhone = String(item.clientMobile || item.clientPhone || item.phone || '');
+          const subtotal = Number(item.subtotal ?? item.subTotal ?? 0);
+          const discount = Number(item.discount ?? 0);
+          const tax = Number(item.taxAmount ?? item.tax ?? 0);
+          const total = Number(item.grandTotal ?? item.totalAmount ?? item.total ?? (subtotal + tax - discount));
+          const paidAmount = Number(item.paidAmount ?? item.paid ?? (item.isPaid ? total : 0));
+          const balanceDue = Number(item.balanceAmount ?? item.balanceDue ?? (total - paidAmount));
+          const status = item.status || (balanceDue <= 0 ? 'Paid' : 'Unpaid');
+          const isPaid = item.isPaid !== undefined ? !!item.isPaid : (status === 'Paid' || balanceDue <= 0);
+
+          normalizedItem = {
+            ...item,
+            id: itemId,
+            invoiceNo: invNo,
+            tenantId: targetTenant,
+            clientId: item.clientId || '',
+            clientName,
+            clientMobile: clientPhone,
+            date: item.date || item.invoiceDate || itemCreatedAt,
+            items: Array.isArray(item.items) ? item.items : [],
+            subtotal,
+            discount,
+            taxAmount: tax,
+            grandTotal: total,
+            total,
+            paidAmount,
+            balanceAmount: balanceDue,
+            balanceDue,
+            status,
+            isPaid,
+            paymentMode: item.paymentMode || 'Cash',
+            createdAt: itemCreatedAt
+          };
+
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO invoices (id, tenant_id, invoice_no, job_id, client_id, client_name, client_phone, subtotal, discount, tax, total, paid_amount, balance_due, payment_mode, status, data_json, created_at, updated_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
             [
-              item.id, targetTenant, item.invoiceNo || item.id, item.jobId || null, item.clientId || null,
-              item.clientName || null, item.clientPhone || null, item.subtotal || 0, item.discount || 0,
-              item.tax || 0, item.total || item.grandTotal || 0, item.paidAmount || 0, item.balanceDue || 0,
-              item.paymentMode || 'Cash', item.status || 'Paid', dataJson, itemCreatedAt, itemUpdatedAt
+              itemId, targetTenant, invNo, item.jobId || item.linkedJobId || null, item.clientId || null,
+              clientName, clientPhone || null, subtotal, discount,
+              tax, total, paidAmount, balanceDue,
+              item.paymentMode || 'Cash', status, dataJson, itemCreatedAt, itemUpdatedAt
             ]
           );
           counts.invoices = (counts.invoices || 0) + 1;
           break;
+        }
 
-        case 'payments':
+        case 'payments': {
+          const payNo = item.paymentNo || item.receiptNo || item.id || itemId;
+          const amount = Number(item.amount || 0);
+          normalizedItem = {
+            ...item,
+            id: itemId,
+            tenantId: targetTenant,
+            paymentNo: payNo,
+            amount,
+            clientName: item.clientName || '',
+            date: item.date || itemCreatedAt,
+            paymentMode: item.paymentMode || item.method || 'Cash',
+            createdAt: itemCreatedAt
+          };
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO payments (id, tenant_id, payment_no, client_id, client_name, invoice_id, job_id, amount, payment_mode, transaction_ref, notes, received_by, date, data_json, created_at, updated_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
             [
-              item.id, targetTenant, item.paymentNo || item.id, item.clientId || null, item.clientName || null,
-              item.invoiceId || null, item.jobId || null, item.amount || 0, item.paymentMode || 'Cash',
-              item.transactionRef || null, item.notes || null, item.receivedBy || null, item.date || itemCreatedAt,
+              itemId, targetTenant, payNo, item.clientId || null, item.clientName || null,
+              item.invoiceId || null, item.jobId || null, amount, item.paymentMode || item.method || 'Cash',
+              item.transactionRef || item.referenceNo || null, item.notes || null, item.receivedBy || null, item.date || itemCreatedAt,
               dataJson, itemCreatedAt, itemUpdatedAt
             ]
           );
           counts.payments = (counts.payments || 0) + 1;
           break;
+        }
 
-        case 'products':
+        case 'products': {
+          const pName = item.name || item.productName || 'Product';
+          const pPrice = Number(item.sellingPrice ?? item.price ?? 0);
+          const pCost = Number(item.purchasePrice ?? item.costPrice ?? 0);
+          const pStock = Number(item.stockQty ?? item.stock ?? item.stockQuantity ?? 0);
+          normalizedItem = {
+            ...item,
+            id: itemId,
+            tenantId: targetTenant,
+            name: pName,
+            sellingPrice: pPrice,
+            price: pPrice,
+            purchasePrice: pCost,
+            costPrice: pCost,
+            stock: pStock,
+            stockQty: pStock,
+            category: item.category || 'General',
+            createdAt: itemCreatedAt
+          };
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO products (id, tenant_id, code, name, category, description, cost_price, selling_price, stock_quantity, min_stock_alert, unit, location, data_json, created_at, updated_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
             [
-              item.id, targetTenant, item.code || item.sku || null, item.name || 'Product', item.category || null,
-              item.description || null, item.costPrice || 0, item.sellingPrice || item.price || 0,
-              item.stockQuantity || item.stock || 0, item.minStockAlert || 0, item.unit || 'pcs',
-              item.location || null, dataJson, itemCreatedAt, itemUpdatedAt
+              itemId, targetTenant, item.code || item.partNumber || item.barcode || null, pName, item.category || null,
+              item.description || null, pCost, pPrice,
+              pStock, item.minStockAlert || item.minStockLevel || 0, item.unit || 'pcs',
+              item.location || item.rackLocation || null, dataJson, itemCreatedAt, itemUpdatedAt
             ]
           );
           counts.products = (counts.products || 0) + 1;
           break;
+        }
 
-        case 'expenses':
+        case 'expenses': {
+          const amount = Number(item.amount || 0);
+          normalizedItem = {
+            ...item,
+            id: itemId,
+            tenantId: targetTenant,
+            amount,
+            category: item.category || 'General',
+            date: item.date || itemCreatedAt,
+            createdAt: itemCreatedAt
+          };
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO expenses (id, tenant_id, expense_no, category, amount, payment_mode, description, paid_to, date, recorded_by, data_json, created_at, updated_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
             [
-              item.id, targetTenant, item.expenseNo || item.id, item.category || 'General', item.amount || 0,
+              itemId, targetTenant, item.expenseNo || itemId, item.category || 'General', amount,
               item.paymentMode || 'Cash', item.description || null, item.paidTo || null, item.date || itemCreatedAt,
               item.recordedBy || null, dataJson, itemCreatedAt, itemUpdatedAt
             ]
           );
           counts.expenses = (counts.expenses || 0) + 1;
           break;
+        }
 
-        case 'ledger':
+        case 'ledger': {
+          const amount = Number(item.amount || item.debit || item.credit || 0);
+          normalizedItem = {
+            ...item,
+            id: itemId,
+            tenantId: targetTenant,
+            amount,
+            date: item.date || itemCreatedAt,
+            createdAt: itemCreatedAt
+          };
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO ledger (id, tenant_id, client_id, entry_type, amount, reference_id, description, balance_after, date, data_json, created_at, updated_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
             [
-              item.id, targetTenant, item.clientId || null, item.entryType || item.type || 'Debit', item.amount || 0,
-              item.referenceId || null, item.description || null, item.balanceAfter || 0, item.date || itemCreatedAt,
+              itemId, targetTenant, item.clientId || null, item.entryType || item.type || 'Debit', amount,
+              item.referenceId || item.refNo || null, item.description || null, item.balanceAfter || item.balance || 0, item.date || itemCreatedAt,
               dataJson, itemCreatedAt, itemUpdatedAt
             ]
           );
           counts.ledger = (counts.ledger || 0) + 1;
           break;
+        }
 
         case 'users': {
           const pass = (item.password || item.pin || '1234').toString();
           const { hash: pHash, salt: pSalt } = hashPassword(pass);
+          normalizedItem = {
+            ...item,
+            id: itemId,
+            tenantId: targetTenant,
+            name: item.name || 'User',
+            username: item.username || item.mobile || 'user',
+            mobile: item.mobile || '',
+            role: item.role || 'Technician',
+            status: item.status || 'Active'
+          };
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO users (id, tenant_id, name, username, mobile, email, role, status, password_hash, password_salt, pin_hash, pin_salt, permissions_json, data_json, created_at, updated_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
             [
-              item.id, targetTenant, item.name || 'User', item.username || null, item.mobile || null,
+              itemId, targetTenant, item.name || 'User', item.username || null, item.mobile || null,
               item.email || null, item.role || 'Technician', item.status || 'Active', pHash, pSalt,
               pHash, pSalt, item.permissions ? JSON.stringify(item.permissions) : null, dataJson,
               itemCreatedAt, itemUpdatedAt
@@ -809,44 +980,56 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
           break;
         }
 
-        case 'categories':
+        case 'categories': {
+          normalizedItem = { ...item, id: itemId, tenantId: targetTenant, name: item.name || 'Category' };
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO categories (id, tenant_id, name, type, data_json, created_at, updated_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-            [item.id, targetTenant, item.name || 'Category', item.type || 'Job', dataJson, itemCreatedAt, itemUpdatedAt]
+            [itemId, targetTenant, item.name || 'Category', item.type || 'Job', dataJson, itemCreatedAt, itemUpdatedAt]
           );
           counts.categories = (counts.categories || 0) + 1;
           break;
+        }
 
-        case 'racks':
+        case 'racks': {
+          normalizedItem = { ...item, id: itemId, tenantId: targetTenant, name: item.name || 'Rack' };
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO racks (id, tenant_id, name, capacity, location, data_json, created_at, updated_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-            [item.id, targetTenant, item.name || 'Rack', item.capacity || null, item.location || null, dataJson, itemCreatedAt, itemUpdatedAt]
+            [itemId, targetTenant, item.name || 'Rack', item.capacity || null, item.location || null, dataJson, itemCreatedAt, itemUpdatedAt]
           );
           counts.racks = (counts.racks || 0) + 1;
           break;
+        }
 
-        case 'equipments':
+        case 'equipments': {
+          normalizedItem = { ...item, id: itemId, tenantId: targetTenant, name: item.name || 'Equipment' };
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO equipments (id, tenant_id, name, brand, model, data_json, created_at, updated_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-            [item.id, targetTenant, item.name || 'Equipment', item.brand || null, item.model || null, dataJson, itemCreatedAt, itemUpdatedAt]
+            [itemId, targetTenant, item.name || 'Equipment', item.brand || null, item.model || null, dataJson, itemCreatedAt, itemUpdatedAt]
           );
           counts.equipments = (counts.equipments || 0) + 1;
           break;
+        }
 
-        case 'problems':
+        case 'problems': {
+          normalizedItem = { ...item, id: itemId, tenantId: targetTenant, title: item.title || item.name || 'Problem' };
+          const dataJson = JSON.stringify(normalizedItem);
           db.run(
             `INSERT OR REPLACE INTO problems (id, tenant_id, title, description, common_solution, standard_cost, data_json, created_at, updated_at, deleted_at, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)`,
-            [item.id, targetTenant, item.title || 'Problem', item.description || null, item.commonSolution || null, item.standardCost || 0, dataJson, itemCreatedAt, itemUpdatedAt]
+            [itemId, targetTenant, item.title || item.name || 'Problem', item.description || null, item.commonSolution || null, item.standardCost || 0, dataJson, itemCreatedAt, itemUpdatedAt]
           );
           counts.problems = (counts.problems || 0) + 1;
           break;
+        }
       }
     } catch (e) {
-      console.warn(`[DataFolderScanner] Error importing item ${item.id} in ${colName}:`, e);
+      console.warn(`[DataFolderScanner] Error importing item ${itemId} in ${colName}:`, e);
     }
   }
 

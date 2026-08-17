@@ -53,11 +53,13 @@ import {
 import { SystemUser, ActivityLog, Equipment, Problem, CompanyConfig, Client, RepairJob, Invoice, Product, Payment, Expense, DEFAULT_THEME_PALETTE, TenantThemePalette } from '../types';
 import { TenantFeatures, getTenantFeatures, TenantOrg } from './AuthModal';
 import { updateOrgViaApi, scanAndImportDataFolderApi, getDataFolderStatusApi } from '../lib/api';
+import { bootstrapTenantFromHomeServer } from '../lib/localDb';
 
 interface SettingsProps {
   activeTenantId?: string;
   activeTenant?: TenantOrg;
   onUpdateTenant?: (updatedOrg: TenantOrg) => void;
+  onSyncTenants?: (tenants: TenantOrg[]) => void;
   userRole?: string;
   currentUser?: SystemUser | null;
   tenantFeatures?: TenantFeatures;
@@ -100,6 +102,7 @@ export default function SettingsComponent({
   activeTenantId,
   activeTenant,
   onUpdateTenant,
+  onSyncTenants,
   userRole,
   currentUser,
   tenantFeatures,
@@ -168,10 +171,59 @@ export default function SettingsComponent({
       const res = await scanAndImportDataFolderApi();
       setDataFolderResult(res);
       await loadDataFolderStatus();
-      if (res.success && res.filesImported && res.filesImported.length > 0) {
+      if (res.success) {
+        // 1. Sync organizations metadata immediately
+        if (Array.isArray(res.organizations) && res.organizations.length > 0) {
+          setAppStorageItem('tenants_v3', JSON.stringify(res.organizations));
+          if (onSyncTenants) {
+            onSyncTenants(res.organizations);
+          }
+        }
+
+        // 2. Hydrate localStorage for current workspace and restore live state
+        const col = res.collections;
+        if (col) {
+          if (Array.isArray(col.clients)) setAppStorageItem(`clients_${currentTenantId}`, JSON.stringify(col.clients));
+          if (Array.isArray(col.jobs)) setAppStorageItem(`jobs_${currentTenantId}`, JSON.stringify(col.jobs));
+          if (Array.isArray(col.invoices)) setAppStorageItem(`invoices_${currentTenantId}`, JSON.stringify(col.invoices));
+          if (Array.isArray(col.payments)) setAppStorageItem(`payments_${currentTenantId}`, JSON.stringify(col.payments));
+          if (Array.isArray(col.products)) setAppStorageItem(`products_${currentTenantId}`, JSON.stringify(col.products));
+          if (Array.isArray(col.expenses)) setAppStorageItem(`expenses_${currentTenantId}`, JSON.stringify(col.expenses));
+          if (Array.isArray(col.ledger)) setAppStorageItem(`ledger_${currentTenantId}`, JSON.stringify(col.ledger));
+          if (Array.isArray(col.users)) setAppStorageItem(`users_${currentTenantId}`, JSON.stringify(col.users));
+          if (Array.isArray(col.categories)) setAppStorageItem(`categories_${currentTenantId}`, JSON.stringify(col.categories));
+          if (Array.isArray(col.racks)) setAppStorageItem(`racks_${currentTenantId}`, JSON.stringify(col.racks));
+          if (Array.isArray(col.equipments)) setAppStorageItem(`equipments_${currentTenantId}`, JSON.stringify(col.equipments));
+          if (Array.isArray(col.problems)) setAppStorageItem(`problems_${currentTenantId}`, JSON.stringify(col.problems));
+
+          // Also set for any individual organization
+          if (Array.isArray(res.organizations)) {
+            for (const org of res.organizations) {
+              if (org.id && org.id !== currentTenantId) {
+                const orgClients = col.clients?.filter((c: any) => c.tenantId === org.id);
+                if (orgClients?.length) setAppStorageItem(`clients_${org.id}`, JSON.stringify(orgClients));
+                const orgJobs = col.jobs?.filter((j: any) => j.tenantId === org.id);
+                if (orgJobs?.length) setAppStorageItem(`jobs_${org.id}`, JSON.stringify(orgJobs));
+                const orgInvoices = col.invoices?.filter((i: any) => i.tenantId === org.id);
+                if (orgInvoices?.length) setAppStorageItem(`invoices_${org.id}`, JSON.stringify(orgInvoices));
+              }
+            }
+          }
+
+          if (onRestoreData) {
+            onRestoreData(col);
+          }
+        }
+
+        window.dispatchEvent(new CustomEvent('inoms_data_imported', { detail: res }));
+        
+        // Also trigger bootstrapTenantFromHomeServer to populate IndexedDB & listeners
+        await bootstrapTenantFromHomeServer(currentTenantId);
+
+        // Auto-refresh after giving time for state to settle
         setTimeout(() => {
           window.location.reload();
-        }, 2200);
+        }, 1800);
       }
     } catch (err: any) {
       setDataFolderResult({

@@ -52,7 +52,8 @@ import {
   restoreHomeServerDb,
   registerHomeServerSession,
   checkHomeServerSession,
-  saveAllTenantDataViaApi
+  saveAllTenantDataViaApi,
+  fetchTenantsViaApi
 } from './lib/api';
 
 import {
@@ -718,6 +719,20 @@ export default function App() {
 
   // Subscribe to real-time Cloud Firestore updates for Multi-Tenant Organizations
   React.useEffect(() => {
+    // Initial fetch from Home Server SQLite API
+    fetchTenantsViaApi().then(res => {
+      if (res?.success && Array.isArray(res.tenants) && res.tenants.length > 0) {
+        setTenants((prev) => {
+          const mergedMap = new Map<string, TenantOrg>();
+          prev.forEach(t => mergedMap.set(t.id, t));
+          res.tenants?.forEach((st: any) => mergedMap.set(st.id, st));
+          const updated = ensureAdminActive(Array.from(mergedMap.values()));
+          setAppStorageItem('tenants_v3', JSON.stringify(updated));
+          return updated;
+        });
+      }
+    }).catch(() => {});
+
     const unsubscribe = subscribeTenants((cloudTenants) => {
       if (Array.isArray(cloudTenants) && cloudTenants.length > 0) {
         setTenants((prev) => {
@@ -3759,6 +3774,7 @@ export default function App() {
               activeTenantId={activeTenant.id}
               activeTenant={activeTenant}
               onUpdateTenant={(updated) => setActiveTenant(updated)}
+              onSyncTenants={(newTenants) => setTenants(newTenants)}
               userRole={userRole}
               currentUser={currentUser}
               tenantFeatures={activeTenant?.features}

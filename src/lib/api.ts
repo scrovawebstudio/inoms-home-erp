@@ -439,12 +439,23 @@ export async function checkHomeServerSession(
   return null;
 }
 
+export async function fetchTenantsViaApi(): Promise<{ success: boolean; tenants?: any[]; message?: string }> {
+  try {
+    const res = await fetch('/api/auth/tenants');
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, message: 'Could not fetch organizations' };
+  }
+}
+
 export async function scanAndImportDataFolderApi(): Promise<{
   success: boolean;
   filesScanned: number;
   filesImported: string[];
   counts: Record<string, number>;
   message: string;
+  organizations?: any[];
+  collections?: any;
 }> {
   try {
     const token = getAuthToken();
