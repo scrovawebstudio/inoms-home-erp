@@ -729,7 +729,7 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
   // Helper to process a record item in a collection
   function importCollectionItem(tenantId: string, colName: string, item: any) {
     if (!item || !db) return;
-    const targetTenant = item.tenantId || tenantId || 'org-admin';
+    const targetTenant = tenantId || item.tenantId || 'org-admin';
     const itemId = String(item.id || item.jobNo || item.invoiceNo || item.sku || item.phone || item.mobile || `${colName}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`);
     const itemCreatedAt = item.createdAt || item.date || item.receivedDate || now;
     const itemUpdatedAt = item.updatedAt || now;

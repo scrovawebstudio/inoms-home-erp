@@ -1179,14 +1179,14 @@ apiRouter.delete('/auth/organizations/:id', (req, res) => {
 // AUTHORITATIVE SYNC ENGINE (SQLite Backend)
 // -------------------------------------------------------------
 
-// Helper to query all active records for an entity table
+// Helper to query active records for an entity table with STRICT TENANT ISOLATION
 function getEntityRecords(db: any, table: string, tenantId: string): any[] {
-  const isMasterOrAll = tenantId === 'org-admin' || tenantId === 'all';
+  const isMasterOrAll = tenantId === 'all';
   let stmt;
   if (isMasterOrAll) {
     stmt = db.prepare(`SELECT * FROM ${table} WHERE (deleted_at IS NULL OR deleted_at = '')`);
   } else {
-    stmt = db.prepare(`SELECT * FROM ${table} WHERE (tenant_id = ? OR tenant_id = 'default' OR tenant_id = 'org-admin') AND (deleted_at IS NULL OR deleted_at = '')`);
+    stmt = db.prepare(`SELECT * FROM ${table} WHERE tenant_id = ? AND (deleted_at IS NULL OR deleted_at = '')`);
     stmt.bind([tenantId]);
   }
 
@@ -1205,23 +1205,7 @@ function getEntityRecords(db: any, table: string, tenantId: string): any[] {
   }
   stmt.free();
 
-  // If specific query returned 0 items, check if there are any records in table at all
-  if (results.length === 0 && !isMasterOrAll) {
-    const fallbackStmt = db.prepare(`SELECT * FROM ${table} WHERE (deleted_at IS NULL OR deleted_at = '') LIMIT 200`);
-    while (fallbackStmt.step()) {
-      const row = fallbackStmt.getAsObject();
-      if (row.data_json) {
-        try {
-          const parsed = JSON.parse(row.data_json as string);
-          results.push({ ...row, ...parsed, id: row.id, tenantId, version: row.version, updatedAt: row.updated_at });
-          continue;
-        } catch (e) {}
-      }
-      results.push({ ...row, tenantId });
-    }
-    fallbackStmt.free();
-  }
-
+  // Strict Tenant Isolation: Never copy records from other organizations
   return results;
 }
 
@@ -1341,7 +1325,7 @@ apiRouter.get('/sync/pull', (req: Request, res: Response) => {
     const stmt = db.prepare(`
       SELECT revision, entity, entity_id, operation, data_json, timestamp
       FROM change_log
-      WHERE (tenant_id = ? OR tenant_id = 'org-admin') AND revision > ?
+      WHERE tenant_id = ? AND revision > ?
       ORDER BY revision ASC
     `);
     stmt.bind([tenantId, sinceRevision]);

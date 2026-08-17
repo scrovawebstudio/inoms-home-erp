@@ -775,6 +775,16 @@ export default function App() {
     setAppStorageItem(`company_config_${newTenant.id}`, JSON.stringify(newOrgConfig));
     saveCompanyConfigToFirestore(newTenant.id, newOrgConfig);
 
+    // Initialize clean, completely empty collections for the new tenant
+    setAppStorageItem(`clients_${newTenant.id}`, JSON.stringify([]));
+    setAppStorageItem(`jobs_${newTenant.id}`, JSON.stringify([]));
+    setAppStorageItem(`invoices_${newTenant.id}`, JSON.stringify([]));
+    setAppStorageItem(`payments_${newTenant.id}`, JSON.stringify([]));
+    setAppStorageItem(`products_${newTenant.id}`, JSON.stringify([]));
+    setAppStorageItem(`expenses_${newTenant.id}`, JSON.stringify([]));
+    setAppStorageItem(`ledger_${newTenant.id}`, JSON.stringify([]));
+    setAppStorageItem(`logs_${newTenant.id}`, JSON.stringify([]));
+
     setTenants(prev => {
       const exists = prev.some(t => t.id === newTenant.id);
       if (exists) return prev;
@@ -998,7 +1008,9 @@ export default function App() {
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          let items = parsed.map((item: any) => ({ ...item, tenantId: item.tenantId || tenantId }));
+          let items = parsed
+            .filter((item: any) => !item.tenantId || item.tenantId === tenantId)
+            .map((item: any) => ({ ...item, tenantId }));
           if (keySuffix === 'users') {
             if (tenantId === 'org-admin') {
               const hasMasterAdmin = items.some((u: any) => u.mobile?.includes('8149862034') || u.username === 'scrova');
@@ -1023,10 +1035,16 @@ export default function App() {
       }
     }
 
-    if (tenantId === 'org-nibban' || tenantId === 'org-admin') {
+    if (keySuffix === 'equipments') return EQUIPMENT_TYPES.map((item: any) => ({ ...item, tenantId })) as unknown as T[];
+    if (keySuffix === 'problems') return COMMON_PROBLEMS.map((item: any) => ({ ...item, tenantId })) as unknown as T[];
+    if (keySuffix === 'categories') return INITIAL_CATEGORIES.map((item: any) => ({ ...item, tenantId })) as unknown as T[];
+    if (keySuffix === 'racks') return INITIAL_RACKS.map((item: any) => ({ ...item, tenantId })) as unknown as T[];
+
+    // Master Admin demo tenant gets demo data if uninitialized; All real/new organizations start fresh & empty!
+    if (tenantId === 'org-admin') {
       return fallback.map((item: any) => ({ ...item, tenantId }));
     }
-    return fallback.map((item: any) => ({ ...item, tenantId }));
+    return [] as T[];
   };
 
   const [clients, setClients] = useState<Client[]>(() => getTenantData('clients', activeTenant.id, INITIAL_CLIENTS));

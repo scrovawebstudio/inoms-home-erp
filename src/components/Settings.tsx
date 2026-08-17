@@ -176,38 +176,79 @@ export default function SettingsComponent({
       }
     }
 
-    // 2. Hydrate localStorage for current workspace and restore live state
+    // 2. Hydrate localStorage strictly isolated by tenantId
     const col = res.collections;
     if (col) {
-      if (Array.isArray(col.clients)) setAppStorageItem(`clients_${currentTenantId}`, JSON.stringify(col.clients));
-      if (Array.isArray(col.jobs)) setAppStorageItem(`jobs_${currentTenantId}`, JSON.stringify(col.jobs));
-      if (Array.isArray(col.invoices)) setAppStorageItem(`invoices_${currentTenantId}`, JSON.stringify(col.invoices));
-      if (Array.isArray(col.payments)) setAppStorageItem(`payments_${currentTenantId}`, JSON.stringify(col.payments));
-      if (Array.isArray(col.products)) setAppStorageItem(`products_${currentTenantId}`, JSON.stringify(col.products));
-      if (Array.isArray(col.expenses)) setAppStorageItem(`expenses_${currentTenantId}`, JSON.stringify(col.expenses));
-      if (Array.isArray(col.ledger)) setAppStorageItem(`ledger_${currentTenantId}`, JSON.stringify(col.ledger));
-      if (Array.isArray(col.users)) setAppStorageItem(`users_${currentTenantId}`, JSON.stringify(col.users));
-      if (Array.isArray(col.categories)) setAppStorageItem(`categories_${currentTenantId}`, JSON.stringify(col.categories));
-      if (Array.isArray(col.racks)) setAppStorageItem(`racks_${currentTenantId}`, JSON.stringify(col.racks));
-      if (Array.isArray(col.equipments)) setAppStorageItem(`equipments_${currentTenantId}`, JSON.stringify(col.equipments));
-      if (Array.isArray(col.problems)) setAppStorageItem(`problems_${currentTenantId}`, JSON.stringify(col.problems));
+      const getTenantRecords = (items: any[], tId: string) => {
+        if (!Array.isArray(items)) return [];
+        return items.filter((it: any) => it.tenantId === tId);
+      };
 
-      // Also set for any individual organization
+      const myClients = getTenantRecords(col.clients, currentTenantId);
+      const myJobs = getTenantRecords(col.jobs, currentTenantId);
+      const myInvoices = getTenantRecords(col.invoices, currentTenantId);
+      const myPayments = getTenantRecords(col.payments, currentTenantId);
+      const myProducts = getTenantRecords(col.products, currentTenantId);
+      const myExpenses = getTenantRecords(col.expenses, currentTenantId);
+      const myLedger = getTenantRecords(col.ledger, currentTenantId);
+      const myUsers = getTenantRecords(col.users, currentTenantId);
+      const myCategories = getTenantRecords(col.categories, currentTenantId);
+      const myRacks = getTenantRecords(col.racks, currentTenantId);
+      const myEquipments = getTenantRecords(col.equipments, currentTenantId);
+      const myProblems = getTenantRecords(col.problems, currentTenantId);
+
+      setAppStorageItem(`clients_${currentTenantId}`, JSON.stringify(myClients));
+      setAppStorageItem(`jobs_${currentTenantId}`, JSON.stringify(myJobs));
+      setAppStorageItem(`invoices_${currentTenantId}`, JSON.stringify(myInvoices));
+      setAppStorageItem(`payments_${currentTenantId}`, JSON.stringify(myPayments));
+      setAppStorageItem(`products_${currentTenantId}`, JSON.stringify(myProducts));
+      setAppStorageItem(`expenses_${currentTenantId}`, JSON.stringify(myExpenses));
+      setAppStorageItem(`ledger_${currentTenantId}`, JSON.stringify(myLedger));
+      if (myUsers.length > 0) setAppStorageItem(`users_${currentTenantId}`, JSON.stringify(myUsers));
+      if (myCategories.length > 0) setAppStorageItem(`categories_${currentTenantId}`, JSON.stringify(myCategories));
+      if (myRacks.length > 0) setAppStorageItem(`racks_${currentTenantId}`, JSON.stringify(myRacks));
+      if (myEquipments.length > 0) setAppStorageItem(`equipments_${currentTenantId}`, JSON.stringify(myEquipments));
+      if (myProblems.length > 0) setAppStorageItem(`problems_${currentTenantId}`, JSON.stringify(myProblems));
+
+      // Also set for any other individual organizations strictly isolated
       if (Array.isArray(res.organizations)) {
         for (const org of res.organizations) {
           if (org.id && org.id !== currentTenantId) {
-            const orgClients = col.clients?.filter((c: any) => c.tenantId === org.id);
-            if (orgClients?.length) setAppStorageItem(`clients_${org.id}`, JSON.stringify(orgClients));
-            const orgJobs = col.jobs?.filter((j: any) => j.tenantId === org.id);
-            if (orgJobs?.length) setAppStorageItem(`jobs_${org.id}`, JSON.stringify(orgJobs));
-            const orgInvoices = col.invoices?.filter((i: any) => i.tenantId === org.id);
-            if (orgInvoices?.length) setAppStorageItem(`invoices_${org.id}`, JSON.stringify(orgInvoices));
+            const orgClients = getTenantRecords(col.clients, org.id);
+            setAppStorageItem(`clients_${org.id}`, JSON.stringify(orgClients));
+            const orgJobs = getTenantRecords(col.jobs, org.id);
+            setAppStorageItem(`jobs_${org.id}`, JSON.stringify(orgJobs));
+            const orgInvoices = getTenantRecords(col.invoices, org.id);
+            setAppStorageItem(`invoices_${org.id}`, JSON.stringify(orgInvoices));
+            const orgPayments = getTenantRecords(col.payments, org.id);
+            setAppStorageItem(`payments_${org.id}`, JSON.stringify(orgPayments));
+            const orgProducts = getTenantRecords(col.products, org.id);
+            setAppStorageItem(`products_${org.id}`, JSON.stringify(orgProducts));
+            const orgExpenses = getTenantRecords(col.expenses, org.id);
+            setAppStorageItem(`expenses_${org.id}`, JSON.stringify(orgExpenses));
+            const orgLedger = getTenantRecords(col.ledger, org.id);
+            setAppStorageItem(`ledger_${org.id}`, JSON.stringify(orgLedger));
+            const orgUsers = getTenantRecords(col.users, org.id);
+            if (orgUsers.length > 0) setAppStorageItem(`users_${org.id}`, JSON.stringify(orgUsers));
           }
         }
       }
 
       if (onRestoreData) {
-        onRestoreData(col);
+        onRestoreData({
+          clients: myClients,
+          jobs: myJobs,
+          invoices: myInvoices,
+          payments: myPayments,
+          products: myProducts,
+          expenses: myExpenses,
+          ledger: myLedger,
+          users: myUsers.length > 0 ? myUsers : undefined,
+          categories: myCategories.length > 0 ? myCategories : undefined,
+          racks: myRacks.length > 0 ? myRacks : undefined,
+          equipments: myEquipments.length > 0 ? myEquipments : undefined,
+          problems: myProblems.length > 0 ? myProblems : undefined
+        });
       }
     }
 
