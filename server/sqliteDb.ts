@@ -4,6 +4,7 @@ import initSqlJs, { Database } from 'sql.js';
 import crypto from 'crypto';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
+const ORGS_DIR = path.join(DATA_DIR, 'orgs');
 const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
 const DB_PATH = path.join(DATA_DIR, 'inoms_primary.db');
 const LEGACY_JSON_PATH = path.join(DATA_DIR, 'inoms_db.json');
@@ -15,6 +16,9 @@ let saveScheduled = false;
 // Ensure directories exist
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+if (!fs.existsSync(ORGS_DIR)) {
+  fs.mkdirSync(ORGS_DIR, { recursive: true });
 }
 if (!fs.existsSync(BACKUPS_DIR)) {
   fs.mkdirSync(BACKUPS_DIR, { recursive: true });
@@ -456,7 +460,7 @@ export async function initDatabase(): Promise<Database> {
   // Run automatic data migration from legacy JSON if database is new or needs seeding
   await migrateLegacyDataIfPresent();
 
-  // Deduplicate any duplicate organizations created previously
+  // Deduplicate any duplicate organizations created previously (only if same ID or exact phone+name collision)
   try {
     const stmt = db.prepare('SELECT id, name, code, owner_mobile, created_at FROM organizations WHERE status != "deleted" ORDER BY created_at ASC, id ASC');
     const seenMap = new Map<string, string>(); // key -> id
@@ -465,14 +469,17 @@ export async function initDatabase(): Promise<Database> {
       const row = stmt.getAsObject();
       const cleanMobile = (row.owner_mobile as string || '').replace(/\D/g, '');
       const cleanName = (row.name as string || '').trim().toLowerCase();
-      const dedupeKey = `${cleanName}_${cleanMobile}`;
-      if (row.id === 'org-admin' || cleanMobile === '8149862034') {
-        continue;
-      }
-      if (dedupeKey && seenMap.has(dedupeKey)) {
-        idsToDelete.push(row.id as string);
-      } else if (dedupeKey) {
-        seenMap.set(dedupeKey, row.id as string);
+      // Only deduplicate if we have a valid non-empty mobile AND non-generic name
+      if (cleanMobile.length >= 10 && cleanName && cleanName !== 'organization' && cleanName !== 'service center') {
+        const dedupeKey = `${cleanName}_${cleanMobile}`;
+        if (row.id === 'org-admin' || cleanMobile === '8149862034') {
+          continue;
+        }
+        if (seenMap.has(dedupeKey)) {
+          idsToDelete.push(row.id as string);
+        } else {
+          seenMap.set(dedupeKey, row.id as string);
+        }
       }
     }
     stmt.free();
@@ -487,6 +494,11 @@ export async function initDatabase(): Promise<Database> {
 
   // Setup automated periodic backup of SQLite database file
   setupBackupScheduler();
+
+  // Export current tenants to data/orgs/ structure for human-readable disk inspection & backup
+  try {
+    exportAllTenantsToDisk();
+  } catch (e) {}
 
   return db;
 }
@@ -630,19 +642,28 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
     try {
       const pin = (org.pin || '1234').toString();
       const { hash: pinHash, salt: pinSalt } = hashPassword(pin);
+      const orgName = org.name || (org.id === 'org-admin' ? 'Master System Admin' : `Organization ${String(org.id).replace(/^org-/, '')}`);
+      const orgCode = org.code || (org.id === 'org-admin' ? 'ADMIN-00' : `ORG-${String(org.id).slice(-4)}`);
       db.run(
-        `INSERT OR REPLACE INTO organizations (id, name, code, owner_mobile, owner_name, status, secret_key, pin_hash, pin_salt, created_at, updated_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        `INSERT OR REPLACE INTO organizations (id, name, code, owner_mobile, owner_name, status, secret_key, pin_hash, pin_salt, subscription_plan, subscription_start_date, subscription_end_date, trial_days, is_trial, features_json, data_json, created_at, updated_at, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
         [
           org.id,
-          org.name || 'Organization',
-          org.code || 'ORG',
-          org.ownerMobile || org.mobile || '',
-          org.ownerName || org.owner || 'Owner',
+          orgName,
+          orgCode,
+          org.ownerMobile || org.mobile || org.phone || '',
+          org.ownerName || org.owner || 'Admin',
           org.status || 'active',
           org.secretKey || null,
           pinHash,
           pinSalt,
+          org.subscriptionPlan || org.plan || 'monthly',
+          org.subscriptionStartDate || org.createdAt || now,
+          org.subscriptionEndDate || null,
+          org.trialDays || 0,
+          org.isTrial ? 1 : 0,
+          org.features ? JSON.stringify(org.features) : null,
+          JSON.stringify(org),
           org.createdAt || now,
           org.updatedAt || now
         ]
@@ -680,6 +701,26 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
         ]
       );
       counts.tenant_configs = (counts.tenant_configs || 0) + 1;
+      // Also update organization name and mobile if provided in config
+      if (cfg.name) {
+        db.run(`UPDATE organizations SET name = ? WHERE id = ?`, [cfg.name, tenantId]);
+      }
+      if (cfg.phone || cfg.mobile) {
+        db.run(`UPDATE organizations SET owner_mobile = ? WHERE id = ?`, [cfg.phone || cfg.mobile, tenantId]);
+      }
+      if (cfg.ownerName || cfg.contactPerson) {
+        db.run(`UPDATE organizations SET owner_name = ? WHERE id = ?`, [cfg.ownerName || cfg.contactPerson, tenantId]);
+      }
+      // Also update organization name and mobile if provided in config
+      if (cfg.name) {
+        db.run(`UPDATE organizations SET name = ? WHERE id = ?`, [cfg.name, tenantId]);
+      }
+      if (cfg.phone || cfg.mobile) {
+        db.run(`UPDATE organizations SET owner_mobile = ? WHERE id = ?`, [cfg.phone || cfg.mobile, tenantId]);
+      }
+      if (cfg.ownerName || cfg.contactPerson) {
+        db.run(`UPDATE organizations SET owner_name = ? WHERE id = ?`, [cfg.ownerName || cfg.contactPerson, tenantId]);
+      }
     } catch (e) {
       console.warn(`[DataFolderScanner] Error importing config for ${tenantId}:`, e);
     }
@@ -1033,14 +1074,187 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
     }
   }
 
-  // Iterate over all discovered JSON files
+  // =========================================================================
+  // STEP 1: SPECIFIC SCAN OF data/orgs/ (and any org-* directories)
+  // =========================================================================
+  const orgDirsToScan: { orgId: string; dirPath: string }[] = [];
+
+  // Check data/orgs/
+  if (fs.existsSync(ORGS_DIR)) {
+    try {
+      const orgEntries = fs.readdirSync(ORGS_DIR, { withFileTypes: true });
+      for (const entry of orgEntries) {
+        if (entry.isDirectory()) {
+          orgDirsToScan.push({
+            orgId: entry.name,
+            dirPath: path.join(ORGS_DIR, entry.name)
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('[DataFolderScanner] Error reading ORGS_DIR:', e);
+    }
+  }
+
+  // Check root data/ for any folders starting with org-
+  if (fs.existsSync(DATA_DIR)) {
+    try {
+      const rootEntries = fs.readdirSync(DATA_DIR, { withFileTypes: true });
+      for (const entry of rootEntries) {
+        if (entry.isDirectory() && entry.name.startsWith('org-') && entry.name !== 'orgs') {
+          if (!orgDirsToScan.some(o => o.orgId === entry.name)) {
+            orgDirsToScan.push({
+              orgId: entry.name,
+              dirPath: path.join(DATA_DIR, entry.name)
+            });
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  console.log(`[DataFolderScanner] Discovered ${orgDirsToScan.length} organization directory/directories:`, orgDirsToScan.map(o => o.orgId));
+
+  // Process each discovered organization folder
+  for (const { orgId, dirPath } of orgDirsToScan) {
+    let orgDetails: any = {
+      id: orgId,
+      name: orgId === 'org-admin' ? 'Master System Admin' : `Organization ${orgId.replace(/^org-/, '')}`,
+      code: orgId === 'org-admin' ? 'ADMIN-00' : `ORG-${orgId.slice(-4)}`,
+      ownerMobile: '',
+      ownerName: 'Admin',
+      status: 'active',
+      pin: '1234'
+    };
+
+    let companyConfig: any = null;
+
+    try {
+      // Recursively collect all JSON files in this org's directory
+      const orgJsonFiles = collectJsonFiles(dirPath);
+      for (const filePath of orgJsonFiles) {
+        filesScanned++;
+        const relPath = path.relative(DATA_DIR, filePath);
+        const fileName = path.basename(filePath).toLowerCase();
+
+        try {
+          const raw = fs.readFileSync(filePath, 'utf-8');
+          if (!raw.trim()) continue;
+          const parsed = JSON.parse(raw);
+          let importedFile = false;
+
+          // Check if this file contains companyConfig or organization details
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            // Extract company name if available
+            const extractedName = parsed.name || parsed.orgName || parsed.companyName || parsed.businessName || parsed.shopName || parsed.companyConfig?.name || parsed.config?.name;
+            if (extractedName && extractedName !== 'Organization' && extractedName !== 'Service Center') {
+              orgDetails.name = extractedName;
+            }
+
+            const extractedMobile = parsed.phone || parsed.mobile || parsed.ownerMobile || parsed.contact || parsed.companyConfig?.phone || parsed.companyConfig?.mobile;
+            if (extractedMobile) {
+              orgDetails.ownerMobile = String(extractedMobile);
+            }
+
+            const extractedOwner = parsed.ownerName || parsed.owner || parsed.contactPerson || parsed.companyConfig?.ownerName;
+            if (extractedOwner) {
+              orgDetails.ownerName = extractedOwner;
+            }
+
+            if (parsed.pin) orgDetails.pin = parsed.pin;
+            if (parsed.secretKey) orgDetails.secretKey = parsed.secretKey;
+            if (parsed.code) orgDetails.code = parsed.code;
+            if (parsed.status) orgDetails.status = parsed.status;
+            if (parsed.subscriptionPlan || parsed.plan) orgDetails.subscriptionPlan = parsed.subscriptionPlan || parsed.plan;
+
+            // Company config
+            if (parsed.companyConfig || parsed.config) {
+              companyConfig = { ...(companyConfig || {}), ...(parsed.companyConfig || parsed.config) };
+              importedFile = true;
+            } else if (fileName.includes('config') || fileName.includes('setting') || fileName.includes('profile')) {
+              companyConfig = { ...(companyConfig || {}), ...parsed };
+              importedFile = true;
+            }
+
+            // Check for known collections
+            const knownCollections = ['clients', 'jobs', 'invoices', 'payments', 'products', 'expenses', 'ledger', 'users', 'categories', 'racks', 'equipments', 'problems'];
+            for (const col of knownCollections) {
+              if (Array.isArray(parsed[col])) {
+                for (const it of parsed[col]) {
+                  importCollectionItem(orgId, col, it);
+                  importedFile = true;
+                }
+              }
+            }
+          } else if (Array.isArray(parsed)) {
+            // Standalone array file (e.g. clients.json, jobs.json, etc.)
+            let detectedCol = '';
+            if (fileName.includes('client')) detectedCol = 'clients';
+            else if (fileName.includes('job') || fileName.includes('repair')) detectedCol = 'jobs';
+            else if (fileName.includes('invoice') || fileName.includes('bill')) detectedCol = 'invoices';
+            else if (fileName.includes('payment') || fileName.includes('receipt')) detectedCol = 'payments';
+            else if (fileName.includes('product') || fileName.includes('item') || fileName.includes('inventory')) detectedCol = 'products';
+            else if (fileName.includes('expense')) detectedCol = 'expenses';
+            else if (fileName.includes('ledger') || fileName.includes('account')) detectedCol = 'ledger';
+            else if (fileName.includes('user') || fileName.includes('technician') || fileName.includes('staff')) detectedCol = 'users';
+            else if (fileName.includes('categor')) detectedCol = 'categories';
+            else if (fileName.includes('rack')) detectedCol = 'racks';
+            else if (fileName.includes('equipment') || fileName.includes('device')) detectedCol = 'equipments';
+            else if (fileName.includes('problem') || fileName.includes('fault')) detectedCol = 'problems';
+
+            if (detectedCol) {
+              for (const it of parsed) {
+                importCollectionItem(orgId, detectedCol, it);
+                importedFile = true;
+              }
+            }
+          }
+
+          if (importedFile) {
+            filesImported.push(relPath);
+          }
+        } catch (e) {
+          console.warn(`[DataFolderScanner] Error reading file ${filePath}:`, e);
+        }
+      }
+
+      // Register the organization & company config
+      importOrg(orgDetails);
+      if (companyConfig) {
+        importCompanyConfig(orgId, companyConfig);
+      }
+    } catch (e) {
+      console.warn(`[DataFolderScanner] Error processing org directory ${dirPath}:`, e);
+    }
+  }
+
+  // =========================================================================
+  // STEP 2: SCAN REMAINING ROOT & BACKUP JSON FILES IN data/
+  // =========================================================================
   for (const filePath of jsonFiles) {
     try {
+      // Skip files already processed in Step 1
+      const relativePath = path.relative(DATA_DIR, filePath);
+      if (filesImported.includes(relativePath)) continue;
+
       const content = fs.readFileSync(filePath, 'utf-8');
       if (!content || !content.trim()) continue;
       const parsed = JSON.parse(content);
-      const relativePath = path.relative(DATA_DIR, filePath);
       let importedSomething = false;
+
+      // Extract tenantId from file path if possible
+      const pathSegments = relativePath.split(/[/\\]/);
+      let pathTenantId = 'org-admin';
+      for (let i = 0; i < pathSegments.length - 1; i++) {
+        if (pathSegments[i] === 'orgs' && pathSegments[i + 1]) {
+          pathTenantId = pathSegments[i + 1];
+          break;
+        }
+        if (pathSegments[i].startsWith('org-')) {
+          pathTenantId = pathSegments[i];
+          break;
+        }
+      }
 
       // Type 1: Keyed legacy format (inoms_db.json or org data.json)
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -1081,7 +1295,7 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
         }
 
         // Type 2: Standard JSON Backup export format { tenantId, clients: [], jobs: [], ... }
-        const targetTenantId = parsed.tenantId || 'org-admin';
+        const targetTenantId = parsed.tenantId || pathTenantId || 'org-admin';
         if (parsed.companyConfig) {
           importCompanyConfig(targetTenantId, parsed.companyConfig);
           importedSomething = true;
@@ -1101,10 +1315,10 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
         const filename = path.basename(filePath).toLowerCase();
         let detectedCol = '';
         if (filename.includes('client')) detectedCol = 'clients';
-        else if (filename.includes('job')) detectedCol = 'jobs';
-        else if (filename.includes('invoice')) detectedCol = 'invoices';
-        else if (filename.includes('payment')) detectedCol = 'payments';
-        else if (filename.includes('product')) detectedCol = 'products';
+        else if (filename.includes('job') || filename.includes('repair')) detectedCol = 'jobs';
+        else if (filename.includes('invoice') || filename.includes('bill')) detectedCol = 'invoices';
+        else if (filename.includes('payment') || filename.includes('receipt')) detectedCol = 'payments';
+        else if (filename.includes('product') || filename.includes('inventory')) detectedCol = 'products';
         else if (filename.includes('expense')) detectedCol = 'expenses';
         else if (filename.includes('ledger')) detectedCol = 'ledger';
         else if (filename.includes('user')) detectedCol = 'users';
@@ -1121,7 +1335,7 @@ export async function scanAndImportDataFolder(force: boolean = false): Promise<D
 
         if (detectedCol) {
           for (const it of parsed) {
-            importCollectionItem('org-admin', detectedCol, it);
+            importCollectionItem(pathTenantId, detectedCol, it);
             importedSomething = true;
           }
         }
@@ -1256,6 +1470,106 @@ function setupBackupScheduler(): void {
       console.error('[Backup] Scheduled backup failed:', e);
     }
   }, 24 * 60 * 60 * 1000);
+}
+
+export function exportTenantToDisk(tenantId: string): void {
+  if (!db || !tenantId) return;
+  try {
+    const orgFolder = path.join(ORGS_DIR, tenantId);
+    if (!fs.existsSync(orgFolder)) {
+      fs.mkdirSync(orgFolder, { recursive: true });
+    }
+
+    // Export config
+    const cfgStmt = db.prepare('SELECT data_json, config_json FROM tenant_configs WHERE tenant_id = ?');
+    cfgStmt.bind([tenantId]);
+    if (cfgStmt.step()) {
+      const row = cfgStmt.getAsObject();
+      const cfgRaw = (row.config_json || row.data_json) as string;
+      if (cfgRaw) {
+        fs.writeFileSync(path.join(orgFolder, 'config.json'), JSON.stringify(JSON.parse(cfgRaw), null, 2));
+      }
+    }
+    cfgStmt.free();
+
+    // Export collections
+    const collections = ['clients', 'jobs', 'invoices', 'payments', 'products', 'expenses', 'ledger', 'users', 'categories', 'racks', 'equipments', 'problems'];
+    const tenantData: Record<string, any[]> = {};
+
+    for (const col of collections) {
+      const items: any[] = [];
+      const stmt = db.prepare(`SELECT data_json FROM ${col} WHERE tenant_id = ? AND (deleted_at IS NULL OR deleted_at = '')`);
+      stmt.bind([tenantId]);
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        if (row.data_json) {
+          try {
+            items.push(JSON.parse(row.data_json as string));
+          } catch (e) {}
+        }
+      }
+      stmt.free();
+      tenantData[col] = items;
+    }
+
+    // Write full data.json in org folder
+    fs.writeFileSync(path.join(orgFolder, 'data.json'), JSON.stringify({ tenantId, ...tenantData }, null, 2));
+  } catch (e) {
+    console.warn(`[ExportTenant] Error exporting tenant ${tenantId} to disk:`, e);
+  }
+}
+
+export function exportAllTenantsToDisk(): void {
+  if (!db) return;
+  try {
+    const stmt = db.prepare('SELECT id FROM organizations WHERE status != "deleted"');
+    const orgIds: string[] = [];
+    while (stmt.step()) {
+      orgIds.push(stmt.getAsObject().id as string);
+    }
+    stmt.free();
+
+    for (const id of orgIds) {
+      exportTenantToDisk(id);
+    }
+  } catch (e) {
+    console.warn('[ExportAllTenants] Error exporting tenants:', e);
+  }
+}
+
+export async function uploadAndImportOrgsBatch(files: { path: string; content: any }[]): Promise<DataFolderImportResult> {
+  if (!files || !Array.isArray(files)) {
+    return { success: false, filesScanned: 0, filesImported: [], counts: {}, message: 'No files provided' };
+  }
+
+  for (const file of files) {
+    if (!file.path || !file.content) continue;
+    try {
+      // Normalize relative path
+      let cleanPath = file.path.replace(/^[/\\]+/, '').replace(/^data[/\\]+/, '');
+      if (!cleanPath.startsWith('orgs/')) {
+        cleanPath = `orgs/${cleanPath}`;
+      }
+      const targetFilePath = path.join(DATA_DIR, cleanPath);
+      const targetDir = path.dirname(targetFilePath);
+
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+
+      const fileContentStr = typeof file.content === 'string' 
+        ? file.content 
+        : JSON.stringify(file.content, null, 2);
+
+      fs.writeFileSync(targetFilePath, fileContentStr, 'utf-8');
+      console.log(`[BatchUpload] Saved disk file: ${cleanPath}`);
+    } catch (err) {
+      console.warn(`[BatchUpload] Failed saving file ${file.path}:`, err);
+    }
+  }
+
+  // Now run scanner to import into SQLite tables
+  return await scanAndImportDataFolder(true);
 }
 
 export function getDatabase(): Database {

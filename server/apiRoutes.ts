@@ -15,7 +15,9 @@ import {
   restoreBackupFile,
   deleteBackupFile,
   scheduleDbSave,
-  scanAndImportDataFolder
+  scanAndImportDataFolder,
+  uploadAndImportOrgsBatch,
+  exportTenantToDisk
 } from './sqliteDb';
 import { isPostgresActive, syncEntityToPostgres, syncDeleteToPostgres } from './postgresDb';
 
@@ -1503,6 +1505,9 @@ apiRouter.post('/sync/push', authMiddleware, (req: AuthenticatedRequest, res: Re
 
       db.run('COMMIT');
       scheduleDbSave();
+      try {
+        exportTenantToDisk(tenantId);
+      } catch (e) {}
 
       res.json({
         success: true,
@@ -1751,6 +1756,9 @@ apiRouter.post('/sync/save-all', authMiddleware, (req: AuthenticatedRequest, res
 
       db.run('COMMIT');
       scheduleDbSave();
+      try {
+        exportTenantToDisk(tenantId);
+      } catch (e) {}
 
       res.json({
         success: true,
@@ -1792,6 +1800,9 @@ apiRouter.post('/sync/save-collection', authMiddleware, (req: AuthenticatedReque
 
       db.run('COMMIT');
       scheduleDbSave();
+      try {
+        exportTenantToDisk(tenantId);
+      } catch (e) {}
 
       res.json({
         success: true,
@@ -1965,6 +1976,88 @@ apiRouter.post('/admin/scan-import-data-folder', async (_req: Request, res: Resp
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message || 'Data folder scan and import failed' });
+  }
+});
+
+// Upload and import batch files from the user's local PC data/orgs folder
+apiRouter.post('/admin/upload-orgs-folder', async (req: Request, res: Response) => {
+  try {
+    const { files } = req.body || {};
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ success: false, message: 'No files provided in upload payload' });
+    }
+
+    console.log(`[UploadOrgsFolder] Receiving ${files.length} file(s) from client machine...`);
+    const result = await uploadAndImportOrgsBatch(files);
+    const db = getDatabase();
+
+    // Query all organizations to return to frontend
+    const stmt = db.prepare(`
+      SELECT id, name, code, owner_mobile, owner_name, status, created_at, secret_key, pin,
+             subscription_plan, subscription_start_date, subscription_end_date, trial_days, is_trial, features_json
+      FROM organizations 
+      WHERE status != "deleted"
+      ORDER BY created_at ASC, id ASC
+    `);
+    const organizations: any[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      let features: any = null;
+      if (row.features_json) {
+        try {
+          features = JSON.parse(row.features_json as string);
+        } catch (e) {}
+      }
+      organizations.push({
+        id: row.id,
+        name: row.name,
+        code: row.code,
+        ownerMobile: row.owner_mobile,
+        ownerName: row.owner_name,
+        status: row.status,
+        pin: row.pin || '1234',
+        secretKey: row.secret_key || '',
+        createdAt: row.created_at,
+        subscriptionPlan: row.subscription_plan || (row.is_trial ? 'trial' : 'monthly'),
+        subscriptionStartDate: row.subscription_start_date || row.created_at,
+        subscriptionEndDate: row.subscription_end_date || '',
+        trialDays: row.trial_days !== undefined ? Number(row.trial_days) : 7,
+        isTrial: Boolean(row.is_trial || row.subscription_plan === 'trial'),
+        features
+      });
+    }
+    stmt.free();
+
+    // Query global collections snapshot
+    const collections = {
+      clients: getEntityRecords(db, 'clients', 'all'),
+      jobs: getEntityRecords(db, 'jobs', 'all'),
+      invoices: getEntityRecords(db, 'invoices', 'all'),
+      payments: getEntityRecords(db, 'payments', 'all'),
+      products: getEntityRecords(db, 'products', 'all'),
+      expenses: getEntityRecords(db, 'expenses', 'all'),
+      ledger: getEntityRecords(db, 'ledger', 'all'),
+      users: getEntityRecords(db, 'users', 'all').map(u => {
+        const clean = { ...u };
+        delete clean.password_hash;
+        delete clean.password_salt;
+        delete clean.pin_hash;
+        delete clean.pin_salt;
+        return clean;
+      }),
+      categories: getEntityRecords(db, 'categories', 'all'),
+      racks: getEntityRecords(db, 'racks', 'all'),
+      equipments: getEntityRecords(db, 'equipments', 'all'),
+      problems: getEntityRecords(db, 'problems', 'all')
+    };
+
+    res.json({
+      ...result,
+      organizations,
+      collections
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed uploading and importing orgs folder' });
   }
 });
 

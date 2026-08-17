@@ -478,6 +478,37 @@ export async function scanAndImportDataFolderApi(): Promise<{
   }
 }
 
+export async function uploadOrgsFolderApi(files: { path: string; content: any }[]): Promise<{
+  success: boolean;
+  filesScanned: number;
+  filesImported: string[];
+  counts: Record<string, number>;
+  message: string;
+  organizations?: any[];
+  collections?: any;
+}> {
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch('/api/admin/upload-orgs-folder', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ files })
+    });
+    return await res.json();
+  } catch (err: any) {
+    return {
+      success: false,
+      filesScanned: 0,
+      filesImported: [],
+      counts: {},
+      message: err?.message || 'Failed to upload and import organizations folder'
+    };
+  }
+}
+
 export async function getDataFolderStatusApi(): Promise<any> {
   try {
     const res = await fetch('/api/admin/data-folder-status');

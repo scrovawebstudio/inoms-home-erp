@@ -52,7 +52,7 @@ import {
 } from 'lucide-react';
 import { SystemUser, ActivityLog, Equipment, Problem, CompanyConfig, Client, RepairJob, Invoice, Product, Payment, Expense, DEFAULT_THEME_PALETTE, TenantThemePalette } from '../types';
 import { TenantFeatures, getTenantFeatures, TenantOrg } from './AuthModal';
-import { updateOrgViaApi, scanAndImportDataFolderApi, getDataFolderStatusApi } from '../lib/api';
+import { updateOrgViaApi, scanAndImportDataFolderApi, uploadOrgsFolderApi, getDataFolderStatusApi } from '../lib/api';
 import { bootstrapTenantFromHomeServer } from '../lib/localDb';
 
 interface SettingsProps {
@@ -164,6 +164,64 @@ export default function SettingsComponent({
     }
   }, [activeSubTab]);
 
+  const localOrgsFolderInputRef = useRef<HTMLInputElement | null>(null);
+
+  const applyImportedData = async (res: any) => {
+    if (!res || !res.success) return;
+    // 1. Sync organizations metadata immediately
+    if (Array.isArray(res.organizations) && res.organizations.length > 0) {
+      setAppStorageItem('tenants_v3', JSON.stringify(res.organizations));
+      if (onSyncTenants) {
+        onSyncTenants(res.organizations);
+      }
+    }
+
+    // 2. Hydrate localStorage for current workspace and restore live state
+    const col = res.collections;
+    if (col) {
+      if (Array.isArray(col.clients)) setAppStorageItem(`clients_${currentTenantId}`, JSON.stringify(col.clients));
+      if (Array.isArray(col.jobs)) setAppStorageItem(`jobs_${currentTenantId}`, JSON.stringify(col.jobs));
+      if (Array.isArray(col.invoices)) setAppStorageItem(`invoices_${currentTenantId}`, JSON.stringify(col.invoices));
+      if (Array.isArray(col.payments)) setAppStorageItem(`payments_${currentTenantId}`, JSON.stringify(col.payments));
+      if (Array.isArray(col.products)) setAppStorageItem(`products_${currentTenantId}`, JSON.stringify(col.products));
+      if (Array.isArray(col.expenses)) setAppStorageItem(`expenses_${currentTenantId}`, JSON.stringify(col.expenses));
+      if (Array.isArray(col.ledger)) setAppStorageItem(`ledger_${currentTenantId}`, JSON.stringify(col.ledger));
+      if (Array.isArray(col.users)) setAppStorageItem(`users_${currentTenantId}`, JSON.stringify(col.users));
+      if (Array.isArray(col.categories)) setAppStorageItem(`categories_${currentTenantId}`, JSON.stringify(col.categories));
+      if (Array.isArray(col.racks)) setAppStorageItem(`racks_${currentTenantId}`, JSON.stringify(col.racks));
+      if (Array.isArray(col.equipments)) setAppStorageItem(`equipments_${currentTenantId}`, JSON.stringify(col.equipments));
+      if (Array.isArray(col.problems)) setAppStorageItem(`problems_${currentTenantId}`, JSON.stringify(col.problems));
+
+      // Also set for any individual organization
+      if (Array.isArray(res.organizations)) {
+        for (const org of res.organizations) {
+          if (org.id && org.id !== currentTenantId) {
+            const orgClients = col.clients?.filter((c: any) => c.tenantId === org.id);
+            if (orgClients?.length) setAppStorageItem(`clients_${org.id}`, JSON.stringify(orgClients));
+            const orgJobs = col.jobs?.filter((j: any) => j.tenantId === org.id);
+            if (orgJobs?.length) setAppStorageItem(`jobs_${org.id}`, JSON.stringify(orgJobs));
+            const orgInvoices = col.invoices?.filter((i: any) => i.tenantId === org.id);
+            if (orgInvoices?.length) setAppStorageItem(`invoices_${org.id}`, JSON.stringify(orgInvoices));
+          }
+        }
+      }
+
+      if (onRestoreData) {
+        onRestoreData(col);
+      }
+    }
+
+    window.dispatchEvent(new CustomEvent('inoms_data_imported', { detail: res }));
+    
+    // Also trigger bootstrapTenantFromHomeServer to populate IndexedDB & listeners
+    await bootstrapTenantFromHomeServer(currentTenantId);
+
+    // Auto-refresh after giving time for state to settle
+    setTimeout(() => {
+      window.location.reload();
+    }, 1800);
+  };
+
   const handleScanDataFolder = async () => {
     setIsScanningDataFolder(true);
     setDataFolderResult(null);
@@ -172,58 +230,7 @@ export default function SettingsComponent({
       setDataFolderResult(res);
       await loadDataFolderStatus();
       if (res.success) {
-        // 1. Sync organizations metadata immediately
-        if (Array.isArray(res.organizations) && res.organizations.length > 0) {
-          setAppStorageItem('tenants_v3', JSON.stringify(res.organizations));
-          if (onSyncTenants) {
-            onSyncTenants(res.organizations);
-          }
-        }
-
-        // 2. Hydrate localStorage for current workspace and restore live state
-        const col = res.collections;
-        if (col) {
-          if (Array.isArray(col.clients)) setAppStorageItem(`clients_${currentTenantId}`, JSON.stringify(col.clients));
-          if (Array.isArray(col.jobs)) setAppStorageItem(`jobs_${currentTenantId}`, JSON.stringify(col.jobs));
-          if (Array.isArray(col.invoices)) setAppStorageItem(`invoices_${currentTenantId}`, JSON.stringify(col.invoices));
-          if (Array.isArray(col.payments)) setAppStorageItem(`payments_${currentTenantId}`, JSON.stringify(col.payments));
-          if (Array.isArray(col.products)) setAppStorageItem(`products_${currentTenantId}`, JSON.stringify(col.products));
-          if (Array.isArray(col.expenses)) setAppStorageItem(`expenses_${currentTenantId}`, JSON.stringify(col.expenses));
-          if (Array.isArray(col.ledger)) setAppStorageItem(`ledger_${currentTenantId}`, JSON.stringify(col.ledger));
-          if (Array.isArray(col.users)) setAppStorageItem(`users_${currentTenantId}`, JSON.stringify(col.users));
-          if (Array.isArray(col.categories)) setAppStorageItem(`categories_${currentTenantId}`, JSON.stringify(col.categories));
-          if (Array.isArray(col.racks)) setAppStorageItem(`racks_${currentTenantId}`, JSON.stringify(col.racks));
-          if (Array.isArray(col.equipments)) setAppStorageItem(`equipments_${currentTenantId}`, JSON.stringify(col.equipments));
-          if (Array.isArray(col.problems)) setAppStorageItem(`problems_${currentTenantId}`, JSON.stringify(col.problems));
-
-          // Also set for any individual organization
-          if (Array.isArray(res.organizations)) {
-            for (const org of res.organizations) {
-              if (org.id && org.id !== currentTenantId) {
-                const orgClients = col.clients?.filter((c: any) => c.tenantId === org.id);
-                if (orgClients?.length) setAppStorageItem(`clients_${org.id}`, JSON.stringify(orgClients));
-                const orgJobs = col.jobs?.filter((j: any) => j.tenantId === org.id);
-                if (orgJobs?.length) setAppStorageItem(`jobs_${org.id}`, JSON.stringify(orgJobs));
-                const orgInvoices = col.invoices?.filter((i: any) => i.tenantId === org.id);
-                if (orgInvoices?.length) setAppStorageItem(`invoices_${org.id}`, JSON.stringify(orgInvoices));
-              }
-            }
-          }
-
-          if (onRestoreData) {
-            onRestoreData(col);
-          }
-        }
-
-        window.dispatchEvent(new CustomEvent('inoms_data_imported', { detail: res }));
-        
-        // Also trigger bootstrapTenantFromHomeServer to populate IndexedDB & listeners
-        await bootstrapTenantFromHomeServer(currentTenantId);
-
-        // Auto-refresh after giving time for state to settle
-        setTimeout(() => {
-          window.location.reload();
-        }, 1800);
+        await applyImportedData(res);
       }
     } catch (err: any) {
       setDataFolderResult({
@@ -235,6 +242,59 @@ export default function SettingsComponent({
       });
     } finally {
       setIsScanningDataFolder(false);
+    }
+  };
+
+  const handleUploadLocalOrgsFolder = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    setIsScanningDataFolder(true);
+    setDataFolderResult(null);
+
+    try {
+      const jsonFiles: { path: string; content: string }[] = [];
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i];
+        if (f.name.toLowerCase().endsWith('.json')) {
+          const relPath = f.webkitRelativePath || f.name;
+          const text = await f.text();
+          if (text && text.trim()) {
+            jsonFiles.push({ path: relPath, content: text });
+          }
+        }
+      }
+
+      if (jsonFiles.length === 0) {
+        setDataFolderResult({
+          success: false,
+          filesScanned: fileList.length,
+          filesImported: [],
+          counts: {},
+          message: 'No .json files found in the selected folder hierarchy.'
+        });
+        setIsScanningDataFolder(false);
+        return;
+      }
+
+      const res = await uploadOrgsFolderApi(jsonFiles);
+      setDataFolderResult(res);
+      await loadDataFolderStatus();
+      if (res.success) {
+        await applyImportedData(res);
+      }
+    } catch (err: any) {
+      setDataFolderResult({
+        success: false,
+        filesScanned: 0,
+        filesImported: [],
+        counts: {},
+        message: err?.message || 'Failed to upload and import organizations folder'
+      });
+    } finally {
+      setIsScanningDataFolder(false);
+      if (localOrgsFolderInputRef.current) {
+        localOrgsFolderInputRef.current.value = '';
+      }
     }
   };
 
@@ -2159,31 +2219,51 @@ export default function SettingsComponent({
 
           {/* Section 1.5: Copied data Folder Auto-Import & Detection */}
           <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
                   <FolderSync className="w-5 h-5 text-teal-600" />
                   <h4 className="font-bold text-sm text-slate-800">
-                    Copied <code className="text-xs bg-slate-100 text-teal-700 px-1.5 py-0.5 rounded font-mono">data/</code> Folder Auto-Import &amp; Migration
+                    Local <code className="text-xs bg-slate-100 text-teal-700 px-1.5 py-0.5 rounded font-mono">data/orgs/</code> Organizations Folder Auto-Import &amp; Migration
                   </h4>
                   <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-teal-50 text-teal-700 rounded-full border border-teal-200">
-                    Host Disk Scanner
+                    Dual Sync Engine
                   </span>
                 </div>
                 <p className="text-slate-500 text-xs max-w-2xl">
-                  If you copied your <code className="font-mono font-semibold text-slate-700">data</code> folder from <code className="font-mono text-slate-700">C:\INOMS</code> to <code className="font-mono text-slate-700">D:\INOMS-WebApp\data</code>, click below to scan and automatically import all organizations, clients, jobs, invoices, and ledger records into the active database.
+                  Easily import all your organizations (<code className="font-mono text-slate-700">org-1785064628487</code>, <code className="font-mono text-slate-700">org-1785681060978</code>, etc.) and their complete records directly into the SQLite database.
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <input
+                  type="file"
+                  ref={localOrgsFolderInputRef}
+                  onChange={handleUploadLocalOrgsFolder}
+                  {...({ webkitdirectory: '', directory: '', multiple: true } as any)}
+                  className="hidden"
+                />
+
+                <button
+                  type="button"
+                  onClick={() => localOrgsFolderInputRef.current?.click()}
+                  disabled={isScanningDataFolder}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold py-2.5 px-4 rounded-xl transition flex items-center gap-2 shadow-xs cursor-pointer"
+                  title="Select your data/orgs or data folder from your PC to upload & import all organizations"
+                >
+                  <Folder className="w-4 h-4 text-indigo-200" />
+                  <span>Select Local 'data/orgs' Folder from PC</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={handleScanDataFolder}
                   disabled={isScanningDataFolder}
                   className="bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-xs font-bold py-2.5 px-4 rounded-xl transition flex items-center gap-2 shadow-xs cursor-pointer"
+                  title="Scan the server data/ and data/orgs/ directory on disk"
                 >
                   <RefreshCw className={`w-4 h-4 ${isScanningDataFolder ? 'animate-spin' : ''}`} />
-                  <span>{isScanningDataFolder ? 'Scanning data folder...' : 'Scan & Import data/ Folder'}</span>
+                  <span>{isScanningDataFolder ? 'Scanning...' : 'Scan Server data/ Folder'}</span>
                 </button>
               </div>
             </div>
