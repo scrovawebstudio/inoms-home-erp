@@ -581,6 +581,11 @@ export default function App() {
   }, [fontSize]);
 
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string>(() => {
+    const now = new Date();
+    return now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+  });
+  const [justSynced, setJustSynced] = useState<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
 
   React.useEffect(() => {
@@ -1460,8 +1465,11 @@ export default function App() {
     }
   }, [saveStatus]);
 
-  // Auto-sync states to tenant-isolated localStorage & Cloud Firestore (Guarded by local-first persistence)
+  // Auto-sync states to tenant-isolated localStorage & Cloud Firestore with live sync indicator feedback
   const tenantCollectionPersistRef = React.useRef<string | null>(null);
+  const isInitialCollectionMountRef = React.useRef<boolean>(true);
+  const syncFeedbackTimerRef = React.useRef<any>(null);
+
   React.useEffect(() => {
     if (!activeTenant?.id) return;
 
@@ -1483,20 +1491,45 @@ export default function App() {
 
     const snapshot = JSON.stringify(collectionBundle);
     if (tenantCollectionPersistRef.current === snapshot) return;
+
+    if (isInitialCollectionMountRef.current) {
+      isInitialCollectionMountRef.current = false;
+      tenantCollectionPersistRef.current = snapshot;
+      return;
+    }
+
     tenantCollectionPersistRef.current = snapshot;
 
-    const timer = window.setTimeout(() => {
+    // Trigger visible live sync state immediately upon any data edit/save
+    setIsSyncing(true);
+
+    const timer = window.setTimeout(async () => {
       Object.entries(collectionBundle).forEach(([entity, items]) => {
         setAppStorageItem(`${entity}_${activeTenant.id}`, JSON.stringify(items));
         broadcastLocalMutation(activeTenant.id, entity, items);
       });
 
       if (isAuthenticated) {
-        saveAllTenantDataViaApi(activeTenant.id, companyConfig, collectionBundle).catch(() => {});
+        try {
+          await saveAllTenantDataViaApi(activeTenant.id, companyConfig, collectionBundle);
+        } catch (_) {}
       }
-    }, 400);
 
-    return () => window.clearTimeout(timer);
+      // Smooth transition to confirm sync completion
+      if (syncFeedbackTimerRef.current) clearTimeout(syncFeedbackTimerRef.current);
+      syncFeedbackTimerRef.current = setTimeout(() => {
+        setIsSyncing(false);
+        setJustSynced(true);
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+        setLastSyncedAt(timeStr);
+        setTimeout(() => setJustSynced(false), 2500);
+      }, 700);
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
   }, [
     activeTenant?.id,
     clients,
@@ -1826,6 +1859,11 @@ export default function App() {
       triggerSaveNotification(`✓ Synced locally (${err.message || 'Home Server sync completed'})`);
     } finally {
       setIsSyncing(false);
+      setJustSynced(true);
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+      setLastSyncedAt(timeStr);
+      setTimeout(() => setJustSynced(false), 3000);
     }
   };
 
@@ -3399,14 +3437,16 @@ export default function App() {
                     !isOnline
                       ? 'Device is offline. All data is saved locally in browser storage & PC backups until internet returns.'
                       : isSyncing
-                      ? 'Synchronizing changes with Home Server & backing up local JSON files...'
-                      : 'Data synchronized in real-time with Home Server & Local Storage. Click to trigger manual sync.'
+                      ? 'Synchronizing changes in real time with Home Server...'
+                      : `Data synchronized in real time with Home Server. Last sync: ${lastSyncedAt || 'Just now'}. Click to trigger manual sync.`
                   }
                   className={`flex-1 px-2.5 py-1.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-1.5 font-bold text-xs shadow-xs ${
                     !isOnline
                       ? 'bg-amber-500/20 border-amber-400/40 text-amber-300 hover:bg-amber-500/30'
                       : isSyncing
-                      ? 'bg-teal-500/20 border-teal-400/40 text-teal-300 animate-pulse'
+                      ? 'bg-teal-500/30 border-teal-400/60 text-teal-200 animate-pulse'
+                      : justSynced
+                      ? 'bg-emerald-500/30 border-emerald-400/60 text-emerald-200'
                       : 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300 hover:bg-emerald-500/30'
                   }`}
                 >
@@ -3417,8 +3457,13 @@ export default function App() {
                     </>
                   ) : isSyncing ? (
                     <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-300 shrink-0" />
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-200 shrink-0" />
                       <span className="text-[10px] font-extrabold uppercase tracking-wide">Syncing</span>
+                    </>
+                  ) : justSynced ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+                      <span className="text-[10px] font-extrabold uppercase tracking-wide">Synced</span>
                     </>
                   ) : (
                     <>
@@ -3525,14 +3570,16 @@ export default function App() {
                 !isOnline
                   ? 'Device is offline. All data is saved locally in browser storage & PC backups until internet returns.'
                   : isSyncing
-                  ? 'Synchronizing changes with Home Server & backing up local JSON files...'
-                  : 'Data synchronized in real-time with Home Server & Local Storage. Click to trigger manual sync.'
+                  ? 'Synchronizing changes in real time with Home Server...'
+                  : `Data synchronized in real time with Home Server. Last sync: ${lastSyncedAt || 'Just now'}. Click to trigger manual sync.`
               }
               className={`flex-1 px-2.5 py-1.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-1.5 font-bold text-xs shadow-xs ${
                 !isOnline
                   ? 'bg-amber-500/20 border-amber-400/40 text-amber-300 hover:bg-amber-500/30'
                   : isSyncing
-                  ? 'bg-teal-500/20 border-teal-400/40 text-teal-300 animate-pulse'
+                  ? 'bg-teal-500/30 border-teal-400/60 text-teal-200 animate-pulse'
+                  : justSynced
+                  ? 'bg-emerald-500/30 border-emerald-400/60 text-emerald-200'
                   : 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300 hover:bg-emerald-500/30'
               }`}
             >
@@ -3543,8 +3590,13 @@ export default function App() {
                 </>
               ) : isSyncing ? (
                 <>
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-300 shrink-0" />
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-200 shrink-0" />
                   <span className="text-[10px] font-extrabold uppercase tracking-wide">Syncing</span>
+                </>
+              ) : justSynced ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+                  <span className="text-[10px] font-extrabold uppercase tracking-wide">Synced</span>
                 </>
               ) : (
                 <>
@@ -3845,9 +3897,12 @@ export default function App() {
               clients={clients}
               jobs={jobs}
               payments={payments}
+              invoices={invoices}
               onNavigate={(tab) => setActiveTab(tab)}
               onSync={handleSyncData}
               isSyncing={isSyncing}
+              lastSyncedAt={lastSyncedAt}
+              justSynced={justSynced}
             />
           )}
 

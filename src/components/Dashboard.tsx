@@ -23,7 +23,10 @@ import {
   Wrench,
   CheckCircle2,
   Clock,
-  X
+  X,
+  Activity,
+  ChevronRight,
+  AlertCircle
 } from 'lucide-react';
 import {
   PieChart,
@@ -37,24 +40,30 @@ import {
   Tooltip,
   ResponsiveContainer
 } from 'recharts';
-import { Client, RepairJob, Payment } from '../types';
+import { Client, RepairJob, Payment, Invoice } from '../types';
 
 interface DashboardProps {
   clients: Client[];
   jobs: RepairJob[];
   payments: Payment[];
+  invoices?: Invoice[];
   onNavigate: (tab: string) => void;
   onSync: () => void;
   isSyncing: boolean;
+  lastSyncedAt?: string;
+  justSynced?: boolean;
 }
 
 export default function Dashboard({
   clients,
   jobs,
   payments,
+  invoices,
   onNavigate,
   onSync,
-  isSyncing
+  isSyncing,
+  lastSyncedAt,
+  justSynced
 }: DashboardProps) {
   const [chartView, setChartView] = useState<'donut' | 'trend'>('donut');
   const [trendRange, setTrendRange] = useState<'7d' | '1m' | '1y' | 'custom'>('7d');
@@ -288,10 +297,31 @@ export default function Dashboard({
             onClick={onSync}
             disabled={isSyncing}
             id="sync-data-btn"
-            className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 disabled:bg-teal-400 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition shadow-xs hover:shadow-md cursor-pointer"
+            title={`Click to trigger manual data sync with Home Server. Last synced: ${lastSyncedAt || 'Just now'}`}
+            className={`flex items-center gap-2 text-xs font-bold px-4 py-2.5 rounded-xl transition shadow-xs hover:shadow-md cursor-pointer border ${
+              isSyncing
+                ? 'bg-teal-600 text-white border-teal-500 shadow-teal-500/20 animate-pulse'
+                : justSynced
+                ? 'bg-emerald-600 text-white border-emerald-500 shadow-emerald-500/20'
+                : 'bg-teal-600 hover:bg-teal-700 text-white border-teal-700'
+            }`}
           >
-            <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-            {isSyncing ? 'Syncing...' : 'Sync Station Data'}
+            {isSyncing ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin text-teal-200" />
+                <span>Syncing to Server...</span>
+              </>
+            ) : justSynced ? (
+              <>
+                <CheckCircle2 className="w-4 h-4 text-emerald-200" />
+                <span>Synced Just Now</span>
+              </>
+            ) : (
+              <>
+                <RefreshCw className="w-4 h-4" />
+                <span>Sync Station Data</span>
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -675,32 +705,106 @@ export default function Dashboard({
             </div>
           </div>
 
-          {/* Business Overview Tech Stack - Modern Application Architecture */}
-          <div className="border-t border-slate-100 pt-4 mt-4 bg-slate-50/80 p-4 rounded-xl border border-slate-200/60">
-            <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-2.5 flex items-center justify-between">
-              <span>Business Overview</span>
-              <span className="text-[9px] bg-teal-50 text-teal-700 border border-teal-200 px-1.5 py-0.5 rounded-full font-extrabold">LIVE STACK</span>
-            </h3>
-            <div className="space-y-2">
-              <div className="flex justify-between items-center text-xs">
-                <span className="text-slate-500">Database Engine</span>
-                <span className="font-bold text-teal-700 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  Home Server (SQLite)
+          {/* Shop Operations Pulse - Live Workbench & Floor Intelligence */}
+          <div className="border-t border-slate-100 pt-4 mt-2 bg-gradient-to-br from-slate-50 to-teal-50/30 p-4 rounded-xl border border-slate-200/80 shadow-2xs">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-teal-600"></span>
                 </span>
+                <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                  Shop Operations Pulse
+                </h3>
               </div>
-              <div className="flex justify-between items-center text-xs">
-                <span className="text-slate-500">Local Station Sync</span>
-                <span className="font-semibold text-slate-800">PC Directory Handle</span>
+              <span className="text-[9px] bg-teal-100/80 text-teal-800 border border-teal-200/80 px-2 py-0.5 rounded-full font-black tracking-wide">
+                LIVE STATUS
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              {/* Row 1: Workbench Active */}
+              <div
+                onClick={() => onNavigate('live_queue')}
+                className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/70 hover:border-amber-300 hover:bg-amber-50/40 transition cursor-pointer text-xs group"
+                title="Click to view active workbench repair jobs"
+              >
+                <div className="flex items-center gap-2">
+                  <Wrench className="w-3.5 h-3.5 text-amber-600 group-hover:scale-110 transition" />
+                  <span className="text-slate-600 font-medium group-hover:text-slate-900">Workbench Active</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono font-black text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200/70 text-xs">
+                    {underDiagnosisCount} in repair
+                  </span>
+                  <ChevronRight className="w-3 h-3 text-slate-400 group-hover:text-slate-700 transition" />
+                </div>
               </div>
-              <div className="flex justify-between items-center text-xs">
-                <span className="text-slate-500">Multi-Tenant Store</span>
-                <span className="font-semibold text-slate-800">Encrypted Partitioning</span>
+
+              {/* Row 2: Ready for Pickup */}
+              <div
+                onClick={() => onNavigate('outwards')}
+                className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/70 hover:border-emerald-300 hover:bg-emerald-50/40 transition cursor-pointer text-xs group"
+                title="Click to view devices ready for delivery/outward"
+              >
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 group-hover:scale-110 transition" />
+                  <span className="text-slate-600 font-medium group-hover:text-slate-900">Ready for Pickup</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/70 text-xs">
+                    {readyForDeliveryCount} devices
+                  </span>
+                  <ChevronRight className="w-3 h-3 text-slate-400 group-hover:text-slate-700 transition" />
+                </div>
               </div>
-              <div className="flex justify-between items-center text-xs">
-                <span className="text-slate-500">Access Control</span>
-                <span className="font-semibold text-teal-600">RBAC (Admin / Techs)</span>
+
+              {/* Row 3: Intake / New Inwards */}
+              <div
+                onClick={() => onNavigate('inwards')}
+                className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/70 hover:border-blue-300 hover:bg-blue-50/40 transition cursor-pointer text-xs group"
+                title="Click to view inward received jobs"
+              >
+                <div className="flex items-center gap-2">
+                  <Inbox className="w-3.5 h-3.5 text-blue-600 group-hover:scale-110 transition" />
+                  <span className="text-slate-600 font-medium group-hover:text-slate-900">Intake / Pending</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono font-black text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200/70 text-xs">
+                    {inwardReceivedCount} queue
+                  </span>
+                  <ChevronRight className="w-3 h-3 text-slate-400 group-hover:text-slate-700 transition" />
+                </div>
               </div>
+
+              {/* Row 4: Outstanding Collections */}
+              <div
+                onClick={() => onNavigate('clients')}
+                className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/70 hover:border-rose-300 hover:bg-rose-50/40 transition cursor-pointer text-xs group"
+                title="Click to view clients with outstanding balances"
+              >
+                <div className="flex items-center gap-2">
+                  <DollarSign className="w-3.5 h-3.5 text-rose-600 group-hover:scale-110 transition" />
+                  <span className="text-slate-600 font-medium group-hover:text-slate-900">Pending Dues</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono font-black text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200/70 text-xs">
+                    ₹{clients.reduce((acc, c) => acc + (c.outstandingBalance || 0), 0).toLocaleString('en-IN')}
+                  </span>
+                  <ChevronRight className="w-3 h-3 text-slate-400 group-hover:text-slate-700 transition" />
+                </div>
+              </div>
+            </div>
+
+            {/* Live Synchronized Footer Indicator */}
+            <div className="mt-3 pt-2.5 border-t border-slate-200/60 flex items-center justify-between text-[10px] text-slate-500 font-semibold">
+              <span className="flex items-center gap-1.5 text-slate-600">
+                <RefreshCw className={`w-3 h-3 text-teal-600 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>{isSyncing ? 'Syncing to Server...' : 'Real-time Server Sync'}</span>
+              </span>
+              <span className="font-mono text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded-md border border-teal-100">
+                {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Live Active'}
+              </span>
             </div>
           </div>
         </div>

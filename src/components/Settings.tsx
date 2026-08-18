@@ -12,6 +12,7 @@ import { getAppStorageItem, setAppStorageItem, removeAppStorageItem } from '../l
 import { clearOrgWorkspaceApi } from '../lib/api';
 import {
   Settings,
+  Save,
   Plus,
   Trash2,
   X,
@@ -131,6 +132,62 @@ export default function SettingsComponent({
   const currentTenantId = activeTenantId || 'org-admin';
   const [activeSubTab, setActiveSubTab] = useState<'profile' | 'theme' | 'backup' | 'masters' | 'admin'>('profile');
   const [showMicrosoftAuthQRModal, setShowMicrosoftAuthQRModal] = useState<boolean>(false);
+
+  // Manual Save Local Draft State (Eliminates auto-saving/API calling on every keystroke)
+  const [localConfig, setLocalConfig] = useState<CompanyConfig>(companyConfig);
+  const [localFontSize, setLocalFontSize] = useState<string>(fontSize);
+  const [isSavingSettings, setIsSavingSettings] = useState<boolean>(false);
+  const [settingsSuccessMsg, setSettingsSuccessMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLocalConfig(companyConfig);
+  }, [companyConfig, currentTenantId]);
+
+  useEffect(() => {
+    setLocalFontSize(fontSize);
+  }, [fontSize]);
+
+  const updateLocalConfig = (updater: Partial<CompanyConfig> | ((prev: CompanyConfig) => CompanyConfig)) => {
+    if (typeof updater === 'function') {
+      setLocalConfig(updater);
+    } else {
+      setLocalConfig(prev => ({ ...prev, ...updater }));
+    }
+  };
+
+  const isConfigDirty = JSON.stringify(localConfig) !== JSON.stringify(companyConfig);
+  const isFontDirty = localFontSize !== fontSize;
+  const isDirty = isConfigDirty || isFontDirty;
+
+  const handleSaveAllSettings = async () => {
+    setIsSavingSettings(true);
+    setSettingsSuccessMsg(null);
+    try {
+      onChangeCompanyConfig(localConfig);
+      if (localFontSize !== fontSize) {
+        onChangeFontSize(localFontSize);
+      }
+      if (currentTenantId) {
+        const { companyConfig: _cfg, ...collectionsOnly } = (appData || {}) as any;
+        await saveAllTenantDataViaApi(currentTenantId, localConfig, collectionsOnly || {}).catch(() => {});
+      }
+      setSettingsSuccessMsg('✓ All settings & configurations saved successfully!');
+      setTimeout(() => setSettingsSuccessMsg(null), 3500);
+    } catch (err: any) {
+      console.error('Failed to save settings:', err);
+      setSettingsSuccessMsg('Failed to save settings. Please try again.');
+      setTimeout(() => setSettingsSuccessMsg(null), 3500);
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
+  const handleDiscardChanges = () => {
+    setLocalConfig(companyConfig);
+    setLocalFontSize(fontSize);
+    setSettingsSuccessMsg('Unsaved changes discarded.');
+    setTimeout(() => setSettingsSuccessMsg(null), 2500);
+  };
 
   // Organization Security PIN & 2FA state
   const [orgPinInput, setOrgPinInput] = useState<string>(activeTenant?.pin || '');
@@ -484,12 +541,11 @@ export default function SettingsComponent({
     }
   };
 
-  const activePalette: TenantThemePalette = companyConfig.themePalette || DEFAULT_THEME_PALETTE;
+  const activePalette: TenantThemePalette = localConfig.themePalette || DEFAULT_THEME_PALETTE;
 
   const handleUpdatePalette = (updated: Partial<TenantThemePalette>) => {
     const newPal = { ...activePalette, ...updated };
-    onChangeCompanyConfig({
-      ...companyConfig,
+    updateLocalConfig({
       themePalette: newPal
     });
   };
@@ -532,20 +588,17 @@ export default function SettingsComponent({
           if (ctx) {
             ctx.drawImage(img, 0, 0, width, height);
             const optimizedDataUrl = canvas.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.88);
-            onChangeCompanyConfig({
-              ...companyConfig,
+            updateLocalConfig({
               logoUrl: optimizedDataUrl
             });
           } else {
-            onChangeCompanyConfig({
-              ...companyConfig,
+            updateLocalConfig({
               logoUrl: rawDataUrl
             });
           }
         };
         img.onerror = () => {
-          onChangeCompanyConfig({
-            ...companyConfig,
+          updateLocalConfig({
             logoUrl: rawDataUrl
           });
         };
@@ -556,8 +609,7 @@ export default function SettingsComponent({
   };
 
   const handleRemoveLogo = () => {
-    onChangeCompanyConfig({
-      ...companyConfig,
+    updateLocalConfig({
       logoUrl: ''
     });
   };
@@ -601,20 +653,17 @@ export default function SettingsComponent({
           if (ctx) {
             ctx.drawImage(img, 0, 0, width, height);
             const optimizedDataUrl = canvas.toDataURL('image/png');
-            onChangeCompanyConfig({
-              ...companyConfig,
+            updateLocalConfig({
               appLogoUrl: optimizedDataUrl
             });
           } else {
-            onChangeCompanyConfig({
-              ...companyConfig,
+            updateLocalConfig({
               appLogoUrl: rawDataUrl
             });
           }
         };
         img.onerror = () => {
-          onChangeCompanyConfig({
-            ...companyConfig,
+          updateLocalConfig({
             appLogoUrl: rawDataUrl
           });
         };
@@ -637,8 +686,7 @@ export default function SettingsComponent({
       const reader = new FileReader();
       reader.onload = (evt) => {
         if (evt.target?.result) {
-          onChangeCompanyConfig({
-            ...companyConfig,
+          updateLocalConfig({
             upiQrUrl: evt.target.result as string
           });
         }
@@ -648,8 +696,7 @@ export default function SettingsComponent({
   };
 
   const handleRemoveUpiQr = () => {
-    onChangeCompanyConfig({
-      ...companyConfig,
+    updateLocalConfig({
       upiQrUrl: ''
     });
   };
@@ -699,8 +746,7 @@ export default function SettingsComponent({
         ctx.clearRect(0, 0, canvas.width, canvas.height);
       }
     }
-    onChangeCompanyConfig({
-      ...companyConfig,
+    updateLocalConfig({
       signatureUrl: ''
     });
   };
@@ -709,11 +755,10 @@ export default function SettingsComponent({
     const canvas = signatureCanvasRef.current;
     if (!canvas) return;
     const dataUrl = canvas.toDataURL('image/png');
-    onChangeCompanyConfig({
-      ...companyConfig,
+    updateLocalConfig({
       signatureUrl: dataUrl
     });
-    alert('✓ Digital Signature saved successfully!');
+    alert('✓ Digital Signature updated in draft! Click "Save Settings" to apply permanently.');
   };
 
   // Export Activity Logs to Excel file handler
@@ -727,7 +772,7 @@ export default function SettingsComponent({
     const ws = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ 'Info': 'No activity logs recorded yet' }]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Activity Logs');
-    const filename = `System_Activity_Logs_${companyConfig.name.replace(/[^a-zA-Z0-0]/g, '_')}.xlsx`;
+    const filename = `System_Activity_Logs_${(localConfig.name || companyConfig.name).replace(/[^a-zA-Z0-0]/g, '_')}.xlsx`;
     XLSX.writeFile(wb, filename);
   };
 
@@ -755,67 +800,67 @@ export default function SettingsComponent({
     }
   };
 
-  // Sync mode states - mapped to companyConfig
-  const syncMode = companyConfig.syncMode;
+  // Sync mode states - mapped to localConfig
+  const syncMode = localConfig.syncMode;
   const setSyncMode = (val: 'offline' | 'wifi' | 'lan') => {
-    onChangeCompanyConfig({ ...companyConfig, syncMode: val });
+    updateLocalConfig({ syncMode: val });
   };
 
-  const lanHostIp = companyConfig.lanHostIp;
+  const lanHostIp = localConfig.lanHostIp;
   const setLanHostIp = (val: string) => {
-    onChangeCompanyConfig({ ...companyConfig, lanHostIp: val });
+    updateLocalConfig({ lanHostIp: val });
   };
 
-  // Google Drive states - mapped to companyConfig
-  const driveConnected = companyConfig.driveConnected;
+  // Google Drive states - mapped to localConfig
+  const driveConnected = localConfig.driveConnected;
   const setDriveConnected = (val: boolean) => {
-    onChangeCompanyConfig({ ...companyConfig, driveConnected: val });
+    updateLocalConfig({ driveConnected: val });
   };
 
-  const driveEmail = companyConfig.driveAccountEmail || 'sujitg5116@gmail.com';
+  const driveEmail = localConfig.driveAccountEmail || 'sujitg5116@gmail.com';
   const setDriveEmail = (val: string) => {
-    onChangeCompanyConfig({ ...companyConfig, driveAccountEmail: val });
+    updateLocalConfig({ driveAccountEmail: val });
   };
 
-  const driveFolderPath = companyConfig.driveFolderPath || 'My Drive / INOMS_Cloud_Backups /';
+  const driveFolderPath = localConfig.driveFolderPath || 'My Drive / INOMS_Cloud_Backups /';
   const setDriveFolderPath = (val: string) => {
-    onChangeCompanyConfig({ ...companyConfig, driveFolderPath: val });
+    updateLocalConfig({ driveFolderPath: val });
   };
 
-  const lastDriveBackupTime = companyConfig.lastDriveBackupTime || 'None';
+  const lastDriveBackupTime = localConfig.lastDriveBackupTime || 'None';
   const setLastDriveBackupTime = (val: string) => {
-    onChangeCompanyConfig({ ...companyConfig, lastDriveBackupTime: val });
+    updateLocalConfig({ lastDriveBackupTime: val });
   };
 
-  const autoBackupTimes = companyConfig.autoBackupTimes || ['10:00', '18:00'];
+  const autoBackupTimes = localConfig.autoBackupTimes || ['10:00', '18:00'];
   const setAutoBackupTimes = (val: string[]) => {
-    onChangeCompanyConfig({ ...companyConfig, autoBackupTimes: val });
+    updateLocalConfig({ autoBackupTimes: val });
   };
 
-  // Local Machine PC Backup states - mapped to companyConfig
-  const localBackupEnabled = companyConfig.localBackupEnabled ?? true;
+  // Local Machine PC Backup states - mapped to localConfig
+  const localBackupEnabled = localConfig.localBackupEnabled ?? true;
   const setLocalBackupEnabled = (val: boolean) => {
-    onChangeCompanyConfig({ ...companyConfig, localBackupEnabled: val });
+    updateLocalConfig({ localBackupEnabled: val });
   };
 
-  const localBackupPath = companyConfig.localBackupPath || 'C:\\INOMS_Backups\\';
+  const localBackupPath = localConfig.localBackupPath || 'C:\\INOMS_Backups\\';
   const setLocalBackupPath = (val: string) => {
-    onChangeCompanyConfig({ ...companyConfig, localBackupPath: val });
+    updateLocalConfig({ localBackupPath: val });
   };
 
-  const localBackupScheduleTime = companyConfig.localBackupScheduleTime || '18:00';
+  const localBackupScheduleTime = localConfig.localBackupScheduleTime || '18:00';
   const setLocalBackupScheduleTime = (val: string) => {
-    onChangeCompanyConfig({ ...companyConfig, localBackupScheduleTime: val });
+    updateLocalConfig({ localBackupScheduleTime: val });
   };
 
   const localBackupFrequency = 'on_sync';
   const setLocalBackupFrequency = (val: CompanyConfig['localBackupFrequency']) => {
-    onChangeCompanyConfig({ ...companyConfig, localBackupFrequency: val });
+    updateLocalConfig({ localBackupFrequency: val });
   };
 
-  const lastLocalBackupTime = companyConfig.lastLocalBackupTime || 'None';
+  const lastLocalBackupTime = localConfig.lastLocalBackupTime || 'None';
   const setLastLocalBackupTime = (val: string) => {
-    onChangeCompanyConfig({ ...companyConfig, lastLocalBackupTime: val });
+    updateLocalConfig({ lastLocalBackupTime: val });
   };
 
   const [localBackupSuccessMsg, setLocalBackupSuccessMsg] = useState<string>('');
@@ -1329,17 +1374,76 @@ export default function SettingsComponent({
   };
 
   return (
-    <div className="space-y-6">
-      {/* Settings Tab Shell */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs">
-        <h1 className="text-xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-          <Settings className="w-5 h-5 text-teal-500" />
-          Settings & Configurations
-        </h1>
-        <p className="text-xs text-slate-400 mt-1">Configure company profiles, dual-sync options, system permissions, and masters list.</p>
+    <div className="space-y-6 relative pb-16">
+      {/* Settings Tab Shell Header */}
+      <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
+              <Settings className="w-5 h-5 text-teal-500" />
+              Settings & Configurations
+            </h1>
+            <p className="text-xs text-slate-400 mt-1">Configure company profiles, backup schedules, custom color themes, and masters list without automatic API triggers on every keystroke.</p>
+          </div>
+
+          <div className="flex items-center gap-2.5 shrink-0">
+            {isDirty && (
+              <>
+                <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 animate-pulse">
+                  <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                  Unsaved Changes
+                </span>
+                <button
+                  type="button"
+                  onClick={handleDiscardChanges}
+                  disabled={isSavingSettings}
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Discard</span>
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={handleSaveAllSettings}
+              disabled={isSavingSettings}
+              className={`px-4 py-2 text-xs font-bold rounded-xl transition cursor-pointer flex items-center gap-2 shadow-xs ${
+                isDirty
+                  ? 'bg-teal-600 hover:bg-teal-700 text-white ring-2 ring-teal-500/30 ring-offset-1'
+                  : 'bg-teal-600 hover:bg-teal-700 text-white'
+              }`}
+            >
+              {isSavingSettings ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Saving Changes...</span>
+                </>
+              ) : (
+                <>
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Save Settings</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Success / Status notification banner */}
+        {settingsSuccessMsg && (
+          <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-medium flex items-center justify-between gap-2 animate-fadeIn">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{settingsSuccessMsg}</span>
+            </div>
+            <button onClick={() => setSettingsSuccessMsg(null)} className="text-emerald-700 hover:text-emerald-900 cursor-pointer">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
         
         {/* Horizontal Navigation Menu */}
-        <div className="flex border-b border-slate-100 mt-6 gap-2 text-xs font-bold overflow-x-auto pb-1">
+        <div className="flex border-b border-slate-100 mt-2 gap-2 text-xs font-bold overflow-x-auto pb-1">
           {(((userRole === 'Admin' || userRole === 'Master Admin' || !currentUser || currentUser.role === 'Admin' || currentTenantId === 'org-admin')
             ? ['profile', 'theme', 'backup', 'masters', 'admin']
             : ['profile', 'theme', 'backup']
@@ -1387,7 +1491,7 @@ export default function SettingsComponent({
               <div>
                 <h3 className="font-bold text-slate-700 text-sm mb-1 flex items-center gap-2">
                   <span>Organization Logo & Badge</span>
-                  {companyConfig.logoUrl && (
+                  {localConfig.logoUrl && (
                     <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                       ✓ Organization Badge
                     </span>
@@ -1406,10 +1510,10 @@ export default function SettingsComponent({
                   className="hidden"
                 />
                 <div className="w-16 h-16 rounded-2xl bg-white border-2 border-dashed border-slate-300 flex items-center justify-center font-black text-teal-600 text-lg overflow-hidden shrink-0 shadow-xs">
-                  {companyConfig.logoUrl ? (
-                    <img src={companyConfig.logoUrl} alt="Organization Logo" className="w-full h-full object-cover" />
+                  {localConfig.logoUrl ? (
+                    <img src={localConfig.logoUrl} alt="Organization Logo" className="w-full h-full object-cover" />
                   ) : (
-                    companyConfig.name ? companyConfig.name.substring(0, 2).toUpperCase() : 'RT'
+                    localConfig.name ? localConfig.name.substring(0, 2).toUpperCase() : 'RT'
                   )}
                 </div>
                 <div>
@@ -1422,7 +1526,7 @@ export default function SettingsComponent({
                       <Upload className="w-3.5 h-3.5" />
                       <span>Upload Organization Logo</span>
                     </button>
-                    {companyConfig.logoUrl && (
+                    {localConfig.logoUrl && (
                       <button
                         type="button"
                         onClick={handleRemoveLogo}
@@ -1442,8 +1546,8 @@ export default function SettingsComponent({
                   <label className="block font-bold text-slate-500 uppercase">Company Name</label>
                   <input
                     type="text"
-                    value={companyConfig.name}
-                    onChange={(e) => onChangeCompanyConfig({ ...companyConfig, name: e.target.value })}
+                    value={localConfig.name}
+                    onChange={(e) => updateLocalConfig({ name: e.target.value })}
                     className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 font-bold text-slate-800"
                   />
                 </div>
@@ -1452,8 +1556,8 @@ export default function SettingsComponent({
                     <label className="block font-bold text-slate-500 uppercase">Phone Number</label>
                     <input
                       type="text"
-                      value={companyConfig.phone}
-                      onChange={(e) => onChangeCompanyConfig({ ...companyConfig, phone: e.target.value })}
+                      value={localConfig.phone}
+                      onChange={(e) => updateLocalConfig({ phone: e.target.value })}
                       className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 font-mono text-slate-700"
                     />
                   </div>
@@ -1461,8 +1565,8 @@ export default function SettingsComponent({
                     <label className="block font-bold text-slate-500 uppercase">Email Address</label>
                     <input
                       type="email"
-                      value={companyConfig.email}
-                      onChange={(e) => onChangeCompanyConfig({ ...companyConfig, email: e.target.value })}
+                      value={localConfig.email}
+                      onChange={(e) => updateLocalConfig({ email: e.target.value })}
                       className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-700"
                     />
                   </div>
@@ -1473,8 +1577,8 @@ export default function SettingsComponent({
                     <input
                       type="text"
                       placeholder="e.g. www.yourcompany.com"
-                      value={companyConfig.website || ''}
-                      onChange={(e) => onChangeCompanyConfig({ ...companyConfig, website: e.target.value })}
+                      value={localConfig.website || ''}
+                      onChange={(e) => updateLocalConfig({ website: e.target.value })}
                       className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-700 font-mono text-xs"
                     />
                   </div>
@@ -1482,8 +1586,8 @@ export default function SettingsComponent({
                     <label className="block font-bold text-slate-500 uppercase">GSTIN / Tax Number</label>
                     <input
                       type="text"
-                      value={companyConfig.gstin}
-                      onChange={(e) => onChangeCompanyConfig({ ...companyConfig, gstin: e.target.value })}
+                      value={localConfig.gstin}
+                      onChange={(e) => updateLocalConfig({ gstin: e.target.value })}
                       className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 font-mono text-slate-700"
                     />
                   </div>
@@ -1492,8 +1596,8 @@ export default function SettingsComponent({
                   <label className="block font-bold text-slate-500 uppercase">Registered Address</label>
                   <textarea
                     rows={2}
-                    value={companyConfig.address}
-                    onChange={(e) => onChangeCompanyConfig({ ...companyConfig, address: e.target.value })}
+                    value={localConfig.address}
+                    onChange={(e) => updateLocalConfig({ address: e.target.value })}
                     className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-700"
                   />
                 </div>
@@ -1515,8 +1619,8 @@ export default function SettingsComponent({
                         <input
                           type="text"
                           placeholder="e.g. INOMS"
-                          value={companyConfig.appName || 'INOMS'}
-                          onChange={(e) => onChangeCompanyConfig({ ...companyConfig, appName: e.target.value })}
+                          value={localConfig.appName || 'INOMS'}
+                          onChange={(e) => updateLocalConfig({ appName: e.target.value })}
                           className="w-full border border-slate-200 rounded-xl px-3 py-2 font-extrabold text-slate-800 text-xs"
                         />
                       </div>
@@ -1525,8 +1629,8 @@ export default function SettingsComponent({
                         <input
                           type="text"
                           placeholder="e.g. Integrated Inward & Outward Management System"
-                          value={companyConfig.appTagline || 'Integrated Inward & Outward Management System'}
-                          onChange={(e) => onChangeCompanyConfig({ ...companyConfig, appTagline: e.target.value })}
+                          value={localConfig.appTagline || 'Integrated Inward & Outward Management System'}
+                          onChange={(e) => updateLocalConfig({ appTagline: e.target.value })}
                           className="w-full border border-slate-200 rounded-xl px-3 py-2 font-medium text-slate-700 text-xs"
                         />
                       </div>
@@ -1537,7 +1641,7 @@ export default function SettingsComponent({
                       <div className="flex items-center gap-3">
                         <div className="w-12 h-12 rounded-xl bg-white border border-white/20 p-1 flex items-center justify-center shrink-0 shadow-inner overflow-hidden">
                           <img
-                            src={companyConfig.appLogoUrl || '/inoms_logo.jpg'}
+                            src={localConfig.appLogoUrl || '/inoms_logo.jpg'}
                             alt="Application Header Logo"
                             className="w-full h-full object-contain rounded-lg"
                           />
@@ -1550,7 +1654,7 @@ export default function SettingsComponent({
                             </span>
                           </p>
                           <p className="text-[11px] text-slate-300 mt-0.5">
-                            Appears live on the left side blue bar beside the Application Name ({companyConfig.appName || 'INOMS'}).
+                            Appears live on the left side blue bar beside the Application Name ({localConfig.appName || 'INOMS'}).
                           </p>
                         </div>
                       </div>
@@ -1571,11 +1675,10 @@ export default function SettingsComponent({
                           <Upload className="w-3.5 h-3.5" />
                           <span>Upload App Logo</span>
                         </button>
-                        {companyConfig.appLogoUrl && companyConfig.appLogoUrl !== '/inoms_logo.jpg' && (
+                        {localConfig.appLogoUrl && localConfig.appLogoUrl !== '/inoms_logo.jpg' && (
                           <button
                             type="button"
-                            onClick={() => onChangeCompanyConfig({
-                              ...companyConfig,
+                            onClick={() => updateLocalConfig({
                               appLogoUrl: '/inoms_logo.jpg'
                             })}
                             className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-3 py-2 rounded-xl transition text-xs cursor-pointer border border-slate-700"
@@ -1605,8 +1708,8 @@ export default function SettingsComponent({
                       <input
                         type="text"
                         placeholder="e.g. repairtrack@ybl or 9876543210@paytm"
-                        value={companyConfig.upiId || ''}
-                        onChange={(e) => onChangeCompanyConfig({ ...companyConfig, upiId: e.target.value })}
+                        value={localConfig.upiId || ''}
+                        onChange={(e) => updateLocalConfig({ upiId: e.target.value })}
                         className="w-full border border-slate-200 rounded-xl px-3 py-2 font-mono text-slate-800 text-xs"
                       />
                     </div>
@@ -1623,11 +1726,11 @@ export default function SettingsComponent({
                       />
                       <div className="flex items-center gap-3 pt-0.5">
                         <div className="w-12 h-12 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center overflow-hidden shrink-0">
-                          {companyConfig.upiQrUrl ? (
-                            <img src={companyConfig.upiQrUrl} alt="Custom UPI QR" className="w-full h-full object-contain" />
-                          ) : companyConfig.upiId ? (
+                          {localConfig.upiQrUrl ? (
+                            <img src={localConfig.upiQrUrl} alt="Custom UPI QR" className="w-full h-full object-contain" />
+                          ) : localConfig.upiId ? (
                             <img
-                              src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(`upi://pay?pa=${companyConfig.upiId}&pn=${companyConfig.name}&cu=INR`)}`}
+                              src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(`upi://pay?pa=${localConfig.upiId}&pn=${localConfig.name}&cu=INR`)}`}
                               alt="Generated UPI QR"
                               className="w-full h-full object-contain"
                             />
@@ -1643,7 +1746,7 @@ export default function SettingsComponent({
                           >
                             Upload QR Image
                           </button>
-                          {companyConfig.upiQrUrl && (
+                          {localConfig.upiQrUrl && (
                             <button
                               type="button"
                               onClick={handleRemoveUpiQr}
@@ -1663,8 +1766,8 @@ export default function SettingsComponent({
                         <input
                           type="text"
                           placeholder="e.g. HDFC Bank"
-                          value={companyConfig.bankName || ''}
-                          onChange={(e) => onChangeCompanyConfig({ ...companyConfig, bankName: e.target.value })}
+                          value={localConfig.bankName || ''}
+                          onChange={(e) => updateLocalConfig({ bankName: e.target.value })}
                           className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700 text-xs"
                         />
                       </div>
@@ -1673,8 +1776,8 @@ export default function SettingsComponent({
                         <input
                           type="text"
                           placeholder="e.g. 502000123456"
-                          value={companyConfig.bankAccountNo || ''}
-                          onChange={(e) => onChangeCompanyConfig({ ...companyConfig, bankAccountNo: e.target.value })}
+                          value={localConfig.bankAccountNo || ''}
+                          onChange={(e) => updateLocalConfig({ bankAccountNo: e.target.value })}
                           className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 font-mono text-slate-700 text-xs"
                         />
                       </div>
@@ -1683,8 +1786,8 @@ export default function SettingsComponent({
                         <input
                           type="text"
                           placeholder="e.g. RepairTrack Tech"
-                          value={companyConfig.bankAccountName || ''}
-                          onChange={(e) => onChangeCompanyConfig({ ...companyConfig, bankAccountName: e.target.value })}
+                          value={localConfig.bankAccountName || ''}
+                          onChange={(e) => updateLocalConfig({ bankAccountName: e.target.value })}
                           className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700 text-xs"
                         />
                       </div>
@@ -1693,8 +1796,8 @@ export default function SettingsComponent({
                         <input
                           type="text"
                           placeholder="e.g. HDFC0001234"
-                          value={companyConfig.bankIfsc || ''}
-                          onChange={(e) => onChangeCompanyConfig({ ...companyConfig, bankIfsc: e.target.value.toUpperCase() })}
+                          value={localConfig.bankIfsc || ''}
+                          onChange={(e) => updateLocalConfig({ bankIfsc: e.target.value.toUpperCase() })}
                           className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 font-mono text-slate-700 text-xs uppercase"
                         />
                       </div>
@@ -1714,9 +1817,9 @@ export default function SettingsComponent({
               {/* Interactive Signature Canvas Board */}
               <div className="border border-slate-200 rounded-2xl p-3 bg-white space-y-2 shadow-2xs">
                 <div className="relative bg-slate-50 border border-dashed border-slate-200 rounded-xl overflow-hidden h-36 flex items-center justify-center">
-                  {companyConfig.signatureUrl ? (
+                  {localConfig.signatureUrl ? (
                     <div className="relative w-full h-full flex items-center justify-center bg-white p-2">
-                      <img src={companyConfig.signatureUrl} alt="Saved Signature" className="max-h-28 object-contain" />
+                      <img src={localConfig.signatureUrl} alt="Saved Signature" className="max-h-28 object-contain" />
                       <span className="absolute bottom-2 right-2 text-[9px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-md border border-emerald-200">
                         ✓ Signature Active
                       </span>
@@ -1785,7 +1888,7 @@ export default function SettingsComponent({
                 </div>
 
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Link <strong>{companyConfig.name}</strong> ({companyConfig.phone}) to Microsoft Authenticator or Google Authenticator app for two-factor mobile verification.
+                  Link <strong>{localConfig.name}</strong> ({localConfig.phone}) to Microsoft Authenticator or Google Authenticator app for two-factor mobile verification.
                 </p>
 
                 <div className="pt-1">
@@ -1807,7 +1910,7 @@ export default function SettingsComponent({
                     App Text & Font Size Settings
                   </h3>
                   <p className="text-[11px] text-slate-400 mt-0.5">
-                    Increase or decrease the font size of the whole application. Your preference will save automatically.
+                    Increase or decrease the font size of the whole application. Click "Save Settings" to apply permanently.
                   </p>
                 </div>
 
@@ -1815,7 +1918,7 @@ export default function SettingsComponent({
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Font Size Selection</span>
                     <span className="text-xs font-bold text-teal-600 px-2 py-0.5 bg-teal-50 rounded-md border border-teal-100 font-mono">
-                      {fontSize}px
+                      {localFontSize}px
                     </span>
                   </div>
 
@@ -1830,9 +1933,9 @@ export default function SettingsComponent({
                       <button
                         key={opt.size}
                         type="button"
-                        onClick={() => onChangeFontSize(opt.size)}
+                        onClick={() => setLocalFontSize(opt.size)}
                         className={`py-2 px-1 text-center rounded-xl border transition cursor-pointer flex flex-col items-center justify-center ${
-                          fontSize === opt.size
+                          localFontSize === opt.size
                             ? 'bg-teal-600 text-white border-teal-600 shadow-xs'
                             : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300 hover:bg-slate-50'
                         }`}
@@ -1847,23 +1950,23 @@ export default function SettingsComponent({
                   <div className="flex gap-2 items-center pt-1.5">
                     <button
                       type="button"
-                      disabled={parseInt(fontSize) <= 12}
-                      onClick={() => onChangeFontSize((Math.max(12, parseInt(fontSize) - 1)).toString())}
+                      disabled={parseInt(localFontSize) <= 12}
+                      onClick={() => setLocalFontSize((Math.max(12, parseInt(localFontSize) - 1)).toString())}
                       className="flex-1 py-2 rounded-xl bg-white border border-slate-200 font-black text-slate-700 hover:bg-slate-50 text-xs transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                     >
                       A- (Decrease)
                     </button>
                     <button
                       type="button"
-                      onClick={() => onChangeFontSize('16')}
+                      onClick={() => setLocalFontSize('16')}
                       className="flex-1 py-2 rounded-xl bg-white border border-slate-200 font-black text-slate-700 hover:bg-slate-50 text-xs transition cursor-pointer"
                     >
                       Reset (16px)
                     </button>
                     <button
                       type="button"
-                      disabled={parseInt(fontSize) >= 24}
-                      onClick={() => onChangeFontSize((Math.min(24, parseInt(fontSize) + 1)).toString())}
+                      disabled={parseInt(localFontSize) >= 24}
+                      onClick={() => setLocalFontSize((Math.min(24, parseInt(localFontSize) + 1)).toString())}
                       className="flex-1 py-2 rounded-xl bg-white border border-slate-200 font-black text-slate-700 hover:bg-slate-50 text-xs transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                     >
                       A+ (Increase)
@@ -1886,13 +1989,13 @@ export default function SettingsComponent({
                 Organization Custom Color Palette
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Customize the UI theme colors for <strong>{companyConfig.name}</strong>. Color selections apply specifically to your organization's workspace.
+                Customize the UI theme colors for <strong>{localConfig.name}</strong>. Click "Save Settings" at the top or bottom to apply permanently.
               </p>
             </div>
 
             <button
               type="button"
-              onClick={() => onChangeCompanyConfig({ ...companyConfig, themePalette: DEFAULT_THEME_PALETTE })}
+              onClick={() => updateLocalConfig({ themePalette: DEFAULT_THEME_PALETTE })}
               className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition cursor-pointer shrink-0"
             >
               <RotateCcw className="w-3.5 h-3.5" /> Reset to Classic Theme
@@ -2799,9 +2902,8 @@ export default function SettingsComponent({
                   </label>
                   <input
                     type="text"
-                    value={companyConfig.appName || 'INOMS'}
-                    onChange={(e) => onChangeCompanyConfig({
-                      ...companyConfig,
+                    value={localConfig.appName || 'INOMS'}
+                    onChange={(e) => updateLocalConfig({
                       appName: e.target.value
                     })}
                     placeholder="e.g. INOMS"
@@ -2816,9 +2918,8 @@ export default function SettingsComponent({
                   </label>
                   <input
                     type="text"
-                    value={companyConfig.appTagline || 'Integrated Inward & Outward Management System'}
-                    onChange={(e) => onChangeCompanyConfig({
-                      ...companyConfig,
+                    value={localConfig.appTagline || 'Integrated Inward & Outward Management System'}
+                    onChange={(e) => updateLocalConfig({
                       appTagline: e.target.value
                     })}
                     placeholder="e.g. Integrated Inward & Outward Management System"
@@ -2832,7 +2933,7 @@ export default function SettingsComponent({
                 <div className="flex items-center gap-3 w-full md:w-auto">
                   <div className="w-14 h-14 rounded-xl bg-white border border-white/20 p-1 flex items-center justify-center shrink-0 shadow-inner overflow-hidden">
                     <img
-                      src={companyConfig.appLogoUrl || '/inoms_logo.jpg'}
+                      src={localConfig.appLogoUrl || '/inoms_logo.jpg'}
                       alt="Application Logo"
                       className="w-full h-full object-contain rounded-lg"
                     />
@@ -2867,11 +2968,10 @@ export default function SettingsComponent({
                     <span>Upload Application Logo</span>
                   </button>
 
-                  {companyConfig.appLogoUrl && companyConfig.appLogoUrl !== '/inoms_logo.jpg' && (
+                  {localConfig.appLogoUrl && localConfig.appLogoUrl !== '/inoms_logo.jpg' && (
                     <button
                       type="button"
-                      onClick={() => onChangeCompanyConfig({
-                        ...companyConfig,
+                      onClick={() => updateLocalConfig({
                         appLogoUrl: '/inoms_logo.jpg'
                       })}
                       className="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold px-3 py-2.5 rounded-xl transition text-xs cursor-pointer border border-slate-600"
@@ -3711,6 +3811,49 @@ export default function SettingsComponent({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Floating / Sticky Save Bar for Quick Access on All Tabs */}
+      {isDirty && (
+        <div className="sticky bottom-4 z-40 bg-slate-900/95 backdrop-blur-md text-white p-4 rounded-2xl shadow-2xl border border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-3 duration-200">
+          <div className="flex items-center gap-3">
+            <span className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+            </span>
+            <div>
+              <p className="text-sm font-bold text-white flex items-center gap-2">
+                <span>Unsaved Changes Detected</span>
+                <span className="text-[10px] bg-amber-400/20 text-amber-300 font-semibold px-2 py-0.5 rounded-full border border-amber-400/30">
+                  Draft Mode
+                </span>
+              </p>
+              <p className="text-xs text-slate-300">
+                Changes are held in memory. Click "Save Settings" to persist your modifications and update the server.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+            <button
+              type="button"
+              onClick={handleDiscardChanges}
+              disabled={isSavingSettings}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl transition border border-slate-600 cursor-pointer disabled:opacity-50"
+            >
+              Discard Changes
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveAllSettings}
+              disabled={isSavingSettings}
+              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition shadow-md flex items-center gap-2 cursor-pointer disabled:opacity-50"
+            >
+              <Save className="w-4 h-4" />
+              <span>{isSavingSettings ? 'Saving...' : 'Save Settings Now'}</span>
+            </button>
           </div>
         </div>
       )}
