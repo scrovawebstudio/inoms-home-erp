@@ -7,11 +7,12 @@ import { getDatabase as getSqliteDb } from './sqliteDb';
 
 const resolveAppRoot = (): string => {
   if (process.env.INOMS_APP_ROOT) return path.resolve(process.env.INOMS_APP_ROOT);
-  try {
-    return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  } catch {
-    return path.resolve(process.cwd());
+  if (typeof __dirname !== 'undefined') {
+    return path.basename(__dirname) === 'dist' || path.basename(__dirname) === 'server'
+      ? path.resolve(__dirname, '..')
+      : __dirname;
   }
+  return path.resolve(process.cwd());
 };
 const APP_ROOT = resolveAppRoot();
 const DATA_DIR = path.join(APP_ROOT, 'data');

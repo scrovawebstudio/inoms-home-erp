@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { initDatabase } from './server/sqliteDb';
 import { initPostgresDatabase, isPostgresActive, closePostgresPool } from './server/postgresDb';
@@ -7,6 +8,15 @@ import { apiRouter } from './server/apiRoutes';
 
 const app = express();
 const PORT = 3000;
+
+// Health check endpoints (essential for Cloud Run liveness/readiness probes)
+app.get('/health', (_req, res) => {
+  res.status(200).json({ status: 'ok', time: new Date().toISOString() });
+});
+
+app.get('/api/health', (_req, res) => {
+  res.status(200).json({ status: 'ok', postgres: isPostgresActive(), time: new Date().toISOString() });
+});
 
 // Security & Body parsing middleware
 app.use((_req, res, next) => {
@@ -50,10 +60,27 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    // Robust resolution of dist directory in CommonJS bundled output
+    const distPath = typeof __dirname !== 'undefined'
+      ? (path.basename(__dirname) === 'dist' ? __dirname : path.join(__dirname, 'dist'))
+      : path.join(process.cwd(), 'dist');
+
+    console.log(`📁 Serving production static files from: ${distPath}`);
     app.use(express.static(distPath));
+
     app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      const indexPath = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        // Fallback search in cwd/dist
+        const fallbackPath = path.join(process.cwd(), 'dist', 'index.html');
+        if (fs.existsSync(fallbackPath)) {
+          res.sendFile(fallbackPath);
+        } else {
+          res.status(200).send('<!DOCTYPE html><html><head><title>INOMS</title></head><body><div id="root">Loading INOMS...</div></body></html>');
+        }
+      }
     });
   }
 
@@ -74,4 +101,8 @@ async function startServer() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('Fatal server startup error:', err);
+  process.exit(1);
+});
+

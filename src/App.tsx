@@ -64,8 +64,15 @@ import {
   pushPendingOperations,
   getPendingOperationsCount,
   replaceLocalCollection,
-  getAuthToken
+  getAuthToken,
+  subscribeLocalDb
 } from './lib/localDb';
+
+import {
+  broadcastLocalMutation,
+  subscribeSyncBroadcast,
+  startLiveSyncPolling
+} from './lib/syncBroadcast';
 
 // Modular Components
 import Dashboard from './components/Dashboard';
@@ -1336,34 +1343,68 @@ export default function App() {
         console.info('Home Server bootstrap info:', err?.message || err);
       });
 
-    // 2. Reduced periodic Home Server sync: once every 30s and no duplicate online-triggered work.
-    let deltaSyncInFlight = false;
-    const deltaSyncInterval = setInterval(() => {
-      if (!navigator.onLine || !getAuthToken() || deltaSyncInFlight) return;
-      deltaSyncInFlight = true;
-      Promise.allSettled([
-        pullDeltaFromHomeServer(tId),
-        pushPendingOperations(tId)
-      ]).finally(() => {
-        deltaSyncInFlight = false;
-      });
-    }, 30000);
+    // 2. Real-time Reactive LocalDb state synchronization (Updates React state on any delta pull)
+    const unSubLocalDb = subscribeLocalDb((tenantId, entity, data) => {
+      if (tenantId !== tId || !Array.isArray(data)) return;
+      switch (entity) {
+        case 'clients': setClients(data); break;
+        case 'jobs': setJobs(sortJobsByLatest(data)); break;
+        case 'invoices': setInvoices(data); break;
+        case 'payments': setPayments(data); break;
+        case 'products': setProducts(data); break;
+        case 'expenses': setExpenses(data); break;
+        case 'ledger': setLedger(data); break;
+        case 'users': if (data.length > 0) setUsers(data); break;
+        case 'categories': setCategories(data); break;
+        case 'racks': setRacks(data); break;
+        case 'equipments': setEquipments(data); break;
+        case 'problems': setProblems(data); break;
+      }
+    });
+
+    // 3. Real-time Cross-Tab Broadcast Channel (Instant 0ms multi-tab sync without page refresh)
+    const unSubBroadcast = subscribeSyncBroadcast((msg) => {
+      if (msg.tenantId !== tId) return;
+      if (msg.entity && Array.isArray(msg.items)) {
+        switch (msg.entity) {
+          case 'clients': setClients(msg.items); break;
+          case 'jobs': setJobs(sortJobsByLatest(msg.items)); break;
+          case 'invoices': setInvoices(msg.items); break;
+          case 'payments': setPayments(msg.items); break;
+          case 'products': setProducts(msg.items); break;
+          case 'expenses': setExpenses(msg.items); break;
+          case 'ledger': setLedger(msg.items); break;
+          case 'users': if (msg.items.length > 0) setUsers(msg.items); break;
+          case 'categories': setCategories(msg.items); break;
+          case 'racks': setRacks(msg.items); break;
+          case 'equipments': setEquipments(msg.items); break;
+          case 'problems': setProblems(msg.items); break;
+        }
+      }
+      if (msg.config) {
+        setCompanyConfig(prev => ({ ...prev, ...msg.config }));
+      }
+    });
+
+    // 4. Lightweight Cross-Device Live Polling (Checks server revision every 3.5s & on tab focus)
+    const unSubLivePolling = startLiveSyncPolling(tId, async () => {
+      try {
+        await pullDeltaFromHomeServer(tId);
+      } catch (_) {}
+    }, 3500);
 
     const handleOnline = () => {
-      if (!navigator.onLine || !getAuthToken() || deltaSyncInFlight) return;
-      deltaSyncInFlight = true;
-      Promise.allSettled([
-        pullDeltaFromHomeServer(tId),
-        pushPendingOperations(tId)
-      ]).finally(() => {
-        deltaSyncInFlight = false;
-      });
+      if (!navigator.onLine || !getAuthToken()) return;
+      pullDeltaFromHomeServer(tId).catch(() => {});
+      pushPendingOperations(tId).catch(() => {});
     };
     window.addEventListener('online', handleOnline);
 
     return () => {
       clearTimeout(syncTimer);
-      clearInterval(deltaSyncInterval);
+      unSubLocalDb();
+      unSubBroadcast();
+      unSubLivePolling();
       window.removeEventListener('online', handleOnline);
       unSubConfig();
       unSubGlobalBranding();
@@ -1447,6 +1488,7 @@ export default function App() {
     const timer = window.setTimeout(() => {
       Object.entries(collectionBundle).forEach(([entity, items]) => {
         setAppStorageItem(`${entity}_${activeTenant.id}`, JSON.stringify(items));
+        broadcastLocalMutation(activeTenant.id, entity, items);
       });
 
       if (isAuthenticated) {
@@ -1676,50 +1718,19 @@ export default function App() {
     problems
   ]);
 
-  // Git-like Pull & Push SQLite database synchronization handler
+  // Git-like Pull-First database synchronization handler
   const handleSyncData = async () => {
     setIsSyncing(true);
     const syncStartTime = Date.now();
     try {
-      console.info(`[Home Server Sync] Starting Git-like sync (PUSH & PULL) for tenant: ${activeTenant.id}`);
+      console.info(`[Home Server Sync] Pull-First Sync initiated for tenant: ${activeTenant.id}`);
 
-      // STEP 1: PUSH local modifications and pending ops to Home Server SQLite
-      await pushPendingOperations(activeTenant.id);
-      
-      const pushRes = await saveAllTenantDataViaApi(activeTenant.id, companyConfig, {
-        clients,
-        jobs,
-        invoices,
-        payments,
-        products,
-        expenses,
-        ledger,
-        categories,
-        racks,
-        equipments,
-        problems,
-        users,
-        logs
-      });
-
-      // Sync Company Config & Global System Branding
-      await saveCompanyConfigToFirestore(activeTenant.id, companyConfig);
-      const isMasterAdminOrg = activeTenant.id === 'org-admin' || activeTenant.code === 'ADMIN-00' || activeTenant.ownerMobile?.includes('8149862034');
-      if (isMasterAdminOrg || companyConfig.appLogoUrl) {
-        await saveCompanyConfigToFirestore('global_system_branding', {
-          ...companyConfig,
-          appName: systemAppName,
-          appTagline: systemAppTagline,
-          appLogoUrl: systemAppLogo
-        });
-      }
-
-      // STEP 2: PULL authoritative state from Home Server SQLite
+      // STEP 1: PULL authoritative state FIRST from Home Server SQLite
       const bootstrap = await bootstrapTenantFromHomeServer(activeTenant.id);
       if (bootstrap && bootstrap.collections) {
         const col = bootstrap.collections;
         if (Array.isArray(col.clients)) setClients(col.clients);
-        if (Array.isArray(col.jobs)) setJobs(col.jobs);
+        if (Array.isArray(col.jobs)) setJobs(sortJobsByLatest(col.jobs));
         if (Array.isArray(col.invoices)) setInvoices(col.invoices);
         if (Array.isArray(col.payments)) setPayments(col.payments);
         if (Array.isArray(col.products)) setProducts(col.products);
@@ -1735,6 +1746,21 @@ export default function App() {
         }
       } else {
         await pullDeltaFromHomeServer(activeTenant.id);
+      }
+
+      // STEP 2: PUSH only pending uncommitted local operations
+      await pushPendingOperations(activeTenant.id);
+
+      // Sync Company Config & Global System Branding
+      await saveCompanyConfigToFirestore(activeTenant.id, companyConfig);
+      const isMasterAdminOrg = activeTenant.id === 'org-admin' || activeTenant.code === 'ADMIN-00' || activeTenant.ownerMobile?.includes('8149862034');
+      if (isMasterAdminOrg || companyConfig.appLogoUrl) {
+        await saveCompanyConfigToFirestore('global_system_branding', {
+          ...companyConfig,
+          appName: systemAppName,
+          appTagline: systemAppTagline,
+          appLogoUrl: systemAppLogo
+        });
       }
 
       setPendingQueueCount(getPendingQueueCount());

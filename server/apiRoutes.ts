@@ -1516,6 +1516,22 @@ apiRouter.get('/sync/bootstrap', (req: Request, res: Response) => {
   }
 });
 
+// 1.5. FAST VERSION CHECK: Lightweight endpoint for cross-tab & cross-device real-time polling (<5ms)
+apiRouter.get('/sync/version', (req: Request, res: Response) => {
+  try {
+    const tenantId = (req.query.tenantId as string) || (req.headers['x-tenant-id'] as string) || 'org-admin';
+    const currentRevision = getCurrentRevision(tenantId);
+    res.json({
+      success: true,
+      tenantId,
+      currentRevision,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Version check failed' });
+  }
+});
+
 // 2. PULL: Delta Changes since last known revision
 apiRouter.get('/sync/pull', (req: Request, res: Response) => {
   try {
@@ -2271,7 +2287,7 @@ export function upsertEntityRecord(db: any, tenantId: string, entity: string, re
   }
 }
 
-// 4. BATCH SAVE ALL: Full state snapshot sync to Home Server SQLite & PostgreSQL
+// 4. BATCH SAVE ALL: Non-destructive state snapshot sync to Home Server SQLite & PostgreSQL
 apiRouter.post('/sync/save-all', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
   try {
     const requestTenantId = req.body?.tenantId || req.headers['x-tenant-id'];
@@ -2281,7 +2297,7 @@ apiRouter.post('/sync/save-all', authMiddleware, (req: AuthenticatedRequest, res
       return res.status(403).json({ success: false, message: 'Cross-tenant modification forbidden' });
     }
 
-    const { companyConfig, collections } = req.body || {};
+    const { companyConfig, collections, deletedIds } = req.body || {};
     const db = getDatabase();
     const now = new Date().toISOString();
     const nextRev = getNextRevision(tenantId);
@@ -2305,33 +2321,76 @@ apiRouter.post('/sync/save-all', authMiddleware, (req: AuthenticatedRequest, res
     try {
       if (companyConfig) {
         upsertEntityRecord(db, tenantId, 'config', companyConfig, now, 1);
+        db.run(
+          `INSERT INTO change_log (tenant_id, revision, entity, entity_id, operation, data_json, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [tenantId, nextRev, 'config', tenantId, 'update', JSON.stringify(companyConfig), now]
+        );
+      }
+
+      // Explicit deletions requested by client
+      if (deletedIds && typeof deletedIds === 'object') {
+        for (const [entity, ids] of Object.entries(deletedIds)) {
+          const table = tableMap[entity];
+          if (table && Array.isArray(ids)) {
+            for (const id of ids) {
+              db.run(`UPDATE ${table} SET deleted_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`, [now, now, id, tenantId]);
+              db.run(
+                `INSERT INTO change_log (tenant_id, revision, entity, entity_id, operation, data_json, timestamp)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [tenantId, nextRev, entity, id, 'delete', null, now]
+              );
+            }
+          }
+        }
       }
 
       if (collections && typeof collections === 'object') {
         for (const [entity, items] of Object.entries(collections)) {
           if (!Array.isArray(items)) continue;
           const table = tableMap[entity];
-          if (table) {
-            // Find existing active IDs in SQLite to detect deletions
-            const stmt = db.prepare(`SELECT id FROM ${table} WHERE tenant_id = ? AND (deleted_at IS NULL OR deleted_at = '')`);
-            stmt.bind([tenantId]);
-            const existingIds: string[] = [];
-            while (stmt.step()) {
-              existingIds.push(stmt.getAsObject().id as string);
-            }
-            stmt.free();
-
-            const currentIdSet = new Set(items.map((it: any) => it?.id).filter(Boolean));
-            for (const oldId of existingIds) {
-              if (!currentIdSet.has(oldId)) {
-                db.run(`UPDATE ${table} SET deleted_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`, [now, now, oldId, tenantId]);
-              }
-            }
-          }
 
           for (const record of items) {
             if (!record || !record.id) continue;
-            upsertEntityRecord(db, tenantId, entity, record, now, 1);
+
+            if (record.isDeleted || record.deletedAt || record.deleted_at) {
+              if (table) {
+                db.run(`UPDATE ${table} SET deleted_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`, [now, now, record.id, tenantId]);
+                db.run(
+                  `INSERT INTO change_log (tenant_id, revision, entity, entity_id, operation, data_json, timestamp)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                  [tenantId, nextRev, entity, record.id, 'delete', null, now]
+                );
+              }
+              continue;
+            }
+
+            // Conflict check: if database record is newer than incoming record, do not overwrite with stale version
+            if (table) {
+              const checkStmt = db.prepare(`SELECT updated_at, data_json FROM ${table} WHERE id = ? AND tenant_id = ?`);
+              checkStmt.bind([record.id, tenantId]);
+              let isDbNewer = false;
+              if (checkStmt.step()) {
+                const dbRow = checkStmt.getAsObject();
+                const dbUpdatedAt = (dbRow.updated_at as string) || '';
+                const incomingUpdatedAt = record.updatedAt || record.updated_at || '';
+                if (dbUpdatedAt && incomingUpdatedAt && dbUpdatedAt > incomingUpdatedAt) {
+                  isDbNewer = true;
+                }
+              }
+              checkStmt.free();
+              if (isDbNewer) {
+                // Keep the newer server record
+                continue;
+              }
+            }
+
+            upsertEntityRecord(db, tenantId, entity, record, now, (record.version || 1));
+            db.run(
+              `INSERT INTO change_log (tenant_id, revision, entity, entity_id, operation, data_json, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [tenantId, nextRev, entity, record.id, 'update', JSON.stringify(record), now]
+            );
           }
         }
       }
@@ -2357,7 +2416,7 @@ apiRouter.post('/sync/save-all', authMiddleware, (req: AuthenticatedRequest, res
   }
 });
 
-// 5. SAVE COLLECTION: Update single collection to Home Server SQLite & PostgreSQL
+// 5. SAVE COLLECTION: Update single collection non-destructively to Home Server SQLite & PostgreSQL
 apiRouter.post('/sync/save-collection', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
   try {
     const requestTenantId = req.body?.tenantId || req.headers['x-tenant-id'];
@@ -2367,9 +2426,10 @@ apiRouter.post('/sync/save-collection', authMiddleware, (req: AuthenticatedReque
       return res.status(403).json({ success: false, message: 'Cross-tenant modification forbidden' });
     }
 
-    const { entity, items, config } = req.body || {};
+    const { entity, items, config, deletedIds } = req.body || {};
     const db = getDatabase();
     const now = new Date().toISOString();
+    const nextRev = getNextRevision(tenantId);
 
     const tableMap: Record<string, string> = {
       clients: 'clients',
@@ -2390,29 +2450,65 @@ apiRouter.post('/sync/save-collection', authMiddleware, (req: AuthenticatedReque
     try {
       if (entity === 'config' && config) {
         upsertEntityRecord(db, tenantId, 'config', config, now, 1);
+        db.run(
+          `INSERT INTO change_log (tenant_id, revision, entity, entity_id, operation, data_json, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [tenantId, nextRev, 'config', tenantId, 'update', JSON.stringify(config), now]
+        );
       } else if (entity && Array.isArray(items)) {
         const table = tableMap[entity];
-        if (table) {
-          // Detect deleted IDs in SQLite
-          const stmt = db.prepare(`SELECT id FROM ${table} WHERE tenant_id = ? AND (deleted_at IS NULL OR deleted_at = '')`);
-          stmt.bind([tenantId]);
-          const existingIds: string[] = [];
-          while (stmt.step()) {
-            existingIds.push(stmt.getAsObject().id as string);
-          }
-          stmt.free();
 
-          const currentIdSet = new Set(items.map((it: any) => it?.id).filter(Boolean));
-          for (const oldId of existingIds) {
-            if (!currentIdSet.has(oldId)) {
-              db.run(`UPDATE ${table} SET deleted_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`, [now, now, oldId, tenantId]);
-            }
+        // Explicit deletions
+        if (Array.isArray(deletedIds) && table) {
+          for (const dId of deletedIds) {
+            db.run(`UPDATE ${table} SET deleted_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`, [now, now, dId, tenantId]);
+            db.run(
+              `INSERT INTO change_log (tenant_id, revision, entity, entity_id, operation, data_json, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [tenantId, nextRev, entity, dId, 'delete', null, now]
+            );
           }
         }
 
         for (const record of items) {
           if (!record || !record.id) continue;
-          upsertEntityRecord(db, tenantId, entity, record, now, 1);
+
+          if (record.isDeleted || record.deletedAt || record.deleted_at) {
+            if (table) {
+              db.run(`UPDATE ${table} SET deleted_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`, [now, now, record.id, tenantId]);
+              db.run(
+                `INSERT INTO change_log (tenant_id, revision, entity, entity_id, operation, data_json, timestamp)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [tenantId, nextRev, entity, record.id, 'delete', null, now]
+              );
+            }
+            continue;
+          }
+
+          if (table) {
+            const checkStmt = db.prepare(`SELECT updated_at FROM ${table} WHERE id = ? AND tenant_id = ?`);
+            checkStmt.bind([record.id, tenantId]);
+            let isDbNewer = false;
+            if (checkStmt.step()) {
+              const dbRow = checkStmt.getAsObject();
+              const dbUpdatedAt = (dbRow.updated_at as string) || '';
+              const incomingUpdatedAt = record.updatedAt || record.updated_at || '';
+              if (dbUpdatedAt && incomingUpdatedAt && dbUpdatedAt > incomingUpdatedAt) {
+                isDbNewer = true;
+              }
+            }
+            checkStmt.free();
+            if (isDbNewer) {
+              continue;
+            }
+          }
+
+          upsertEntityRecord(db, tenantId, entity, record, now, (record.version || 1));
+          db.run(
+            `INSERT INTO change_log (tenant_id, revision, entity, entity_id, operation, data_json, timestamp)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [tenantId, nextRev, entity, record.id, 'update', JSON.stringify(record), now]
+          );
         }
       }
 
@@ -2427,6 +2523,7 @@ apiRouter.post('/sync/save-collection', authMiddleware, (req: AuthenticatedReque
         tenantId,
         entity,
         count: Array.isArray(items) ? items.length : 1,
+        serverRevision: nextRev,
         timestamp: now
       });
     } catch (txErr) {
