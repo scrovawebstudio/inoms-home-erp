@@ -23,7 +23,7 @@ import {
 import { SystemUser } from '../types';
 import { INITIAL_USERS, MASTER_ADMIN_USER, INITIAL_ORG_USERS } from '../data';
 import { getAppStorageItem } from '../lib/storage';
-import { verifyTOTPViaApi, verifyMasterPinViaApi, verifyOrgPinViaApi, staffLoginViaApi, registerOrgViaApi, lookupOrgByMobileViaApi, fetchAdminOrganizationsViaApi } from '../lib/api';
+import { verifyTOTPViaApi, verifyMasterPinViaApi, verifyOrgPinViaApi, staffLoginViaApi, registerOrgViaApi, lookupOrgByMobileViaApi, fetchAdminOrganizationsViaApi, ensureTenantSessionViaApi } from '../lib/api';
 
 export interface SystemAnnouncement {
   id: string;
@@ -509,6 +509,9 @@ export default function AuthModal({
       const isCorrectPassword = (cleanPass === userPassword) || (!match.password && !match.pin && (cleanPass === '1234' || !cleanPass));
       if (isCorrectPassword) {
         saveStaffMemory();
+        try {
+          await ensureTenantSessionViaApi(selectedOrg.id, match);
+        } catch (e) {}
         setStaffSuccess(true);
         setTimeout(() => {
           onAuthenticated(selectedOrg, match.role, match);
@@ -530,6 +533,9 @@ export default function AuthModal({
           permissions: { dashboard: true, operations: true, accounts: false, setup: false, reports: false }
         };
         saveStaffMemory();
+        try {
+          await ensureTenantSessionViaApi(selectedOrg.id, defaultTech);
+        } catch (e) {}
         setStaffSuccess(true);
         setTimeout(() => {
           onAuthenticated(selectedOrg, 'Technician', defaultTech);

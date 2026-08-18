@@ -54,7 +54,8 @@ import {
   registerHomeServerSession,
   checkHomeServerSession,
   saveAllTenantDataViaApi,
-  fetchTenantsViaApi
+  fetchTenantsViaApi,
+  ensureTenantSessionViaApi
 } from './lib/api';
 
 import {
@@ -620,6 +621,11 @@ export default function App() {
     } else {
       removeAppSessionItem('current_user');
     }
+
+    // Ensure active tenant session is established with Home Server SQLite
+    try {
+      ensureTenantSessionViaApi(tenant.id, loggedInUser);
+    } catch (e) {}
 
     if (role === 'Admin') {
       setActiveTab('master_admin');

@@ -113,10 +113,15 @@ export async function verifyMasterPinViaApi(codeOrPin: string): Promise<boolean>
 
 const tenantSessionRequests = new Map<string, Promise<string | null>>();
 
-export async function ensureTenantSessionViaApi(tenantId: string): Promise<string | null> {
+export async function ensureTenantSessionViaApi(
+  tenantId: string,
+  user?: { id?: string; name?: string; role?: string; username?: string; mobile?: string } | null
+): Promise<string | null> {
   if (!tenantId) return null;
 
-  const existing = tenantSessionRequests.get(tenantId);
+  const userKey = user?.id || user?.username || user?.role || 'admin';
+  const sessionKey = `${tenantId}:${userKey}`;
+  const existing = tenantSessionRequests.get(sessionKey);
   if (existing) return existing;
 
   const request = (async () => {
@@ -124,7 +129,14 @@ export async function ensureTenantSessionViaApi(tenantId: string): Promise<strin
       const res = await fetch('/api/auth/session-for-tenant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenantId })
+        body: JSON.stringify({
+          tenantId,
+          userId: user?.id,
+          userName: user?.name,
+          userRole: user?.role,
+          username: user?.username,
+          mobile: user?.mobile
+        })
       });
       const data = await res.json();
       if (data.success && data.token) {
@@ -135,11 +147,11 @@ export async function ensureTenantSessionViaApi(tenantId: string): Promise<strin
     } catch (e) {
       return null;
     } finally {
-      tenantSessionRequests.delete(tenantId);
+      tenantSessionRequests.delete(sessionKey);
     }
   })();
 
-  tenantSessionRequests.set(tenantId, request);
+  tenantSessionRequests.set(sessionKey, request);
   return request;
 }
 
@@ -147,25 +159,36 @@ export async function getValidTenantToken(tenantId: string): Promise<string | nu
   if (!tenantId) return getAuthToken();
 
   const currentToken = getAuthToken();
-  if (!currentToken) return null;
-
-  try {
-    const sessionRes = await fetch('/api/auth/session', {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${currentToken}`
+  if (currentToken) {
+    try {
+      const sessionRes = await fetch('/api/auth/session', {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentToken}`
+        }
+      });
+      const sessionData = await sessionRes.json();
+      if (sessionRes.ok && sessionData?.success && sessionData?.user?.tenantId && String(sessionData.user.tenantId) === String(tenantId)) {
+        return currentToken;
       }
-    });
-    const sessionData = await sessionRes.json();
-    if (sessionRes.ok && sessionData?.success && sessionData?.user?.tenantId && String(sessionData.user.tenantId) === String(tenantId)) {
-      return currentToken;
+    } catch (e) {
+      // Fall through to tenant re-authentication.
     }
-  } catch (e) {
-    // Fall through to tenant re-authentication.
   }
 
-  const refreshedToken = await ensureTenantSessionViaApi(tenantId);
-  return refreshedToken || currentToken;
+  // Attempt retrieving stored user information from browser storage
+  let savedUser: any = null;
+  try {
+    if (typeof window !== 'undefined') {
+      const raw = sessionStorage.getItem('inoms_session_current_user') ||
+                  localStorage.getItem('app_storage_current_user') ||
+                  sessionStorage.getItem('current_user');
+      if (raw) savedUser = JSON.parse(raw);
+    }
+  } catch (e) {}
+
+  const refreshedToken = await ensureTenantSessionViaApi(tenantId, savedUser);
+  return refreshedToken || currentToken || getAuthToken();
 }
 
 export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
@@ -177,7 +200,8 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
 }> {
   if (!tenantId) return { success: false, message: 'Tenant ID required' };
   try {
-    const token = await getValidTenantToken(tenantId);
+    let token = await getValidTenantToken(tenantId);
+    if (!token) token = await ensureTenantSessionViaApi(tenantId);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-tenant-id': tenantId
@@ -209,7 +233,8 @@ export async function pullDeltaFromHomeServerViaApi(tenantId: string, sinceRevis
 }> {
   if (!tenantId) return { success: false, message: 'Tenant ID required' };
   try {
-    const token = await getValidTenantToken(tenantId);
+    let token = await getValidTenantToken(tenantId);
+    if (!token) token = await ensureTenantSessionViaApi(tenantId);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-tenant-id': tenantId
@@ -233,7 +258,9 @@ export async function saveAllTenantDataViaApi(
   collections: Record<string, any[]>
 ): Promise<{ success: boolean; serverRevision?: number; message?: string }> {
   try {
-    const token = await getValidTenantToken(tenantId);
+    let token = await getValidTenantToken(tenantId);
+    if (!token) token = await ensureTenantSessionViaApi(tenantId);
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-tenant-id': tenantId
@@ -246,6 +273,25 @@ export async function saveAllTenantDataViaApi(
       headers,
       body: JSON.stringify({ tenantId, companyConfig, collections })
     });
+
+    if (res.status === 401) {
+      // Re-issue token and retry once
+      const newToken = await ensureTenantSessionViaApi(tenantId);
+      if (newToken) {
+        headers['Authorization'] = `Bearer ${newToken}`;
+        const retryRes = await fetch('/api/sync/save-all', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ tenantId, companyConfig, collections })
+        });
+        const retryData = await retryRes.json();
+        if (retryData.success) {
+          console.info(`[Home Server Sync] POST /api/sync/save-all (retry) -> Snapshot saved for tenant: ${tenantId}`);
+        }
+        return retryData;
+      }
+    }
+
     const data = await res.json();
     if (data.success) {
       console.info(`[Home Server Sync] POST /api/sync/save-all -> Snapshot saved to Home Server SQLite for tenant: ${tenantId}`);
@@ -297,7 +343,8 @@ export async function saveTenantCollectionViaApi(
     const timer = setTimeout(async () => {
       syncDebounceTimers.delete(timerKey);
       try {
-        const token = await getValidTenantToken(tenantId);
+        let token = await getValidTenantToken(tenantId);
+        if (!token) token = await ensureTenantSessionViaApi(tenantId);
         const headers: Record<string, string> = {
           'Content-Type': 'application/json',
           'x-tenant-id': tenantId
@@ -305,11 +352,24 @@ export async function saveTenantCollectionViaApi(
         if (token) {
           headers['Authorization'] = `Bearer ${token}`;
         }
-        const res = await fetch('/api/sync/save-collection', {
+        let res = await fetch('/api/sync/save-collection', {
           method: 'POST',
           headers,
           body: JSON.stringify({ tenantId, entity, items, config })
         });
+
+        if (res.status === 401) {
+          const newToken = await ensureTenantSessionViaApi(tenantId);
+          if (newToken) {
+            headers['Authorization'] = `Bearer ${newToken}`;
+            res = await fetch('/api/sync/save-collection', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ tenantId, entity, items, config })
+            });
+          }
+        }
+
         const data = await res.json();
         if (data.success) {
           console.info(`[Home Server Sync] POST /api/sync/save-collection -> Saved ${entity} (${Array.isArray(items) ? items.length : 1} records) for tenant: ${tenantId}`);
