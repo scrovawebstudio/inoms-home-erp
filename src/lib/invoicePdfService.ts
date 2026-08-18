@@ -89,7 +89,8 @@ export function generateInvoicePdfBlob(invoice: Invoice, company: CompanyConfig)
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
       doc.setTextColor(...grayText);
-      doc.text(`Date: ${invoice.date}`, rightX, 27, { align: 'right' });
+      const dateStr = invoice.time ? `Date: ${invoice.date} ${invoice.time}` : `Date: ${invoice.date}`;
+      doc.text(dateStr, rightX, 27, { align: 'right' });
 
       currentY = Math.max(currentY + 2, 34);
 

@@ -315,6 +315,7 @@ export default function Billing({
   const [selectedClientId, setSelectedClientId] = useState('');
   const [linkedJobId, setLinkedJobId] = useState('');
   const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().split('T')[0]);
+  const [invoiceTime, setInvoiceTime] = useState(() => new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }));
   const [invoiceItems, setInvoiceItems] = useState<Omit<InvoiceItem, 'id' | 'total'>[]>([]);
   
   // Quick draft fields
@@ -392,6 +393,7 @@ export default function Billing({
     setSelectedClientId(allBillableClients[0]?.id || clients[0]?.id || '');
     setLinkedJobId('');
     setInvoiceDate(new Date().toISOString().split('T')[0]);
+    setInvoiceTime(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }));
     
     if (isAdmin) {
       setInvoiceItems([
@@ -420,6 +422,7 @@ export default function Billing({
     setSelectedClientId(inv.clientId || '');
     setLinkedJobId(inv.linkedJobId || '');
     setInvoiceDate(inv.date || new Date().toISOString().split('T')[0]);
+    setInvoiceTime(inv.time || new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }));
     setInvoiceItems(inv.items.map(item => ({
       productName: item.productName,
       serialNo: item.serialNo || 'N/A',
@@ -520,6 +523,7 @@ export default function Billing({
       const updatedInv: Invoice = {
         ...editingInvoice,
         date: invoiceDate,
+        time: invoiceTime || new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }),
         clientId: selectedClientId,
         clientName: clientObj?.name || editingInvoice.clientName,
         clientMobile: clientObj?.mobile || editingInvoice.clientMobile,
@@ -552,6 +556,7 @@ export default function Billing({
       // Add Invoice callback
       onAddInvoice({
         date: invoiceDate,
+        time: invoiceTime || new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }),
         clientId: selectedClientId,
         clientName: clientObj?.name || 'Unknown',
         clientMobile: clientObj?.mobile || '',
@@ -826,7 +831,10 @@ export default function Billing({
                       </td>
 
                       <td className="py-3.5 px-6 font-mono font-bold text-slate-800">{inv.id}</td>
-                      <td className="py-3.5 px-6 font-mono text-slate-500">{inv.date}</td>
+                      <td className="py-3.5 px-6 font-mono text-slate-500">
+                        <div>{inv.date}</div>
+                        {inv.time && <div className="text-[10px] text-slate-400 font-sans">{inv.time}</div>}
+                      </td>
                       <td className="py-3.5 px-6 font-semibold text-slate-700">{inv.clientName}</td>
                       <td className="py-3.5 px-6">
                         {inv.linkedJobId ? (
@@ -937,7 +945,7 @@ export default function Billing({
             </div>
           )}
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
             {/* Link Inward Repair Job */}
             <div className="space-y-1">
               <label className="block font-bold text-slate-500 uppercase text-[10px]">Link Inward Repair Job (Optional)</label>
@@ -987,6 +995,18 @@ export default function Billing({
                 type="date"
                 value={invoiceDate}
                 onChange={(e) => setInvoiceDate(e.target.value)}
+                className="w-full border border-slate-200 rounded-xl px-2.5 py-1 font-mono text-xs"
+              />
+            </div>
+
+            {/* Invoice Time */}
+            <div className="space-y-1">
+              <label className="block font-bold text-slate-500 uppercase text-[10px]">Invoice Time</label>
+              <input
+                type="text"
+                value={invoiceTime}
+                onChange={(e) => setInvoiceTime(e.target.value)}
+                placeholder="e.g. 02:30 PM"
                 className="w-full border border-slate-200 rounded-xl px-2.5 py-1 font-mono text-xs"
               />
             </div>

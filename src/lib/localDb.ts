@@ -1,5 +1,5 @@
 import { openDB, IDBPDatabase } from 'idb';
-import { setAppStorageItem } from './storage';
+import { getAppStorageItem, setAppStorageItem } from './storage';
 
 const DB_NAME = 'inoms_local_replica_v2';
 const DB_VERSION = 1;

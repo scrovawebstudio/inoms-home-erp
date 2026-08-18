@@ -101,6 +101,8 @@ interface InwardsProps {
   tenantFeatures?: TenantFeatures;
   initialJobIdToView?: string | null;
   onClearInitialJobIdToView?: () => void;
+  initialOpenAddModal?: boolean;
+  onClearInitialOpenAddModal?: () => void;
   onAddJob: (job: Omit<RepairJob, 'id'>) => void;
   onUpdateJob: (job: RepairJob) => void;
   onDeleteJob?: (id: string) => void;
@@ -127,6 +129,8 @@ export default function Inwards({
   tenantFeatures,
   initialJobIdToView,
   onClearInitialJobIdToView,
+  initialOpenAddModal,
+  onClearInitialOpenAddModal,
   onAddJob,
   onUpdateJob,
   onDeleteJob,
@@ -149,14 +153,20 @@ export default function Inwards({
 
   useEffect(() => {
     if (initialJobIdToView) {
-      const match = jobs.find(j => j.id === initialJobIdToView || j.id.includes(initialJobIdToView));
+      const match = jobs.find(j => j.id === initialJobIdToView || j.id.includes(initialJobIdToView) || (initialJobIdToView && j.id.toLowerCase() === initialJobIdToView.toLowerCase()));
       if (match) {
-        setSelectedJob(match);
-        setShowManageJobModal(true);
+        handleOpenManageJob(match);
       }
       onClearInitialJobIdToView?.();
     }
   }, [initialJobIdToView, jobs, onClearInitialJobIdToView]);
+
+  useEffect(() => {
+    if (initialOpenAddModal) {
+      handleOpenNewJob();
+      onClearInitialOpenAddModal?.();
+    }
+  }, [initialOpenAddModal, onClearInitialOpenAddModal]);
 
   // Quick Add Client modal state
   const [showQuickAddClient, setShowQuickAddClient] = useState(false);
@@ -183,12 +193,12 @@ export default function Inwards({
 
   useEffect(() => {
     if (previewJob && previewDoc === 'qr_label') {
-      const qrText = `JOB ID: ${previewJob.id}\nCLIENT: ${previewJob.clientName}\nPRODUCT: ${previewJob.productName || previewJob.equipment}\nSERIAL: ${previewJob.serialNo || 'N/A'}\nSTATUS: ${previewJob.status}`;
+      const qrText = `ORGANISER: ${companyConfig.name || 'Service Center'}\nJOB ID: ${previewJob.id}\nCLIENT: ${previewJob.clientName}\nPRODUCT: ${previewJob.productName || previewJob.equipment}\nSERIAL: ${previewJob.serialNo || 'N/A'}\nSTATUS: ${previewJob.status}`;
       QRCode.toDataURL(qrText, { margin: 1, width: 220 })
         .then(url => setQrDataUrl(url))
         .catch(err => console.error('Error generating QR code:', err));
     }
-  }, [previewJob, previewDoc]);
+  }, [previewJob, previewDoc, companyConfig.name]);
 
   useEffect(() => {
     if (showCameraModal && mediaStream && videoRef.current) {
@@ -308,7 +318,7 @@ export default function Inwards({
   const [jobStatus, setJobStatus] = useState<JobStatus>('Device Received');
   const [finalBillAmount, setFinalBillAmount] = useState<number>(0);
   const [actionTaken, setActionTaken] = useState('');
-  const [deliveryStatus, setDeliveryStatus] = useState('Pending');
+  const [deliveryStatus, setDeliveryStatus] = useState('Handed Over');
   const [courierName, setCourierName] = useState('');
   const [trackingNo, setTrackingNo] = useState('');
   const [isReturnCase, setIsReturnCase] = useState(false);
@@ -491,7 +501,7 @@ export default function Inwards({
     setJobStatus(job.status);
     setFinalBillAmount(job.finalBillAmount || job.estimateAmount || 0);
     setActionTaken(job.actionTaken || '');
-    setDeliveryStatus(job.deliveryStatus || 'Pending');
+    setDeliveryStatus(job.deliveryStatus || 'Handed Over');
     setCourierName(job.courierName || '');
     setTrackingNo(job.trackingNo || '');
     setIsReturnCase(job.isReturnCase || false);
@@ -1687,6 +1697,9 @@ export default function Inwards({
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                     {Array.from({ length: 6 }).map((_, i) => (
                       <div key={i} className="border border-slate-200 p-3 rounded-lg text-center space-y-1.5 flex flex-col items-center">
+                        <span className="text-[9px] font-black uppercase text-slate-800 tracking-tight block truncate max-w-[130px] border-b border-slate-100 pb-0.5 w-full">
+                          {companyConfig.name || 'ORGANISER'}
+                        </span>
                         <span className="text-[9px] bg-slate-900 text-white font-mono px-1.5 py-0.5 rounded font-black block">JOB: {previewJob.id}</span>
                         <div className="w-24 h-24 bg-white rounded border border-slate-200 flex items-center justify-center p-1">
                           {qrDataUrl ? (
@@ -1712,6 +1725,9 @@ export default function Inwards({
                   <div className="grid grid-cols-2 gap-4">
                     {Array.from({ length: 4 }).map((_, i) => (
                       <div key={i} className="border border-slate-200 p-4 rounded-lg text-center space-y-2 flex flex-col items-center">
+                        <span className="text-[10px] font-black uppercase text-slate-800 tracking-tight block truncate max-w-[180px] border-b border-slate-100 pb-0.5 w-full">
+                          {companyConfig.name || 'ORGANISER'}
+                        </span>
                         <span className="text-[10px] bg-slate-950 text-white font-mono px-2 py-0.5 rounded font-black block">JOB: {previewJob.id}</span>
                         
                         <div className="w-full py-1 bg-white flex items-center justify-center border-y border-slate-100">

@@ -30,6 +30,14 @@ import {
   Receipt
 } from 'lucide-react';
 import { RepairJob, CompanyConfig, SystemUser, getEffectiveBillAmount, JobStatus, sortJobsByLatest } from '../types';
+import { openWhatsAppForJob } from '../lib/whatsappUtils';
+
+const WhatsAppIcon = ({ className = "w-3.5 h-3.5" }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.521.151-.172.2-.296.3-.495.099-.198.05-.372-.025-.521-.075-.148-.67-1.611-.916-2.206-.242-.579-.487-.501-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.095 3.2 5.076 4.487.709.306 1.263.489 1.694.626.712.226 1.36.194 1.872.118.572-.085 1.758-.719 2.006-1.413.248-.695.248-1.29.173-1.414-.074-.124-.272-.198-.57-.347z"/>
+    <path d="M12 0C5.373 0 0 5.373 0 12c0 2.119.553 4.11 1.519 5.84L0 24l6.344-1.491C8.016 23.482 9.96 24 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22c-1.802 0-3.551-.486-5.087-1.397l-.365-.217-3.777.889.905-3.682-.238-.379A9.957 9.957 0 0 1 2 12C2 6.486 6.486 2 12 2s10 4.486 10 10-4.486 10-10 10z"/>
+  </svg>
+);
 
 interface LiveRepairQueueProps {
   jobs: RepairJob[];
@@ -282,9 +290,10 @@ export default function LiveRepairQueue({
           <button
             onClick={onNewJobClick}
             className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition shadow-xs hover:shadow-md cursor-pointer shrink-0"
+            title="Create New Inward Job Card"
           >
             <Plus className="w-4 h-4" />
-            <span>+ Inward Entry</span>
+            <span>+ Add Inward / Create Job</span>
           </button>
         )}
       </div>
@@ -379,6 +388,7 @@ export default function LiveRepairQueue({
                 <JobKanbanCard
                   key={job.id}
                   job={job}
+                  companyConfig={companyConfig}
                   users={users}
                   currentStage="diagnosis"
                   isMoving={movingJobId === job.id}
@@ -415,6 +425,7 @@ export default function LiveRepairQueue({
                 <JobKanbanCard
                   key={job.id}
                   job={job}
+                  companyConfig={companyConfig}
                   users={users}
                   currentStage="in_progress"
                   isMoving={movingJobId === job.id}
@@ -452,6 +463,7 @@ export default function LiveRepairQueue({
                 <JobKanbanCard
                   key={job.id}
                   job={job}
+                  companyConfig={companyConfig}
                   users={users}
                   currentStage="ready"
                   isMoving={movingJobId === job.id}
@@ -489,6 +501,7 @@ export default function LiveRepairQueue({
                 <JobKanbanCard
                   key={job.id}
                   job={job}
+                  companyConfig={companyConfig}
                   users={users}
                   currentStage="delivered"
                   isMoving={movingJobId === job.id}
@@ -784,6 +797,7 @@ export default function LiveRepairQueue({
 interface JobKanbanCardProps {
   key?: string;
   job: RepairJob;
+  companyConfig: CompanyConfig;
   users: SystemUser[];
   currentStage: 'diagnosis' | 'in_progress' | 'ready' | 'delivered';
   isMoving: boolean;
@@ -795,6 +809,7 @@ interface JobKanbanCardProps {
 
 function JobKanbanCard({
   job,
+  companyConfig,
   users,
   currentStage,
   isMoving,
@@ -844,11 +859,14 @@ function JobKanbanCard({
         isMoving ? 'opacity-40 scale-95' : ''
       }`}
     >
-      {/* Top Row: Token ID + Est Bill Badge */}
+      {/* Top Row: Token ID + Organiser Tag + Est Bill Badge */}
       <div className="flex items-center justify-between gap-2 pb-1 border-b border-slate-100">
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
           <span className="font-mono font-black text-xs text-slate-900 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
             #{job.id}
+          </span>
+          <span className="text-[9px] font-bold text-teal-700 bg-teal-50 border border-teal-200/80 px-1.5 py-0.5 rounded truncate max-w-[110px]" title={companyConfig.name || 'Organiser'}>
+            {companyConfig.name || 'Organiser'}
           </span>
           {job.rackLocation && (
             <span className="text-[9px] font-extrabold uppercase bg-indigo-50 text-indigo-700 border border-indigo-200 px-1.5 py-0.5 rounded">
@@ -856,7 +874,7 @@ function JobKanbanCard({
             </span>
           )}
         </div>
-        <div className="text-right">
+        <div className="text-right shrink-0">
           <span className="font-mono text-xs font-black text-slate-900 block">
             ₹{billAmount > 0 ? billAmount.toLocaleString('en-IN') : (job.estimateAmount || 0).toLocaleString('en-IN')}
           </span>
@@ -878,13 +896,26 @@ function JobKanbanCard({
             </span>
           )}
         </div>
-        <p className="text-[11px] text-slate-600 flex items-center gap-1.5 font-medium">
-          <User className="w-3.5 h-3.5 text-teal-600 shrink-0" />
-          <span className="font-semibold text-slate-800 truncate">{job.clientName}</span>
-          {job.clientMobile && (
-            <span className="text-[10px] text-slate-400 font-mono">({job.clientMobile})</span>
-          )}
-        </p>
+        <div className="flex items-center justify-between gap-1.5">
+          <p className="text-[11px] text-slate-600 flex items-center gap-1.5 font-medium truncate">
+            <User className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+            <span className="font-semibold text-slate-800 truncate">{job.clientName}</span>
+            {job.clientMobile && (
+              <span className="text-[10px] text-slate-400 font-mono">({job.clientMobile})</span>
+            )}
+          </p>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              openWhatsAppForJob(job, companyConfig);
+            }}
+            className="p-1 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition shrink-0 cursor-pointer"
+            title="Share latest Job Card Status on WhatsApp"
+          >
+            <WhatsAppIcon className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Reported Problem Box */}
@@ -933,18 +964,30 @@ function JobKanbanCard({
 
       {/* Action Stage Transfer Controls */}
       <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100">
-        {onPrev ? (
+        <div className="flex items-center gap-1.5">
+          {onPrev && (
+            <button
+              type="button"
+              onClick={onPrev}
+              className="text-[10px] font-bold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition flex items-center gap-1 cursor-pointer border border-slate-200"
+              title="Move back to previous stage"
+            >
+              ← Back
+            </button>
+          )}
           <button
             type="button"
-            onClick={onPrev}
-            className="text-[10px] font-bold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition flex items-center gap-1 cursor-pointer border border-slate-200"
-            title="Move back to previous stage"
+            onClick={(e) => {
+              e.stopPropagation();
+              openWhatsAppForJob(job, companyConfig);
+            }}
+            className="text-[10px] font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-1 rounded-lg transition flex items-center gap-1 cursor-pointer"
+            title="Share latest Job Card Status on WhatsApp"
           >
-            ← Back
+            <WhatsAppIcon className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">WhatsApp</span>
           </button>
-        ) : (
-          <div className="w-1"></div>
-        )}
+        </div>
 
         {onNext && (
           <button

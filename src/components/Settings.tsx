@@ -53,7 +53,7 @@ import {
 } from 'lucide-react';
 import { SystemUser, ActivityLog, Equipment, Problem, CompanyConfig, Client, RepairJob, Invoice, Product, Payment, Expense, DEFAULT_THEME_PALETTE, TenantThemePalette } from '../types';
 import { TenantFeatures, getTenantFeatures, TenantOrg } from './AuthModal';
-import { updateOrgViaApi, scanAndImportDataFolderApi, uploadOrgsFolderApi, getDataFolderStatusApi } from '../lib/api';
+import { updateOrgViaApi, scanAndImportDataFolderApi, uploadOrgsFolderApi, getDataFolderStatusApi, saveAllTenantDataViaApi } from '../lib/api';
 import { bootstrapTenantFromHomeServer, replaceLocalCollection } from '../lib/localDb';
 
 interface SettingsProps {
@@ -169,6 +169,12 @@ export default function SettingsComponent({
 
   const applyImportedData = async (res: any) => {
     if (!res || !res.success) return;
+
+    const getTenantRecords = (items: any[], tId: string) => {
+      if (!Array.isArray(items)) return [];
+      return items.filter((it: any) => it.tenantId === tId);
+    };
+
     // 1. Sync organizations metadata immediately
     if (Array.isArray(res.organizations) && res.organizations.length > 0) {
       setAppStorageItem('tenants_v3', JSON.stringify(res.organizations));
@@ -180,11 +186,6 @@ export default function SettingsComponent({
     // 2. Hydrate localStorage strictly isolated by tenantId
     const col = res.collections;
     if (col) {
-      const getTenantRecords = (items: any[], tId: string) => {
-        if (!Array.isArray(items)) return [];
-        return items.filter((it: any) => it.tenantId === tId);
-      };
-
       const myClients = getTenantRecords(col.clients, currentTenantId);
       const myJobs = getTenantRecords(col.jobs, currentTenantId);
       const myInvoices = getTenantRecords(col.invoices, currentTenantId);

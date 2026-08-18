@@ -15,7 +15,11 @@ import {
   MapPin,
   AlertTriangle,
   ChevronRight,
-  TrendingUp
+  TrendingUp,
+  Store,
+  Tag,
+  DollarSign,
+  ShoppingBag
 } from 'lucide-react';
 import { Product, Category, LocationRack, SystemUser } from '../types';
 
@@ -73,12 +77,16 @@ export default function Inventory({
   const [prodLocation, setProdLocation] = useState('');
   const [prodHsn, setProdHsn] = useState('');
   const [prodPrice, setProdPrice] = useState<number>(0);
+  const [prodPurchasePrice, setProdPurchasePrice] = useState<number>(0);
+  const [prodVendorName, setProdVendorName] = useState('');
+  const [prodVendorContact, setProdVendorContact] = useState('');
   const [prodStock, setProdStock] = useState<number>(0);
   const [prodMinQty, setProdMinQty] = useState<number>(2);
   const [prodDesc, setProdDesc] = useState('');
 
   // Computations
   const totalStockValue = products.reduce((acc, p) => acc + (p.price * p.stock), 0);
+  const totalPurchaseValue = products.reduce((acc, p) => acc + ((p.purchasePrice || 0) * p.stock), 0);
   const lowStockItemsCount = products.filter(p => p.stock <= p.minQtyAlert).length;
 
   const handleOpenAddProduct = () => {
@@ -88,6 +96,9 @@ export default function Inventory({
     setProdLocation(racks[0]?.name || 'Rack 1');
     setProdHsn('');
     setProdPrice(0);
+    setProdPurchasePrice(0);
+    setProdVendorName('');
+    setProdVendorContact('');
     setProdStock(0);
     setProdMinQty(2);
     setProdDesc('');
@@ -101,6 +112,9 @@ export default function Inventory({
     setProdLocation(prod.location);
     setProdHsn(prod.hsnCode);
     setProdPrice(prod.price);
+    setProdPurchasePrice(prod.purchasePrice || 0);
+    setProdVendorName(prod.vendorName || '');
+    setProdVendorContact(prod.vendorContact || '');
     setProdStock(prod.stock);
     setProdMinQty(prod.minQtyAlert);
     setProdDesc(prod.description || '');
@@ -119,6 +133,9 @@ export default function Inventory({
         location: prodLocation,
         hsnCode: prodHsn,
         price: prodPrice,
+        purchasePrice: prodPurchasePrice,
+        vendorName: prodVendorName,
+        vendorContact: prodVendorContact,
         stock: prodStock,
         minQtyAlert: prodMinQty,
         description: prodDesc
@@ -130,6 +147,9 @@ export default function Inventory({
         location: prodLocation,
         hsnCode: prodHsn,
         price: prodPrice,
+        purchasePrice: prodPurchasePrice,
+        vendorName: prodVendorName,
+        vendorContact: prodVendorContact,
         stock: prodStock,
         minQtyAlert: prodMinQty,
         description: prodDesc
@@ -139,7 +159,14 @@ export default function Inventory({
   };
 
   const filteredProducts = products.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.hsnCode.includes(searchTerm);
+    const searchLower = searchTerm.toLowerCase();
+    const matchesSearch = 
+      p.name.toLowerCase().includes(searchLower) || 
+      (p.hsnCode && p.hsnCode.toLowerCase().includes(searchLower)) ||
+      (p.vendorName && p.vendorName.toLowerCase().includes(searchLower)) ||
+      (p.vendorContact && p.vendorContact.toLowerCase().includes(searchLower)) ||
+      (p.category && p.category.toLowerCase().includes(searchLower)) ||
+      (p.location && p.location.toLowerCase().includes(searchLower));
     const matchesCategory = selectedCategoryFilter === 'All' || p.category === selectedCategoryFilter;
     const matchesRack = selectedRackFilter === 'All' || p.location === selectedRackFilter;
     return matchesSearch && matchesCategory && matchesRack;
@@ -190,13 +217,13 @@ export default function Inventory({
       </div>
 
       {/* Stock metrics tiles */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4" id="stock-metrics">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="stock-metrics">
         <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex items-center gap-4">
           <div className="p-3 bg-teal-50 text-teal-600 rounded-xl">
             <Database className="w-5 h-5" />
           </div>
           <div>
-            <span className="text-[10px] font-bold text-slate-400 uppercase block">Total Listed Products</span>
+            <span className="text-[10px] font-bold text-slate-400 uppercase block">Total Listed Spares</span>
             <span className="text-xl font-extrabold text-slate-800 font-mono">{products.length} Items</span>
           </div>
         </div>
@@ -214,7 +241,7 @@ export default function Inventory({
         </div>
 
         {isStaff ? (
-          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex items-center gap-4">
+          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex items-center gap-4 sm:col-span-2">
             <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl">
               <MapPin className="w-5 h-5" />
             </div>
@@ -224,15 +251,29 @@ export default function Inventory({
             </div>
           </div>
         ) : (
-          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex items-center gap-4">
-            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
-              <TrendingUp className="w-5 h-5" />
+          <>
+            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex items-center gap-4">
+              <div className="p-3 bg-blue-50 text-blue-600 rounded-xl">
+                <ShoppingBag className="w-5 h-5" />
+              </div>
+              <div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase block">Total Purchase Cost</span>
+                <span className="text-xl font-extrabold text-blue-700 font-mono">₹{totalPurchaseValue.toLocaleString('en-IN')}.00</span>
+                <span className="text-[9px] text-slate-400 block -mt-0.5">Org investment</span>
+              </div>
             </div>
-            <div>
-              <span className="text-[10px] font-bold text-slate-400 uppercase block">Total Stock Valuation</span>
-              <span className="text-xl font-extrabold text-slate-800 font-mono">₹{totalStockValue.toLocaleString('en-IN')}.00</span>
+
+            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex items-center gap-4">
+              <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
+                <TrendingUp className="w-5 h-5" />
+              </div>
+              <div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase block">Total Selling Valuation</span>
+                <span className="text-xl font-extrabold text-emerald-700 font-mono">₹{totalStockValue.toLocaleString('en-IN')}.00</span>
+                <span className="text-[9px] text-slate-400 block -mt-0.5">Retail inventory</span>
+              </div>
             </div>
-          </div>
+          </>
         )}
       </div>
 
@@ -244,7 +285,7 @@ export default function Inventory({
             <Search className="absolute left-3.5 top-2.5 w-4.5 h-4.5 text-slate-400" />
             <input
               type="text"
-              placeholder="Search spare parts name or HSN code..."
+              placeholder="Search spare name, vendor supplier, HSN code, or bin..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full bg-white border border-slate-200 pl-10 pr-4 py-2 rounded-xl text-xs text-slate-700 focus:outline-hidden focus:ring-2 focus:ring-teal-500"
@@ -281,13 +322,19 @@ export default function Inventory({
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                <th className="py-3.5 px-6">Action</th>
-                <th className="py-3.5 px-6">Product Name</th>
-                <th className="py-3.5 px-6">Category</th>
-                <th className="py-3.5 px-6">HSN Code</th>
-                <th className="py-3.5 px-6">Rack Location</th>
-                {!isStaff && <th className="py-3.5 px-6 text-right">Selling Price</th>}
-                <th className="py-3.5 px-6 text-center">Stock Count</th>
+                <th className="py-3.5 px-5">Action</th>
+                <th className="py-3.5 px-5">Product Name</th>
+                <th className="py-3.5 px-5">Category</th>
+                <th className="py-3.5 px-5">Vendor / Supplier</th>
+                <th className="py-3.5 px-5">HSN Code</th>
+                <th className="py-3.5 px-5">Rack Bin</th>
+                {!isStaff && (
+                  <>
+                    <th className="py-3.5 px-5 text-right">Purchase Cost</th>
+                    <th className="py-3.5 px-5 text-right">Selling Price</th>
+                  </>
+                )}
+                <th className="py-3.5 px-5 text-center">Stock</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs">
@@ -296,7 +343,7 @@ export default function Inventory({
                   const isLow = prod.stock <= prod.minQtyAlert;
                   return (
                     <tr key={prod.id} className="hover:bg-slate-50/60 transition">
-                      <td className="py-3 px-6 flex items-center gap-1.5">
+                      <td className="py-3 px-5 flex items-center gap-1.5">
                         {isStaff ? (
                           <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded-md">View Only</span>
                         ) : (
@@ -323,16 +370,34 @@ export default function Inventory({
                         )}
                       </td>
 
-                      <td className="py-3 px-6">
+                      <td className="py-3 px-5">
                         <div>
                           <p className="font-semibold text-slate-800">{prod.name}</p>
                           {prod.description && <p className="text-[10px] text-slate-400 italic">{prod.description}</p>}
                         </div>
                       </td>
 
-                      <td className="py-3 px-6 font-bold text-slate-600">{prod.category}</td>
-                      <td className="py-3 px-6 font-mono text-slate-500">{prod.hsnCode || '—'}</td>
-                      <td className="py-3 px-6">
+                      <td className="py-3 px-5 font-bold text-slate-600">{prod.category}</td>
+
+                      <td className="py-3 px-5">
+                        {prod.vendorName ? (
+                          <div>
+                            <p className="font-bold text-slate-700 flex items-center gap-1">
+                              <Store className="w-3 h-3 text-teal-600 shrink-0" />
+                              <span>{prod.vendorName}</span>
+                            </p>
+                            {prod.vendorContact && (
+                              <p className="text-[10px] text-slate-400 font-mono">{prod.vendorContact}</p>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-slate-400 italic text-[11px]">—</span>
+                        )}
+                      </td>
+
+                      <td className="py-3 px-5 font-mono text-slate-500">{prod.hsnCode || '—'}</td>
+
+                      <td className="py-3 px-5">
                         <span className="inline-flex items-center gap-1 bg-slate-50 text-slate-600 font-bold border border-slate-100 px-2 py-0.5 rounded">
                           <MapPin className="w-3 h-3 text-slate-400" />
                           {prod.location}
@@ -340,12 +405,17 @@ export default function Inventory({
                       </td>
 
                       {!isStaff && (
-                        <td className="py-3 px-6 text-right font-mono font-bold text-slate-800">
-                          ₹{prod.price.toLocaleString('en-IN')}.00
-                        </td>
+                        <>
+                          <td className="py-3 px-5 text-right font-mono font-bold text-blue-700">
+                            ₹{(prod.purchasePrice || 0).toLocaleString('en-IN')}.00
+                          </td>
+                          <td className="py-3 px-5 text-right font-mono font-bold text-emerald-700">
+                            ₹{prod.price.toLocaleString('en-IN')}.00
+                          </td>
+                        </>
                       )}
 
-                      <td className="py-3 px-6 text-center">
+                      <td className="py-3 px-5 text-center">
                         <span
                           className={`inline-flex items-center gap-1 font-bold font-mono px-2.5 py-0.5 rounded-full text-xs ${
                             isLow ? 'bg-rose-50 text-rose-600 border border-rose-100' : 'bg-emerald-50 text-emerald-600 border border-emerald-100'
@@ -360,7 +430,7 @@ export default function Inventory({
                 })
               ) : (
                 <tr>
-                  <td colSpan={7} className="text-center py-8 text-slate-400 italic">
+                  <td colSpan={isStaff ? 7 : 9} className="text-center py-8 text-slate-400 italic">
                     No products found matching filters.
                   </td>
                 </tr>
@@ -381,26 +451,27 @@ export default function Inventory({
           }}
         >
           <div 
-            className="bg-white rounded-2xl border border-slate-100 shadow-xl max-w-md w-full overflow-hidden animate-slide-up cursor-default"
+            className="bg-white rounded-2xl border border-slate-100 shadow-xl max-w-lg w-full overflow-hidden animate-slide-up cursor-default max-h-[90vh] flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-              <h2 className="text-xs font-bold text-slate-800">
-                {editingProduct ? 'Edit Product Stock' : 'Add New Product / Part'}
+            <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50 shrink-0">
+              <h2 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                <Store className="w-4 h-4 text-teal-600" />
+                {editingProduct ? 'Edit Product & Purchase Details' : 'Add New Product & Purchase Source'}
               </h2>
               <button onClick={() => setShowAddProduct(false)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveProduct} className="p-4 space-y-2.5 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <form onSubmit={handleSaveProduct} className="p-4 space-y-3 text-xs overflow-y-auto">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1 sm:col-span-2">
-                  <label className="block font-bold text-slate-500 uppercase text-[10px]">Product Name *</label>
+                  <label className="block font-bold text-slate-500 uppercase text-[10px]">Product / Part Name *</label>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. Asus Vivobook Charger"
+                    placeholder="e.g. Asus Vivobook Charger 65W"
                     value={prodName}
                     onChange={(e) => setProdName(e.target.value)}
                     className="w-full border border-slate-200 rounded-xl px-3 py-1.5 font-semibold text-slate-800"
@@ -433,6 +504,62 @@ export default function Inventory({
                   </select>
                 </div>
 
+                {/* Vendor Details Section */}
+                <div className="sm:col-span-2 bg-slate-50/80 border border-slate-200/80 rounded-xl p-2.5 space-y-2">
+                  <span className="text-[10px] font-extrabold uppercase text-slate-600 flex items-center gap-1">
+                    <Store className="w-3.5 h-3.5 text-teal-600" />
+                    Vendor / Supplier Information (Where product was purchased)
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div className="space-y-0.5">
+                      <label className="block font-bold text-slate-500 uppercase text-[9px]">Vendor / Supplier Name</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. CompuWorld / Wholesale Spares"
+                        value={prodVendorName}
+                        onChange={(e) => setProdVendorName(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-800"
+                      />
+                    </div>
+
+                    <div className="space-y-0.5">
+                      <label className="block font-bold text-slate-500 uppercase text-[9px]">Vendor Contact / Invoice Ref</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 9811002233 / PO #2026-10"
+                        value={prodVendorContact}
+                        onChange={(e) => setProdVendorContact(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-xs font-mono text-slate-700"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Pricing Section: Purchase Cost vs Selling Price */}
+                <div className="space-y-1">
+                  <label className="block font-bold text-blue-700 uppercase text-[10px]">Purchase Cost (₹)</label>
+                  <input
+                    type="number"
+                    placeholder="0.00"
+                    value={prodPurchasePrice === 0 ? '' : prodPurchasePrice}
+                    onChange={(e) => setProdPurchasePrice(e.target.value === '' ? 0 : Number(e.target.value))}
+                    className="w-full border border-blue-200 bg-blue-50/30 rounded-xl px-3 py-1.5 font-mono text-right font-bold text-blue-800"
+                  />
+                  <span className="text-[9px] text-slate-400 block">Organisation buy cost</span>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block font-bold text-emerald-700 uppercase text-[10px]">Selling Price (₹)</label>
+                  <input
+                    type="number"
+                    placeholder="0.00"
+                    value={prodPrice === 0 ? '' : prodPrice}
+                    onChange={(e) => setProdPrice(e.target.value === '' ? 0 : Number(e.target.value))}
+                    className="w-full border border-emerald-200 bg-emerald-50/30 rounded-xl px-3 py-1.5 font-mono text-right font-bold text-emerald-800"
+                  />
+                  <span className="text-[9px] text-slate-400 block">Customer bill rate</span>
+                </div>
+
                 <div className="space-y-1">
                   <label className="block font-bold text-slate-500 uppercase text-[10px]">HSN Code</label>
                   <input
@@ -441,17 +568,6 @@ export default function Inventory({
                     value={prodHsn}
                     onChange={(e) => setProdHsn(e.target.value)}
                     className="w-full border border-slate-200 rounded-xl px-3 py-1.5 font-mono"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="block font-bold text-slate-500 uppercase text-[10px]">Selling Price (₹)</label>
-                  <input
-                    type="number"
-                    placeholder="0.00"
-                    value={prodPrice === 0 ? '' : prodPrice}
-                    onChange={(e) => setProdPrice(e.target.value === '' ? 0 : Number(e.target.value))}
-                    className="w-full border border-slate-200 rounded-xl px-3 py-1.5 font-mono text-right font-bold text-teal-700"
                   />
                 </div>
 
@@ -466,7 +582,7 @@ export default function Inventory({
                   />
                 </div>
 
-                <div className="space-y-1">
+                <div className="space-y-1 sm:col-span-2">
                   <label className="block font-bold text-slate-500 uppercase text-[10px]">Min Alert Stock Qty</label>
                   <input
                     type="number"
@@ -487,6 +603,10 @@ export default function Inventory({
                   onChange={(e) => setProdDesc(e.target.value)}
                   className="w-full border border-slate-200 rounded-xl px-3 py-1.5"
                 />
+              </div>
+
+              <div className="p-2 bg-amber-50 border border-amber-200/80 rounded-xl text-[10px] text-amber-900 font-medium">
+                💡 <strong>Note:</strong> The purchase cost is exclusively for internal stock accounting and is never printed or displayed on customer invoice bills.
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">

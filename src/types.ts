@@ -143,6 +143,7 @@ export interface Invoice {
   id: string; // Invoice No (e.g. ALG/2026/BILL/457)
   tenantId?: string;
   date: string;
+  time?: string;
   clientId: string;
   clientName: string;
   clientMobile: string;
@@ -171,7 +172,10 @@ export interface Product {
   category: string;
   location: string;
   hsnCode: string;
-  price: number;
+  price: number; // Selling price
+  purchasePrice?: number; // Cost / Purchase price for organisation
+  vendorName?: string; // Vendor / Supplier source
+  vendorContact?: string; // Vendor contact or invoice ref
   stock: number;
   minQtyAlert: number;
   description?: string;

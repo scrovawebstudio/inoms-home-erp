@@ -342,6 +342,9 @@ export const INITIAL_PRODUCTS: Product[] = [
     location: 'Rack 1',
     hsnCode: '84716040',
     price: 500,
+    purchasePrice: 320,
+    vendorName: 'CompuWorld Infotech',
+    vendorContact: '9820011223',
     stock: 7,
     minQtyAlert: 2,
     description: 'Dell KB216 Wired USB Keyboard'
@@ -349,11 +352,14 @@ export const INITIAL_PRODUCTS: Product[] = [
   {
     id: 'prod2',
     tenantId: 'org-nibban',
-    name: 'NMFNM <Nfm',
+    name: 'Asus 65W Power Adapter',
     category: 'ADAPTER',
     location: 'Rack 2',
     hsnCode: '85044090',
     price: 1200,
+    purchasePrice: 750,
+    vendorName: 'Global Power Systems',
+    vendorContact: 'Bill #GP-8891',
     stock: 6,
     minQtyAlert: 1,
     description: 'Universal Power Adapter'

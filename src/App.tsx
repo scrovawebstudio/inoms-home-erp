@@ -1383,6 +1383,7 @@ export default function App() {
   // Cross navigation states for clickable Job ID and Invoice links
   const [initialJobIdToView, setInitialJobIdToView] = useState<string | null>(null);
   const [initialInvoiceIdToView, setInitialInvoiceIdToView] = useState<string | null>(null);
+  const [initialOpenAddInwardModal, setInitialOpenAddInwardModal] = useState<boolean>(false);
 
   const handleNavigateToJob = (jobId: string) => {
     const match = jobs.find(j => j.id === jobId || j.id.includes(jobId));
@@ -1534,46 +1535,70 @@ export default function App() {
           }
         }
 
-        // Only silently write to connected PC folder handle if explicitly linked by Admin
+        const dataToExport = {
+          tenantId: activeTenant.id,
+          orgName: companyConfig.name || activeTenant.name,
+          clients,
+          jobs,
+          invoices,
+          products,
+          ledger,
+          payments,
+          expenses,
+          users,
+          categories,
+          racks,
+          equipments,
+          problems,
+          companyConfig
+        };
+
+        const now = new Date();
+        const YYYY = now.getFullYear();
+        const MM = String(now.getMonth() + 1).padStart(2, '0');
+        const DD = String(now.getDate()).padStart(2, '0');
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+        const ss = String(now.getSeconds()).padStart(2, '0');
+
+        const formattedTimestamp = `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`;
+        const orgPrefix = getBackupOrgPrefix(companyConfig.name || activeTenant.name, activeTenant.id);
+        const filename = `${orgPrefix}_Local_Backup_${YYYY}-${MM}-${DD}_${hh}-${mm}-${ss}.json`;
+        const jsonStr = JSON.stringify(dataToExport, null, 2);
+
+        // 1. If connected PC folder handle exists, write directly into connected folder
         if (dirHandle) {
-          const dataToExport = {
-            tenantId: activeTenant.id,
-            orgName: companyConfig.name || activeTenant.name,
-            clients,
-            jobs,
-            invoices,
-            products,
-            ledger,
-            payments,
-            expenses,
-            users,
-            categories,
-            racks,
-            equipments,
-            problems,
-            companyConfig
-          };
-
-          const now = new Date();
-          const YYYY = now.getFullYear();
-          const MM = String(now.getMonth() + 1).padStart(2, '0');
-          const DD = String(now.getDate()).padStart(2, '0');
-          const hh = String(now.getHours()).padStart(2, '0');
-          const mm = String(now.getMinutes()).padStart(2, '0');
-          const ss = String(now.getSeconds()).padStart(2, '0');
-
-          const formattedTimestamp = `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`;
-          const orgPrefix = getBackupOrgPrefix(companyConfig.name || activeTenant.name, activeTenant.id);
-          const filename = `${orgPrefix}_Local_Backup_${YYYY}-${MM}-${DD}_${hh}-${mm}-${ss}.json`;
-          const jsonStr = JSON.stringify(dataToExport, null, 2);
-
           const success = await writeBackupToDirectoryHandle(dirHandle, filename, jsonStr);
           if (success) {
             setCompanyConfig(prev => ({ ...prev, lastLocalBackupTime: formattedTimestamp }));
+            return;
           }
         }
+
+        // 2. FALLBACK: Auto-download directly to user's default Downloads folder without requiring manual folder selection
+        try {
+          const blob = new Blob([jsonStr], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = filename;
+          link.style.display = 'none';
+          document.body.appendChild(link);
+          link.click();
+
+          setTimeout(() => {
+            if (document.body.contains(link)) {
+              document.body.removeChild(link);
+            }
+            URL.revokeObjectURL(url);
+          }, 200);
+
+          setCompanyConfig(prev => ({ ...prev, lastLocalBackupTime: formattedTimestamp }));
+        } catch (downloadErr) {
+          console.warn('Background auto-download fallback failed:', downloadErr);
+        }
       } catch (err) {
-        console.warn('Background folder backup skipped:', err);
+        console.warn('Background local backup skipped:', err);
       }
     };
 
@@ -3732,6 +3757,7 @@ export default function App() {
               }}
               onUpdateJob={updateJob}
               onNewJobClick={() => {
+                setInitialOpenAddInwardModal(true);
                 setActiveTab('inwards');
               }}
             />
@@ -3750,6 +3776,8 @@ export default function App() {
               userRole={userRole}
               initialJobIdToView={initialJobIdToView}
               onClearInitialJobIdToView={() => setInitialJobIdToView(null)}
+              initialOpenAddModal={initialOpenAddInwardModal}
+              onClearInitialOpenAddModal={() => setInitialOpenAddInwardModal(false)}
               onAddJob={addJob}
               onUpdateJob={updateJob}
               onDeleteJob={deleteJob}

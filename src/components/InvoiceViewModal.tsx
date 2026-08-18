@@ -92,7 +92,7 @@ export default function InvoiceViewModal({ invoice, companyConfig, onClose }: In
                   TAX INVOICE
                 </span>
                 <p className="text-[11px] font-mono font-bold text-slate-800 pt-1">INV: #{invoice.id}</p>
-                <p className="text-[10px] text-slate-500 font-mono">Date: {invoice.date}</p>
+                <p className="text-[10px] text-slate-500 font-mono">Date: {invoice.date}{invoice.time ? ` • ${invoice.time}` : ''}</p>
                 {invoice.linkedJobId && (
                   <p className="text-[10px] text-teal-700 font-mono font-bold bg-teal-50 px-2 py-0.5 rounded border border-teal-200 inline-block">
                     Job Ref: #{invoice.linkedJobId}
