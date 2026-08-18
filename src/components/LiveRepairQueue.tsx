@@ -964,7 +964,7 @@ function JobKanbanCard({
 
       {/* Action Stage Transfer Controls */}
       <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100">
-        <div className="flex items-center gap-1.5">
+        <div>
           {onPrev && (
             <button
               type="button"
@@ -975,18 +975,6 @@ function JobKanbanCard({
               ← Back
             </button>
           )}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              openWhatsAppForJob(job, companyConfig);
-            }}
-            className="text-[10px] font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-1 rounded-lg transition flex items-center gap-1 cursor-pointer"
-            title="Share latest Job Card Status on WhatsApp"
-          >
-            <WhatsAppIcon className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">WhatsApp</span>
-          </button>
         </div>
 
         {onNext && (

@@ -161,7 +161,7 @@ export default function Outwards({
   const handleSaveEditedJob = (sendWhatsApp: boolean = false) => {
     if (!editingJob) return;
 
-    if (!editPaymentStatus) {
+    if (editStatus === 'Product Out' && !editPaymentStatus) {
       alert('Please select Payment Status (Paid, Unpaid, or Not Repaired). This selection is mandatory for outward items.');
       return;
     }
@@ -171,25 +171,26 @@ export default function Outwards({
       return;
     }
 
-    const isNotRepaired = editRepairOutcome === 'Not Repaired' || editPaymentStatus === 'Not Repaired';
+    const resolvedPaymentStatus = editPaymentStatus || editingJob.paymentStatus || 'Unpaid';
+    const isNotRepaired = editStatus === 'Product Out' && (editRepairOutcome === 'Not Repaired' || resolvedPaymentStatus === 'Not Repaired');
     const effectiveFinalBill = isNotRepaired ? 0 : editFinalBill;
     const effectiveEstimate = isNotRepaired ? 0 : editEstimate;
 
     const updated: RepairJob = {
       ...editingJob,
       status: editStatus,
-      outwardedDate: editOutwardDate || new Date().toISOString(),
+      outwardedDate: editStatus === 'Product Out' ? (editOutwardDate || new Date().toISOString()) : undefined,
       estimateAmount: effectiveEstimate,
       finalBillAmount: effectiveFinalBill,
       actionTaken: editActionTaken || (isNotRepaired ? 'Inspected - Device Not Repairable' : 'Inspected & Repaired'),
       deliveryStatus: editDeliveryStatus,
-      courierName: editCourierName,
-      trackingNo: editTrackingNo,
+      courierName: editDeliveryStatus === 'Dispatched' ? editCourierName : '',
+      trackingNo: editDeliveryStatus === 'Dispatched' ? editTrackingNo : '',
       isReturnCase: editIsReturnCase,
-      paymentStatus: isNotRepaired ? 'Not Repaired' : editPaymentStatus,
+      paymentStatus: isNotRepaired ? 'Not Repaired' : resolvedPaymentStatus,
       advancePaymentMode: editPaymentMode,
       repairOutcome: isNotRepaired ? 'Not Repaired' : editRepairOutcome,
-      advanceRefunded: isNotRepaired ? editAdvanceRefunded : editAdvanceRefunded,
+      advanceRefunded: isNotRepaired ? editAdvanceRefunded : false,
       advanceRefundMode: editAdvanceRefundMode
     };
 
@@ -621,7 +622,21 @@ export default function Outwards({
                   </label>
                   <select
                     value={editStatus}
-                    onChange={(e) => setEditStatus(e.target.value as JobStatus)}
+                    onChange={(e) => {
+                      const newStat = e.target.value as JobStatus;
+                      setEditStatus(newStat);
+                      if (newStat !== 'Product Out') {
+                        if (editRepairOutcome === 'Not Repaired') {
+                          setEditRepairOutcome('Repaired');
+                        }
+                        if (editPaymentStatus === 'Not Repaired' || !editPaymentStatus) {
+                          setEditPaymentStatus(editingJob.paymentStatus === 'Not Repaired' ? 'Unpaid' : (editingJob.paymentStatus || 'Unpaid'));
+                        }
+                        if (editFinalBill === 0 && (editingJob.finalBillAmount || editingJob.estimateAmount)) {
+                          setEditFinalBill(editingJob.finalBillAmount || editingJob.estimateAmount || 0);
+                        }
+                      }
+                    }}
                     className="bg-slate-900 text-white font-extrabold text-xs rounded-xl px-3 py-1 border-2 border-teal-500 hover:border-teal-400 focus:outline-none focus:ring-2 focus:ring-teal-400/50 cursor-pointer shadow-sm"
                   >
                     <option value="Product Out" className="bg-slate-900 text-emerald-400 font-bold">Product Out (Outward)</option>

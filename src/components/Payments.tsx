@@ -263,8 +263,18 @@ export default function Payments({
               {filteredPayments.length > 0 ? (
                 filteredPayments.map((p, pIdx) => {
                   // Determine linked invoice & job
-                  const matchedInv = (invoices || []).find(inv => inv.id === p.invoiceId || inv.id === p.refNo || p.refNo?.includes(inv.id));
-                  const matchedJob = (jobs || []).find(j => j.id === p.linkedJobId || j.id === p.refNo || p.refNo?.includes(j.id));
+                  const matchedInv = (invoices || []).find(inv => 
+                    inv.id === p.invoiceId || 
+                    inv.id === p.refNo || 
+                    p.refNo?.includes(inv.id) ||
+                    (p.linkedJobId && inv.linkedJobId === p.linkedJobId)
+                  );
+                  const matchedJob = (jobs || []).find(j => 
+                    j.id === p.linkedJobId || 
+                    j.id === p.refNo || 
+                    p.refNo?.includes(j.id) ||
+                    (p.invoiceId && invoices?.find(inv => inv.id === p.invoiceId)?.linkedJobId === j.id)
+                  );
 
                   return (
                     <tr key={p.id ? `${p.id}-${pIdx}` : `p-${pIdx}`} className="hover:bg-slate-50/60 transition">

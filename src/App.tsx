@@ -2119,47 +2119,113 @@ export default function App() {
         }));
       }
 
-      // If status changed from Unpaid -> Paid and NOT Not Repaired, generate payment record and credit client
+      // Check if job is linked to an existing invoice
+      const linkedInvoice = invoices.find(inv => inv.linkedJobId === updatedJob.id);
+
+      // If status changed from Unpaid -> Paid and NOT Not Repaired, generate or link payment record and credit client
       if (newIsPaid && !oldIsPaid && updatedJob.repairOutcome !== 'Not Repaired') {
         const remainingPaid = Math.max(0, newBill - newAdvance);
         if (remainingPaid > 0) {
-          const payDate = new Date().toISOString().split('T')[0];
-          const payMode = updatedJob.advancePaymentMode || 'UPI';
+          // Check if payment already exists for this job card or linked invoice
+          const existingJobPayment = payments.find(p => 
+            p.linkedJobId === updatedJob.id || 
+            (linkedInvoice && p.invoiceId === linkedInvoice.id) ||
+            (p.refNo && p.refNo.includes(updatedJob.id))
+          );
 
-          const outwardPayment: Payment = {
-            id: `pay-${Date.now()}`,
-            tenantId: activeTenant.id,
-            date: payDate,
-            clientId: updatedJob.clientId,
-            clientName: updatedJob.clientName,
-            amount: remainingPaid,
-            mode: payMode,
-            refNo: `Outward Bill ${updatedJob.id}`,
-            remarks: `Full payment cleared for job card #${updatedJob.id} (${updatedJob.equipment || 'Device'})`
-          };
+          if (existingJobPayment) {
+            // Already recorded -> Ensure linkedJobId and invoiceId are connected without duplicating
+            setPayments(prev => prev.map(p => {
+              if (p.id === existingJobPayment.id) {
+                return {
+                  ...p,
+                  linkedJobId: updatedJob.id,
+                  invoiceId: linkedInvoice?.id || p.invoiceId,
+                  clientName: p.clientName && p.clientName !== 'Unknown' ? p.clientName : updatedJob.clientName
+                };
+              }
+              return p;
+            }));
+          } else {
+            const payDate = new Date().toISOString().split('T')[0];
+            const payMode = updatedJob.advancePaymentMode || 'UPI';
 
-          setPayments(prev => [outwardPayment, ...prev]);
+            const outwardPayment: Payment = {
+              id: `pay-${Date.now()}`,
+              tenantId: activeTenant.id,
+              date: payDate,
+              clientId: updatedJob.clientId,
+              clientName: updatedJob.clientName,
+              amount: remainingPaid,
+              mode: payMode,
+              refNo: linkedInvoice ? `Invoice ${linkedInvoice.id} (Job #${updatedJob.id})` : `Outward Bill ${updatedJob.id}`,
+              remarks: `Full payment cleared for job card #${updatedJob.id} (${updatedJob.equipment || 'Device'})`,
+              linkedJobId: updatedJob.id,
+              invoiceId: linkedInvoice?.id
+            };
 
-          const clientObj = clients.find(c => c.id === updatedJob.clientId);
-          const currentBal = clientObj ? clientObj.outstandingBalance : 0;
+            setPayments(prev => [outwardPayment, ...prev]);
 
-          const outwardLedgerLog: ClientLedgerEntry = {
-            id: `l-${Date.now()}`,
-            tenantId: activeTenant.id,
-            clientId: updatedJob.clientId,
-            date: new Date().toLocaleDateString('en-IN'),
-            type: 'Outward Payment Received',
-            refNo: `OUT-${updatedJob.id}`,
-            debit: 0,
-            credit: remainingPaid,
-            balance: Math.max(0, currentBal - remainingPaid)
-          };
-          setLedger(prev => [outwardLedgerLog, ...prev]);
+            const clientObj = clients.find(c => c.id === updatedJob.clientId);
+            const currentBal = clientObj ? clientObj.outstandingBalance : 0;
 
-          // Deduct from client balance
+            const outwardLedgerLog: ClientLedgerEntry = {
+              id: `l-${Date.now()}`,
+              tenantId: activeTenant.id,
+              clientId: updatedJob.clientId,
+              date: new Date().toLocaleDateString('en-IN'),
+              type: 'Outward Payment Received',
+              refNo: `OUT-${updatedJob.id}`,
+              debit: 0,
+              credit: remainingPaid,
+              balance: Math.max(0, currentBal - remainingPaid)
+            };
+            setLedger(prev => [outwardLedgerLog, ...prev]);
+
+            // Deduct from client balance
+            setClients(prevClients => prevClients.map(c => {
+              if (c.id === updatedJob.clientId) {
+                return { ...c, outstandingBalance: Math.max(0, c.outstandingBalance - remainingPaid) };
+              }
+              return c;
+            }));
+          }
+        }
+      }
+
+      // If status changed from Paid -> Unpaid (e.g. brought back from Outward / reverted by mistake)
+      if (oldIsPaid && !newIsPaid) {
+        // Cleanly remove any auto-generated outward payment record for this job
+        const targetPayment = payments.find(p => 
+          p.linkedJobId === updatedJob.id && 
+          p.refNo?.includes(`Outward Bill ${updatedJob.id}`)
+        );
+        if (targetPayment) {
+          setPayments(prev => prev.filter(p => p.id !== targetPayment.id));
           setClients(prevClients => prevClients.map(c => {
             if (c.id === updatedJob.clientId) {
-              return { ...c, outstandingBalance: Math.max(0, c.outstandingBalance - remainingPaid) };
+              return { ...c, outstandingBalance: c.outstandingBalance + targetPayment.amount };
+            }
+            return c;
+          }));
+        }
+      }
+
+      // If already paid and bill amount changed while editing
+      if (newIsPaid && oldIsPaid && newBill !== oldBill && updatedJob.repairOutcome !== 'Not Repaired') {
+        const newRemaining = Math.max(0, newBill - newAdvance);
+        const oldRemaining = Math.max(0, oldBill - oldAdvance);
+        const diff = newRemaining - oldRemaining;
+        setPayments(prev => prev.map(p => {
+          if (p.linkedJobId === updatedJob.id && p.refNo?.includes(`Outward Bill ${updatedJob.id}`)) {
+            return { ...p, amount: newRemaining };
+          }
+          return p;
+        }));
+        if (diff !== 0) {
+          setClients(prevClients => prevClients.map(c => {
+            if (c.id === updatedJob.clientId) {
+              return { ...c, outstandingBalance: Math.max(0, c.outstandingBalance - diff) };
             }
             return c;
           }));
@@ -2396,8 +2462,63 @@ export default function App() {
       };
       setInvoices([invoice, ...invoices]);
 
-      // If invoice is paid (or paidAmount > 0), auto record in payments list & client ledger
-      if (paid > 0) {
+      // Check if payments for the linked job card already exist in payments table
+      let existingJobPayments: Payment[] = [];
+      if (newInvoice.linkedJobId) {
+        existingJobPayments = payments.filter(p => 
+          p.linkedJobId === newInvoice.linkedJobId ||
+          (p.refNo && p.refNo.includes(newInvoice.linkedJobId!))
+        );
+      }
+
+      if (existingJobPayments.length > 0) {
+        // Link this invoice ID to those existing payment records so they connect to this bill without duplicating
+        const totalAlreadyPaid = existingJobPayments.reduce((sum, p) => sum + (p.amount > 0 ? p.amount : 0), 0);
+
+        setPayments(prev => prev.map(p => {
+          if (p.linkedJobId === newInvoice.linkedJobId || (p.refNo && p.refNo.includes(newInvoice.linkedJobId!))) {
+            return {
+              ...p,
+              invoiceId: invoiceNo,
+              clientName: p.clientName && p.clientName !== 'Unknown' ? p.clientName : newInvoice.clientName,
+              refNo: p.refNo ? (p.refNo.includes(invoiceNo) ? p.refNo : `${p.refNo} / ${invoiceNo}`) : `Invoice ${invoiceNo} (Job #${newInvoice.linkedJobId})`,
+              remarks: `Payment for Job Card #${newInvoice.linkedJobId} (Tax Invoice ${invoiceNo})`
+            };
+          }
+          return p;
+        }));
+
+        // If invoice total paid is greater than what was already paid under this job card, record only the newly paid difference
+        const newlyPaidDelta = Math.max(0, paid - totalAlreadyPaid);
+        if (newlyPaidDelta > 0) {
+          const deltaPaymentRecord: Payment = {
+            id: `pay-${Date.now()}`,
+            tenantId: activeTenant.id,
+            date: newInvoice.date || new Date().toISOString().split('T')[0],
+            clientId: newInvoice.clientId,
+            clientName: newInvoice.clientName,
+            amount: newlyPaidDelta,
+            mode: newInvoice.paymentMode || 'UPI',
+            refNo: `Invoice ${invoiceNo} (Bal Pay)`,
+            remarks: `Additional balance payment for Tax Invoice ${invoiceNo} (Job #${newInvoice.linkedJobId})`,
+            invoiceId: invoiceNo,
+            linkedJobId: newInvoice.linkedJobId
+          };
+          setPayments(prev => [deltaPaymentRecord, ...prev]);
+
+          // Deduct only newlyPaidDelta from client balance
+          setClients(prev => prev.map(c => {
+            if (c.id === newInvoice.clientId) {
+              return {
+                ...c,
+                outstandingBalance: c.outstandingBalance - newlyPaidDelta
+              };
+            }
+            return c;
+          }));
+        }
+      } else if (paid > 0) {
+        // No prior payment existed for this job/invoice -> record full paid amount
         const paymentRecord: Payment = {
           id: `pay-${Date.now()}`,
           tenantId: activeTenant.id,
@@ -2407,7 +2528,9 @@ export default function App() {
           amount: paid,
           mode: newInvoice.paymentMode || 'UPI',
           refNo: `Invoice ${invoiceNo}`,
-          remarks: `Auto-recorded payment for Tax Invoice ${invoiceNo}`,
+          remarks: newInvoice.linkedJobId
+            ? `Payment for Job Card #${newInvoice.linkedJobId} (Tax Invoice ${invoiceNo})`
+            : `Auto-recorded payment for Tax Invoice ${invoiceNo}`,
           invoiceId: invoiceNo,
           linkedJobId: newInvoice.linkedJobId
         };

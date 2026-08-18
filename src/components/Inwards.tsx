@@ -317,6 +317,9 @@ export default function Inwards({
   // Form states for Outward / Action
   const [jobStatus, setJobStatus] = useState<JobStatus>('Device Received');
   const [finalBillAmount, setFinalBillAmount] = useState<number>(0);
+  const [paymentStatus, setPaymentStatus] = useState<'Paid' | 'Unpaid' | 'Not Repaired'>('Unpaid');
+  const [paymentMode, setPaymentMode] = useState<string>('UPI');
+  const [repairOutcome, setRepairOutcome] = useState<'Repaired' | 'Not Repaired'>('Repaired');
   const [actionTaken, setActionTaken] = useState('');
   const [deliveryStatus, setDeliveryStatus] = useState('Handed Over');
   const [courierName, setCourierName] = useState('');
@@ -505,6 +508,9 @@ export default function Inwards({
     setCourierName(job.courierName || '');
     setTrackingNo(job.trackingNo || '');
     setIsReturnCase(job.isReturnCase || false);
+    setPaymentStatus((job.repairOutcome === 'Not Repaired' || job.paymentStatus === 'Not Repaired') ? 'Not Repaired' : (job.paymentStatus === 'Paid' ? 'Paid' : 'Unpaid'));
+    setPaymentMode(job.advancePaymentMode || 'UPI');
+    setRepairOutcome(job.repairOutcome === 'Not Repaired' || job.paymentStatus === 'Not Repaired' ? 'Not Repaired' : 'Repaired');
 
     setShowManageJobModal(true);
   };
@@ -535,6 +541,9 @@ export default function Inwards({
       return acc;
     }, {} as { [key: string]: boolean });
 
+    const isNotRep = repairOutcome === 'Not Repaired' || paymentStatus === 'Not Repaired';
+    const effectiveFinalBill = isNotRep ? 0 : (Number(finalBillAmount) || 0);
+
     const updatedJob: RepairJob = {
       ...selectedJob,
       clientId,
@@ -557,11 +566,13 @@ export default function Inwards({
       remarks,
       assignedTechnician,
       status: jobStatus,
-      finalBillAmount,
+      finalBillAmount: effectiveFinalBill,
+      paymentStatus: isNotRep ? 'Not Repaired' : paymentStatus,
+      repairOutcome: isNotRep ? 'Not Repaired' : repairOutcome,
       actionTaken,
       deliveryStatus,
-      courierName,
-      trackingNo,
+      courierName: deliveryStatus === 'Dispatched via Courier' ? courierName : '',
+      trackingNo: deliveryStatus === 'Dispatched via Courier' ? trackingNo : '',
       isReturnCase
     };
 
@@ -1294,6 +1305,127 @@ export default function Inwards({
                           className="w-full border border-slate-300 bg-white rounded-lg px-2.5 py-1 text-xs"
                         />
                       </div>
+
+                      {showManageJobModal && (
+                        <div className="sm:col-span-2 pt-3 border-t border-slate-200 mt-2 space-y-2.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold text-slate-800 uppercase tracking-wide flex items-center gap-1.5">
+                              <Receipt className="w-3.5 h-3.5 text-teal-600" />
+                              Repair Outcome, Delivery & Final Billing
+                            </span>
+                            <span className="text-[10px] font-semibold text-slate-500">
+                              (Editable anytime, even if brought back from outward)
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 bg-teal-50/50 p-2.5 rounded-xl border border-teal-200/80">
+                            {/* Final Bill Amount */}
+                            <div className="space-y-1">
+                              <label className="block font-bold text-teal-900 uppercase text-[10px]">
+                                Final Bill / Service Charge (₹)
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                placeholder="0.00"
+                                value={finalBillAmount === 0 ? '' : finalBillAmount}
+                                onChange={(e) => setFinalBillAmount(e.target.value === '' ? 0 : Number(e.target.value))}
+                                disabled={repairOutcome === 'Not Repaired'}
+                                className="w-full bg-white border border-teal-300 rounded-lg px-2.5 py-1 text-xs font-mono font-bold text-teal-950 focus:ring-1 focus:ring-teal-500 disabled:bg-slate-100 disabled:text-slate-400"
+                              />
+                            </div>
+
+                            {/* Repair Outcome */}
+                            <div className="space-y-1">
+                              <label className="block font-bold text-teal-900 uppercase text-[10px]">Repair Outcome</label>
+                              <select
+                                value={repairOutcome}
+                                onChange={(e) => {
+                                  const val = e.target.value as 'Repaired' | 'Not Repaired';
+                                  setRepairOutcome(val);
+                                  if (val === 'Not Repaired') {
+                                    setPaymentStatus('Not Repaired');
+                                    setFinalBillAmount(0);
+                                  } else if (paymentStatus === 'Not Repaired') {
+                                    setPaymentStatus('Unpaid');
+                                  }
+                                }}
+                                className="w-full bg-white border border-teal-300 rounded-lg px-2 py-1 text-xs font-bold text-slate-800"
+                              >
+                                <option value="Repaired">✓ Repaired & Serviced</option>
+                                <option value="Not Repaired">✕ Not Repaired / Unfixable</option>
+                              </select>
+                            </div>
+
+                            {/* Payment Status */}
+                            <div className="space-y-1">
+                              <label className="block font-bold text-teal-900 uppercase text-[10px]">Payment Status</label>
+                              <select
+                                value={paymentStatus}
+                                onChange={(e) => setPaymentStatus(e.target.value as any)}
+                                disabled={repairOutcome === 'Not Repaired'}
+                                className="w-full bg-white border border-teal-300 rounded-lg px-2 py-1 text-xs font-bold text-slate-800 disabled:bg-slate-100"
+                              >
+                                <option value="Unpaid">⚠️ Unpaid / Pending</option>
+                                <option value="Paid">✓ Full Paid</option>
+                                <option value="Not Repaired">Not Repaired (₹0)</option>
+                              </select>
+                            </div>
+
+                            {/* Delivery Status */}
+                            <div className="space-y-1">
+                              <label className="block font-bold text-teal-900 uppercase text-[10px]">Delivery Status</label>
+                              <select
+                                value={deliveryStatus}
+                                onChange={(e) => setDeliveryStatus(e.target.value)}
+                                className="w-full bg-white border border-teal-300 rounded-lg px-2 py-1 text-xs font-bold text-slate-800"
+                              >
+                                <option value="Handed Over">Counter Handover</option>
+                                <option value="Dispatched via Courier">Dispatched via Courier</option>
+                                <option value="Pending Delivery">Pending Delivery</option>
+                              </select>
+                            </div>
+
+                            {/* If Courier Dispatched */}
+                            {deliveryStatus === 'Dispatched via Courier' && (
+                              <>
+                                <div className="space-y-1">
+                                  <label className="block font-bold text-slate-600 uppercase text-[10px]">Courier Name</label>
+                                  <input
+                                    type="text"
+                                    placeholder="e.g. DTDC, BlueDart"
+                                    value={courierName}
+                                    onChange={(e) => setCourierName(e.target.value)}
+                                    className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="block font-bold text-slate-600 uppercase text-[10px]">Tracking Number</label>
+                                  <input
+                                    type="text"
+                                    placeholder="e.g. TRK-987654"
+                                    value={trackingNo}
+                                    onChange={(e) => setTrackingNo(e.target.value)}
+                                    className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs font-mono"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            {/* Action Taken */}
+                            <div className="space-y-1 sm:col-span-2">
+                              <label className="block font-bold text-slate-600 uppercase text-[10px]">Action Taken / Work Done</label>
+                              <input
+                                type="text"
+                                placeholder="e.g. Replaced display panel and IC repaired..."
+                                value={actionTaken}
+                                onChange={(e) => setActionTaken(e.target.value)}
+                                className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1 text-xs"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
