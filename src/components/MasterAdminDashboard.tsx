@@ -245,7 +245,7 @@ export default function MasterAdminDashboard({
     setEditCode(org.code);
     setEditOwnerName(org.ownerName || '');
     setEditOwnerMobile(org.ownerMobile);
-    setEditPin(adminDetails.pin || org.pin || '1234');
+    setEditPin(adminDetails.pin !== undefined && adminDetails.pin !== null ? adminDetails.pin : (org.pin !== undefined && org.pin !== null ? org.pin : '1234'));
     setEditSecretKey(adminDetails.secretKey || org.secretKey || '');
     setEditStatus(org.status);
     setEditSubPlan(org.subscriptionPlan || (org.isTrial ? 'trial' : 'monthly'));

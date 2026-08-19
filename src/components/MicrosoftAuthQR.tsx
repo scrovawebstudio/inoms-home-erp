@@ -108,27 +108,25 @@ export async function generateTOTP(secretBase32: string, timeOffsetSec: number =
   }
 }
 
-export async function verifyTOTP(secretBase32: string, inputCode: string): Promise<boolean> {
+export async function verifyTOTP(
+  secretBase32: string,
+  inputCode: string,
+  tenantIdOrMobile?: string
+): Promise<boolean> {
   const clean = (inputCode || '').replace(/\D/g, '');
-  if (!clean) return false;
+  if (!clean || clean.length !== 6) return false;
 
   try {
-    // 1. First check server master pin / totp endpoint
-    const masterRes = await fetch('/api/auth/verify-master-pin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: clean, pin: clean, secretKey: secretBase32 })
-    });
-    if (masterRes.ok) {
-      const data = await masterRes.json();
-      if (data.success) return true;
-    }
-
-    // 2. Check standard verify-totp API endpoint
+    // 1. Call standard verify-totp API endpoint
     const res = await fetch('/api/auth/verify-totp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ secretKey: secretBase32, code: clean })
+      body: JSON.stringify({
+        tenantId: tenantIdOrMobile,
+        mobile: tenantIdOrMobile,
+        secretKey: secretBase32,
+        code: clean
+      })
     });
     if (res.ok) {
       const data = await res.json();
@@ -138,9 +136,12 @@ export async function verifyTOTP(secretBase32: string, inputCode: string): Promi
     console.warn('API verify-totp call error in client:', err);
   }
 
-  // Local TOTP check using provided secretBase32 only (with ±3 min clock drift tolerance)
+  // 2. Local client-side TOTP calculation (with ±10 min clock drift tolerance)
   if (secretBase32) {
-    const timeOffsets = [-180, -150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150, 180];
+    const timeOffsets: number[] = [];
+    for (let s = -600; s <= 600; s += 30) {
+      timeOffsets.push(s);
+    }
     try {
       for (const off of timeOffsets) {
         const code = await generateTOTP(secretBase32, off);

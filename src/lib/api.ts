@@ -71,13 +71,14 @@ export async function verifyTOTPViaApi(
   tenantIdOrMobile: string,
   code: string,
   secretKey?: string
-): Promise<boolean> {
+): Promise<{ success: boolean; token?: string; sessionId?: string; user?: any; organization?: any; message?: string }> {
   try {
     const res = await fetch('/api/auth/verify-totp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         tenantId: tenantIdOrMobile,
+        mobile: tenantIdOrMobile,
         code,
         secretKey
       })
@@ -86,9 +87,9 @@ export async function verifyTOTPViaApi(
     if (data.success && data.token) {
       setAuthToken(data.token, true);
     }
-    return !!data.success;
-  } catch (err) {
-    return false;
+    return data;
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Verification network error' };
   }
 }
 
@@ -108,6 +109,31 @@ export async function verifyMasterPinViaApi(codeOrPin: string): Promise<boolean>
     return !!data.success;
   } catch (err) {
     return false;
+  }
+}
+
+export async function verifyOrgPinViaApi(
+  tenantId: string,
+  pin: string,
+  secretKey?: string
+): Promise<{ success: boolean; token?: string; sessionId?: string; user?: any; organization?: any; message?: string }> {
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tenantId,
+        pin,
+        secretKey
+      })
+    });
+    const data = await res.json();
+    if (data.success && data.token) {
+      setAuthToken(data.token, true);
+    }
+    return data;
+  } catch (err: any) {
+    return { success: false, message: 'Server connection error during PIN verification' };
   }
 }
 
@@ -168,8 +194,12 @@ export async function getValidTenantToken(tenantId: string): Promise<string | nu
         }
       });
       const sessionData = await sessionRes.json();
-      if (sessionRes.ok && sessionData?.success && sessionData?.user?.tenantId && String(sessionData.user.tenantId) === String(tenantId)) {
+      if (sessionRes.ok && sessionData?.success && sessionData?.authenticated !== false && sessionData?.user?.tenantId && String(sessionData.user.tenantId) === String(tenantId)) {
         return currentToken;
+      }
+      // If server explicitly says session is invalid/expired, clear the stale token
+      if (sessionData && (sessionData.authenticated === false || sessionData.success === false)) {
+        clearAuthToken();
       }
     } catch (e) {
       // Fall through to tenant re-authentication.
@@ -188,7 +218,7 @@ export async function getValidTenantToken(tenantId: string): Promise<string | nu
   } catch (e) {}
 
   const refreshedToken = await ensureTenantSessionViaApi(tenantId, savedUser);
-  return refreshedToken || currentToken || getAuthToken();
+  return refreshedToken || getAuthToken();
 }
 
 export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
@@ -390,26 +420,6 @@ export async function saveTenantCollectionViaApi(
   return request;
 }
 
-export async function verifyOrgPinViaApi(tenantId: string, pin: string): Promise<boolean> {
-  try {
-    const res = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tenantId,
-        pin
-      })
-    });
-    const data = await res.json();
-    if (data.success && data.token) {
-      setAuthToken(data.token);
-    }
-    return !!data.success;
-  } catch (err) {
-    return false;
-  }
-}
-
 export async function uploadInvoicePdfViaApi(
   filename: string,
   base64Pdf: string,
@@ -468,15 +478,38 @@ export async function registerOrgViaApi(
   name: string,
   ownerMobile: string,
   ownerName?: string,
-  pin?: string
-): Promise<{ success: boolean; org?: any; message?: string }> {
+  pin?: string,
+  secretKey?: string,
+  options?: {
+    isTrial?: boolean;
+    trialDays?: number;
+    subscriptionPlan?: string;
+    city?: string;
+    source?: string;
+  }
+): Promise<{ success: boolean; org?: any; token?: string; user?: any; message?: string }> {
   try {
     const res = await fetch('/api/auth/register-org', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, ownerMobile, ownerName, pin })
+      body: JSON.stringify({ 
+        name, 
+        ownerMobile, 
+        ownerName, 
+        pin, 
+        secretKey,
+        isTrial: options?.isTrial !== undefined ? options.isTrial : true,
+        trialDays: options?.trialDays ?? 7,
+        subscriptionPlan: options?.subscriptionPlan || 'trial',
+        city: options?.city,
+        source: options?.source || 'inoms.in_7day_trial'
+      })
     });
-    return await res.json();
+    const data = await res.json();
+    if (data.success && data.token) {
+      setAuthToken(data.token, true);
+    }
+    return data;
   } catch (err: any) {
     return { success: false, message: 'Server connection error' };
   }
