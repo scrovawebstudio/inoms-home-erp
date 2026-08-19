@@ -25,6 +25,9 @@ import {
   FileCheck,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
+  Server,
+  Activity,
   Truck,
   Kanban,
   Menu,
@@ -55,7 +58,10 @@ import {
   checkHomeServerSession,
   saveAllTenantDataViaApi,
   fetchTenantsViaApi,
-  ensureTenantSessionViaApi
+  ensureTenantSessionViaApi,
+  saveBackupSnapshotToServer,
+  fetchServerHealth,
+  syncTenantsViaApi
 } from './lib/api';
 
 import {
@@ -600,6 +606,7 @@ export default function App() {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
+
   const [showNotifications, setShowNotifications] = useState<boolean>(false);
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -619,6 +626,119 @@ export default function App() {
   });
 
   const [showAuthModal, setShowAuthModal] = useState<boolean>(!isAuthenticated);
+
+  // Real-time Server Health & Connection Indicator State (Green/Red dot)
+  const [serverStatus, setServerStatus] = useState<'online' | 'offline' | 'checking'>('online');
+  const [isServerSaving, setIsServerSaving] = useState<boolean>(false);
+  const [lastServerCheckTime, setLastServerCheckTime] = useState<string>('');
+
+  // Flag to track whether there are uncommitted changes made while offline
+  const hasUnsavedOfflineChangesRef = React.useRef<boolean>(false);
+  const isSyncingToServerRef = React.useRef<boolean>(false);
+
+  // Sync latest client state to the server (reconnect or manual retry)
+  const syncOfflineChangesToServer = React.useCallback(async (reason = 'reconnect') => {
+    if (!isAuthenticated || !activeTenant?.id || isSyncingToServerRef.current) return;
+    
+    isSyncingToServerRef.current = true;
+    setIsServerSaving(true);
+    setIsSyncing(true);
+
+    try {
+      const bundle = {
+        clients: clientsRef.current,
+        ledger: ledgerRef.current,
+        jobs: jobsRef.current,
+        payments: paymentsRef.current,
+        invoices: invoicesRef.current,
+        products: productsRef.current,
+        expenses: expensesRef.current,
+        users: usersRef.current,
+        logs: logsRef.current,
+        categories: categoriesRef.current,
+        racks: racksRef.current,
+        equipments: equipmentsRef.current,
+        problems: problemsRef.current
+      };
+
+      const saveRes = await saveAllTenantDataViaApi(activeTenant.id, companyConfig, bundle);
+      // Flush pending indexedDB operations if any
+      await pushPendingOperations(activeTenant.id).catch(() => {});
+
+      if (saveRes?.success) {
+        hasUnsavedOfflineChangesRef.current = false;
+        setServerStatus('online');
+        setIsSyncing(false);
+        setJustSynced(true);
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+        setLastSyncedAt(timeStr);
+        setTimeout(() => setJustSynced(false), 2500);
+
+        if (reason === 'reconnect' || reason === 'manual') {
+          triggerSaveNotification('✓ Server Reconnected: All offline changes synced to server successfully!');
+        }
+      } else {
+        hasUnsavedOfflineChangesRef.current = true;
+        setServerStatus('offline');
+      }
+    } catch (err) {
+      hasUnsavedOfflineChangesRef.current = true;
+      setServerStatus('offline');
+    } finally {
+      setIsServerSaving(false);
+      isSyncingToServerRef.current = false;
+    }
+  }, [isAuthenticated, activeTenant?.id, companyConfig]);
+
+  const checkServerStatus = React.useCallback(async () => {
+    try {
+      const health = await fetchServerHealth();
+      const isOk = !!(health && (health.status === 'ok' || health.ok === true));
+      
+      setServerStatus(prevStatus => {
+        if (isOk) {
+          // If server was offline or has uncommitted offline changes, trigger immediate sync
+          if (prevStatus === 'offline' || hasUnsavedOfflineChangesRef.current) {
+            setTimeout(() => {
+              syncOfflineChangesToServer('reconnect');
+            }, 60);
+          }
+          return 'online';
+        } else {
+          return 'offline';
+        }
+      });
+
+      const now = new Date();
+      setLastServerCheckTime(now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }));
+      return isOk;
+    } catch (_) {
+      setServerStatus('offline');
+      return false;
+    }
+  }, [syncOfflineChangesToServer]);
+
+  // Periodic Server Health Check every 4 seconds + on window focus & online events
+  React.useEffect(() => {
+    checkServerStatus();
+    const interval = setInterval(checkServerStatus, 4500);
+
+    const onFocus = () => checkServerStatus();
+    const onOnline = () => checkServerStatus();
+    const onOffline = () => setServerStatus('offline');
+
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, [checkServerStatus]);
 
   const handleAuthenticated = (tenant: TenantOrg, role: string, loggedInUser?: SystemUser) => {
     setActiveTenant(tenant);
@@ -753,6 +873,7 @@ export default function App() {
           cloudTenants.forEach(ct => mergedMap.set(ct.id, ct));
           const updated = ensureAdminActive(Array.from(mergedMap.values()));
           setAppStorageItem('tenants_v3', JSON.stringify(updated));
+          syncTenantsViaApi(updated).catch(() => {});
           return updated;
         });
       }
@@ -805,8 +926,9 @@ export default function App() {
       return next;
     });
 
-    // Save to Firestore so it syncs instantly across all devices
+    // Save to Firestore and Server SQLite DB so it syncs instantly across all devices
     await saveTenantToFirestore(newTenant);
+    syncTenantsViaApi([newTenant]).catch(() => {});
   };
 
   const handleUpdateTenant = async (updatedTenant: TenantOrg) => {
@@ -825,8 +947,9 @@ export default function App() {
       }));
     }
 
-    // Save to Firestore
+    // Save to Firestore and Server SQLite DB
     await saveTenantToFirestore(updatedTenant);
+    syncTenantsViaApi([updatedTenant]).catch(() => {});
     triggerSaveNotification(`✓ Organization details for "${updatedTenant.name}" updated successfully!`);
   };
 
@@ -1511,8 +1634,22 @@ export default function App() {
 
       if (isAuthenticated) {
         try {
-          await saveAllTenantDataViaApi(activeTenant.id, companyConfig, collectionBundle);
-        } catch (_) {}
+          setIsServerSaving(true);
+          const saveRes = await saveAllTenantDataViaApi(activeTenant.id, companyConfig, collectionBundle);
+          if (saveRes?.success) {
+            setServerStatus('online');
+            hasUnsavedOfflineChangesRef.current = false;
+          } else {
+            setServerStatus('offline');
+            hasUnsavedOfflineChangesRef.current = true;
+          }
+        } catch (_) {
+          // If network failure during save, mark server offline and flag uncommitted changes
+          setServerStatus('offline');
+          hasUnsavedOfflineChangesRef.current = true;
+        } finally {
+          setIsServerSaving(false);
+        }
       }
 
       // Smooth transition to confirm sync completion
@@ -1647,7 +1784,14 @@ export default function App() {
         const filename = `${orgPrefix}_Local_Backup_${YYYY}-${MM}-${DD}_${hh}-${mm}-${ss}.json`;
         const jsonStr = JSON.stringify(dataToExport, null, 2);
 
-        // 1. If connected PC folder handle exists, write directly into connected folder
+        // 1. Always save a persistent JSON snapshot to the Home Server data/backups/ disk folder
+        try {
+          await saveBackupSnapshotToServer(activeTenant.id, companyConfig.name || activeTenant.name, dataToExport, filename);
+        } catch (serverSnapErr) {
+          console.warn('Server disk snapshot failed:', serverSnapErr);
+        }
+
+        // 2. If connected PC folder handle exists, write directly into connected folder
         if (dirHandle) {
           const success = await writeBackupToDirectoryHandle(dirHandle, filename, jsonStr);
           if (success) {
@@ -1656,28 +1800,7 @@ export default function App() {
           }
         }
 
-        // 2. FALLBACK: Auto-download directly to user's default Downloads folder without requiring manual folder selection
-        try {
-          const blob = new Blob([jsonStr], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = filename;
-          link.style.display = 'none';
-          document.body.appendChild(link);
-          link.click();
-
-          setTimeout(() => {
-            if (document.body.contains(link)) {
-              document.body.removeChild(link);
-            }
-            URL.revokeObjectURL(url);
-          }, 200);
-
-          setCompanyConfig(prev => ({ ...prev, lastLocalBackupTime: formattedTimestamp }));
-        } catch (downloadErr) {
-          console.warn('Background auto-download fallback failed:', downloadErr);
-        }
+        setCompanyConfig(prev => ({ ...prev, lastLocalBackupTime: formattedTimestamp }));
       } catch (err) {
         console.warn('Background local backup skipped:', err);
       }
@@ -3474,6 +3597,81 @@ export default function App() {
                 </button>
               </div>
 
+              {/* Server Live Health Status Indicator (Green / Red Dot) */}
+              <div className="px-3.5 py-2.5 border-b border-white/10 flex flex-col gap-2 shrink-0 bg-black/20" id="mobile-server-health-indicator">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {/* Glowing / Pulsing Status Dot */}
+                    <div className="relative flex items-center justify-center shrink-0">
+                      {serverStatus === 'online' ? (
+                        <>
+                          <span className="animate-ping absolute inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.9)]"></span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="animate-ping absolute inline-flex h-2.5 w-2.5 rounded-full bg-rose-400 opacity-90"></span>
+                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.9)]"></span>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-[11px] font-extrabold tracking-wide flex items-center gap-1.5 truncate">
+                        {serverStatus === 'online' ? (
+                          <span className="text-emerald-300 font-bold">
+                            {isServerSaving ? 'Server Saving...' : 'Server Online'}
+                          </span>
+                        ) : (
+                          <span className="text-rose-300 font-extrabold">
+                            Server Disconnected
+                          </span>
+                        )}
+                      </span>
+                      <span className="text-[9px] text-white/60 font-medium truncate">
+                        {serverStatus === 'online'
+                          ? (isServerSaving ? 'Saving changes to database' : 'Real-time server save active')
+                          : "Don't refresh page!"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Quick Re-check Server Button */}
+                  <button
+                    onClick={async () => {
+                      const ok = await checkServerStatus();
+                      if (ok) await syncOfflineChangesToServer('manual');
+                    }}
+                    title={
+                      serverStatus === 'online'
+                        ? `Server online & healthy. Last checked: ${lastServerCheckTime || 'Just now'}. Click to re-verify.`
+                        : 'Server connection lost. Click to retry connection and sync data immediately.'
+                    }
+                    className={`px-2 py-1 rounded-lg text-[9px] font-extrabold uppercase tracking-wider transition flex items-center gap-1 cursor-pointer shrink-0 border ${
+                      serverStatus === 'online'
+                        ? 'text-emerald-300 bg-emerald-500/15 border-emerald-500/30 hover:bg-emerald-500/25'
+                        : 'text-rose-100 bg-rose-600/50 border-rose-400/60 hover:bg-rose-600/70 shadow-xs'
+                    }`}
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isServerSaving ? 'animate-spin' : ''}`} />
+                    <span>{serverStatus === 'online' ? 'Live' : 'Retry'}</span>
+                  </button>
+                </div>
+
+                {/* Prominent Red Alert Card in Sidebar when Disconnected */}
+                {serverStatus === 'offline' && (
+                  <div className="p-2.5 rounded-xl bg-rose-950/90 border border-rose-500/80 text-rose-100 flex flex-col gap-1.5 shadow-md animate-pulse">
+                    <div className="flex items-center gap-1.5 text-xs font-black text-rose-300">
+                      <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 animate-bounce" />
+                      <span>⚠️ Server Disconnected!</span>
+                    </div>
+                    <p className="text-[10.5px] leading-snug text-rose-200/90 font-medium">
+                      <strong>Do NOT refresh the page.</strong> Connection to backend server is temporarily lost. Changes are safely saved locally and will auto-save to server once reconnected.
+                    </p>
+                  </div>
+                )}
+              </div>
+
               <nav className="p-4 space-y-1.5">
                 {getNavItems().map((menu) => {
                   const Icon = menu.icon;
@@ -3607,6 +3805,81 @@ export default function App() {
             </button>
           </div>
 
+          {/* Desktop Server Live Health Status Indicator (Green / Red Dot) */}
+          <div className="px-3.5 py-2.5 border-b border-white/10 flex flex-col gap-2 shrink-0 bg-black/20" id="desktop-server-health-indicator">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 min-w-0">
+                {/* Glowing / Pulsing Status Dot */}
+                <div className="relative flex items-center justify-center shrink-0">
+                  {serverStatus === 'online' ? (
+                    <>
+                      <span className="animate-ping absolute inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.9)]"></span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="animate-ping absolute inline-flex h-2.5 w-2.5 rounded-full bg-rose-400 opacity-90"></span>
+                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.9)]"></span>
+                    </>
+                  )}
+                </div>
+
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[11px] font-extrabold tracking-wide flex items-center gap-1.5 truncate">
+                    {serverStatus === 'online' ? (
+                      <span className="text-emerald-300 font-bold">
+                        {isServerSaving ? 'Server Saving...' : 'Server Online'}
+                      </span>
+                    ) : (
+                      <span className="text-rose-300 font-extrabold">
+                        Server Disconnected
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[9px] text-white/60 font-medium truncate">
+                    {serverStatus === 'online'
+                      ? (isServerSaving ? 'Saving changes to database' : 'Real-time server save active')
+                      : "Don't refresh page!"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Quick Re-check Server Button */}
+              <button
+                onClick={async () => {
+                  const ok = await checkServerStatus();
+                  if (ok) await syncOfflineChangesToServer('manual');
+                }}
+                title={
+                  serverStatus === 'online'
+                    ? `Server online & healthy. Last checked: ${lastServerCheckTime || 'Just now'}. Click to re-verify.`
+                    : 'Server connection lost. Click to retry connection and sync data immediately.'
+                }
+                className={`px-2 py-1 rounded-lg text-[9px] font-extrabold uppercase tracking-wider transition flex items-center gap-1 cursor-pointer shrink-0 border ${
+                  serverStatus === 'online'
+                    ? 'text-emerald-300 bg-emerald-500/15 border-emerald-500/30 hover:bg-emerald-500/25'
+                    : 'text-rose-100 bg-rose-600/50 border-rose-400/60 hover:bg-rose-600/70 shadow-xs'
+                }`}
+              >
+                <RefreshCw className={`w-3 h-3 ${isServerSaving ? 'animate-spin' : ''}`} />
+                <span>{serverStatus === 'online' ? 'Live' : 'Retry'}</span>
+              </button>
+            </div>
+
+            {/* Prominent Red Alert Card in Sidebar when Disconnected */}
+            {serverStatus === 'offline' && (
+              <div className="p-2.5 rounded-xl bg-rose-950/90 border border-rose-500/80 text-rose-100 flex flex-col gap-1.5 shadow-md animate-pulse">
+                <div className="flex items-center gap-1.5 text-xs font-black text-rose-300">
+                  <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 animate-bounce" />
+                  <span>⚠️ Server Disconnected!</span>
+                </div>
+                <p className="text-[10.5px] leading-snug text-rose-200/90 font-medium">
+                  <strong>Do NOT refresh the page.</strong> Connection to backend server is temporarily lost. Changes are safely saved locally and will auto-save to server once reconnected.
+                </p>
+              </div>
+            )}
+          </div>
+
           {/* Menu items */}
           <nav className="p-4 pt-3.5 space-y-1.5" id="sidebar-nav">
             {getNavItems().map((menu) => {
@@ -3729,6 +4002,31 @@ export default function App() {
 
       {/* 2. Main Workstage Section */}
       <main className="flex-1 flex flex-col overflow-hidden h-full">
+        {/* Sticky Server Disconnected Warning Banner */}
+        {serverStatus === 'offline' && (
+          <div className="w-full bg-gradient-to-r from-rose-700 via-rose-600 to-red-700 text-white px-3 sm:px-5 py-2.5 text-xs font-bold flex items-center justify-between shadow-lg shrink-0 border-b border-rose-800 z-40 animate-in fade-in duration-200">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="relative flex h-2.5 w-2.5 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-200 opacity-90"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-300"></span>
+              </span>
+              <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 animate-bounce" />
+              <span className="truncate sm:whitespace-normal">
+                <strong>Server Disconnected:</strong> Live backend save is interrupted. <strong>Please DO NOT refresh or close this tab.</strong> All changes are safely stored in browser cache and will auto-upload once reconnected.
+              </span>
+            </div>
+            <button
+              onClick={async () => {
+                const ok = await checkServerStatus();
+                if (ok) await syncOfflineChangesToServer('manual');
+              }}
+              className="px-3 py-1 bg-white/20 hover:bg-white/30 rounded-lg text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5 transition cursor-pointer shrink-0 ml-3 border border-white/30 shadow-xs"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isServerSaving ? 'animate-spin' : ''}`} /> Reconnect Server
+            </button>
+          </div>
+        )}
+
         {/* Top Header Bar */}
         <header 
           className="h-16 border-b border-slate-100 flex items-center justify-between px-3 sm:px-6 shrink-0 z-30 transition-colors duration-200 gap-2"

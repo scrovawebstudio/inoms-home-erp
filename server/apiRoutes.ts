@@ -197,42 +197,147 @@ apiRouter.get('/health', async (_req, res) => {
 // AUTHENTICATION ROUTES
 // -------------------------------------------------------------
 
-// Lookup single organization by mobile or workspace code (STRICT ZERO-LEAKAGE ON-DEMAND LOOKUP)
-apiRouter.post('/auth/lookup-mobile', (req, res) => {
+// Lookup single organization by mobile, workspace code, name or email (STRICT ZERO-LEAKAGE ON-DEMAND LOOKUP)
+apiRouter.all('/auth/lookup-mobile', (req, res) => {
   try {
-    const { mobile, code } = req.body || {};
-    const cleanInput = (mobile || code || '').toString().replace(/\D/g, '');
-    const rawCode = (code || mobile || '').toString().trim().toUpperCase();
+    const mobile = req.body?.mobile || req.query?.mobile || '';
+    const code = req.body?.code || req.query?.code || '';
+    const search = req.body?.search || req.query?.search || req.body?.query || req.query?.query || '';
+    
+    const rawInput = (mobile || code || search || '').toString().trim();
+    const cleanInput = rawInput.replace(/\D/g, '');
+    const last10Input = cleanInput.length >= 10 ? cleanInput.slice(-10) : (cleanInput.length >= 5 ? cleanInput : '');
+    const rawCode = rawInput.toUpperCase();
+    const rawLower = rawInput.toLowerCase();
 
     if (!cleanInput && !rawCode) {
-      return res.status(400).json({ success: false, message: 'Please enter a valid mobile number or workspace code' });
+      return res.status(200).json({ success: false, message: 'Please enter a valid mobile number or workspace code', notFound: true });
     }
 
-    const db = getDatabase();
-    const orgStmt = db.prepare('SELECT id, name, code, owner_mobile, owner_name, status, secret_key, pin, pin_hash, subscription_plan, subscription_start_date, subscription_end_date, trial_days, is_trial, features_json, created_at FROM organizations WHERE status != "deleted"');
-    
-    let matchedOrg: any = null;
-    while (orgStmt.step()) {
-      const row = orgStmt.getAsObject();
-      const rowCleanMobile = (row.owner_mobile as string || '').replace(/\D/g, '');
-      const rowCode = (row.code as string || '').toUpperCase();
-      
-      const mobileMatch = cleanInput && cleanInput.length >= 5 && (rowCleanMobile.includes(cleanInput) || cleanInput.includes(rowCleanMobile));
-      const codeMatch = rawCode && (rowCode === rawCode || row.id === rawCode);
+    // Direct check for Master System Admin identifiers
+    const isMasterAdminQuery = 
+      (last10Input && last10Input === '8149862034') ||
+      rawCode === 'ADMIN-00' ||
+      rawCode === 'ORG-ADMIN' ||
+      rawLower === 'masteradmin' ||
+      rawLower === 'admin@inoms.local' ||
+      rawLower === 'admin@mastersystem.com';
 
-      if (mobileMatch || codeMatch) {
-        matchedOrg = row;
-        break;
-      }
+    const db = getDatabase();
+    const orgStmt = db.prepare('SELECT id, name, organization_name, code, organization_code, owner_mobile, phone, owner_name, email, owner_email, status, secret_key, pin, pin_hash, subscription_plan, subscription_start_date, subscription_end_date, trial_days, is_trial, features_json, created_at FROM organizations WHERE status != "deleted"');
+    
+    const candidates: any[] = [];
+    while (orgStmt.step()) {
+      candidates.push(orgStmt.getAsObject());
     }
     orgStmt.free();
 
+    let matchedOrg: any = null;
+
+    // 1. First Priority: Mobile Number Match (Last 10 digits or exact clean digits)
+    if (cleanInput && cleanInput.length >= 5) {
+      // Prioritize exact last 10 digits match
+      matchedOrg = candidates.find(row => {
+        // If not explicit master admin query, skip master admin record so customer org always takes precedence
+        if ((row.id === 'org-admin' || row.code === 'ADMIN-00') && !isMasterAdminQuery) return false;
+
+        const rowCleanMobile = ((row.owner_mobile as string || '') + ' ' + (row.phone as string || '')).replace(/\D/g, '');
+        if (!rowCleanMobile) return false;
+        const rowLast10 = rowCleanMobile.length >= 10 ? rowCleanMobile.slice(-10) : rowCleanMobile;
+
+        if (last10Input && last10Input.length >= 10) {
+          return rowLast10 === last10Input || rowCleanMobile.endsWith(last10Input);
+        }
+        return rowCleanMobile === cleanInput || (rowLast10 && rowLast10 === last10Input);
+      });
+    }
+
+    // 2. Second Priority: Workspace Code or ID Match
+    if (!matchedOrg && rawCode) {
+      matchedOrg = candidates.find(row => {
+        if ((row.id === 'org-admin' || row.code === 'ADMIN-00') && !isMasterAdminQuery) return false;
+        const rowCode = (row.code as string || row.organization_code as string || '').trim().toUpperCase();
+        const rowId = (row.id as string || '').trim().toUpperCase();
+        return (rowCode && rowCode === rawCode) || (rowId && rowId === rawCode);
+      });
+    }
+
+    // 3. Third Priority: Exact Email Match
+    if (!matchedOrg && rawLower && rawLower.includes('@')) {
+      matchedOrg = candidates.find(row => {
+        if ((row.id === 'org-admin' || row.code === 'ADMIN-00') && !isMasterAdminQuery) return false;
+        const rowEmail = (row.email as string || row.owner_email as string || '').trim().toLowerCase();
+        return rowEmail && rowEmail === rawLower;
+      });
+    }
+
+    // 4. Fourth Priority: Exact Organization Name Match (if length >= 3)
+    if (!matchedOrg && rawCode && rawCode.length >= 3) {
+      matchedOrg = candidates.find(row => {
+        if ((row.id === 'org-admin' || row.code === 'ADMIN-00') && !isMasterAdminQuery) return false;
+        const rowName = (row.name as string || row.organization_name as string || '').trim().toUpperCase();
+        return rowName && rowName === rawCode;
+      });
+    }
+
+    // 5. Check staff users table if not matched in organizations directly
+    if (!matchedOrg && (last10Input || rawLower)) {
+      try {
+        const uStmt = db.prepare('SELECT tenant_id, organization_id FROM users WHERE (mobile LIKE ? OR username = ? OR email = ?) AND (deleted_at IS NULL) LIMIT 1');
+        uStmt.bind([`%${last10Input || cleanInput}%`, rawLower, rawLower]);
+        if (uStmt.step()) {
+          const userRow = uStmt.getAsObject();
+          const targetOrgId = userRow.organization_id || userRow.tenant_id;
+          if (targetOrgId) {
+            const fetchOrgStmt = db.prepare('SELECT * FROM organizations WHERE id = ? AND status != "deleted"');
+            fetchOrgStmt.bind([targetOrgId]);
+            if (fetchOrgStmt.step()) {
+              matchedOrg = fetchOrgStmt.getAsObject();
+            }
+            fetchOrgStmt.free();
+          }
+        }
+        uStmt.free();
+      } catch (uErr) {}
+    }
+
+    // 6. Explicit Master Admin Match (only if query was specifically for Master Admin)
+    if (!matchedOrg && isMasterAdminQuery) {
+      matchedOrg = candidates.find(r => r.id === 'org-admin' || r.code === 'ADMIN-00');
+    }
+
+    // 7. Fallback synthesize master admin if requested but not in DB
+    if (!matchedOrg && isMasterAdminQuery) {
+      matchedOrg = {
+        id: 'org-admin',
+        name: 'Master System Admin',
+        code: 'ADMIN-00',
+        owner_mobile: '+91 8149862034',
+        owner_name: 'Master Admin',
+        status: 'active',
+        secret_key: '',
+        pin: '1234',
+        subscription_plan: 'lifetime',
+        trial_days: 0,
+        is_trial: 0,
+        created_at: '2026-01-01'
+      };
+    }
+
     if (!matchedOrg) {
-      return res.status(404).json({ success: false, message: 'No registered organization found for this mobile number or workspace code' });
+      return res.status(200).json({ 
+        success: false, 
+        notFound: true,
+        message: 'No registered organization found for this mobile number or workspace code' 
+      });
     }
 
     if (matchedOrg.status === 'deactivated') {
-      return res.status(403).json({ success: false, message: `Organization "${matchedOrg.name}" is deactivated. Please contact Platform Support.` });
+      return res.status(200).json({ 
+        success: false, 
+        deactivated: true,
+        message: `Organization "${matchedOrg.name || matchedOrg.organization_name}" is deactivated. Please contact Platform Support.` 
+      });
     }
 
     const hasPin = Boolean((matchedOrg.pin && matchedOrg.pin.toString().trim().length > 0) || matchedOrg.pin_hash);
@@ -245,15 +350,15 @@ apiRouter.post('/auth/lookup-mobile', (req, res) => {
     }
 
     // Return ONLY the matched organization metadata, with NO passwords or other orgs
-    return res.json({
+    return res.status(200).json({
       success: true,
       org: {
         id: matchedOrg.id,
-        name: matchedOrg.name,
-        code: matchedOrg.code,
-        ownerMobile: matchedOrg.owner_mobile,
-        ownerName: matchedOrg.owner_name,
-        status: matchedOrg.status,
+        name: matchedOrg.name || matchedOrg.organization_name || 'Organization',
+        code: matchedOrg.code || matchedOrg.organization_code || matchedOrg.id,
+        ownerMobile: matchedOrg.owner_mobile || matchedOrg.phone || '',
+        ownerName: matchedOrg.owner_name || 'Admin',
+        status: matchedOrg.status || 'active',
         hasPin, // indicates if PIN is set or Authenticator 2FA is required
         hasSecretKey: Boolean(matchedOrg.secret_key),
         subscriptionPlan: matchedOrg.subscription_plan || (matchedOrg.is_trial ? 'trial' : 'monthly'),
@@ -266,7 +371,7 @@ apiRouter.post('/auth/lookup-mobile', (req, res) => {
       }
     });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message || 'Lookup error' });
+    return res.status(200).json({ success: false, error: err?.message || 'Lookup error', message: 'Lookup query encountered a temporary error' });
   }
 });
 
@@ -1210,6 +1315,91 @@ apiRouter.post('/auth/update-org', (req, res) => {
     res.json({ success: true, org: updated });
   } catch (err: any) {
     res.status(err.message === 'Organization not found' ? 404 : 500).json({ success: false, error: err?.message || 'Update error' });
+  }
+});
+
+// Bulk Synchronize Organizations from Cloud Firestore & Client to SQLite
+apiRouter.post('/auth/sync-tenants', (req, res) => {
+  try {
+    const { tenants } = req.body || {};
+    if (!Array.isArray(tenants)) {
+      return res.status(400).json({ success: false, message: 'Invalid tenants array' });
+    }
+    const db = getDatabase();
+    const now = new Date().toISOString();
+
+    for (const t of tenants) {
+      if (!t || !t.id) continue;
+      const orgId = t.id;
+      const name = (t.name || t.organizationName || 'Organization').trim();
+      const code = (t.code || t.organizationCode || orgId.replace('org-', '').toUpperCase().slice(0, 8)).trim();
+      const ownerMobile = (t.ownerMobile || t.phone || '').trim();
+      const ownerName = (t.ownerName || 'Owner').trim();
+      const status = t.status || 'active';
+      const pinText = (t.pin || '1234').toString().trim();
+      const secretKey = t.secretKey || '';
+      const subPlan = t.subscriptionPlan || 'trial';
+      const subStart = t.subscriptionStartDate || now.split('T')[0];
+      const subEnd = t.subscriptionEndDate || '';
+      const tDays = t.trialDays !== undefined ? Number(t.trialDays) : 7;
+      const isTr = t.isTrial !== undefined ? (t.isTrial ? 1 : 0) : 1;
+      const featuresJson = t.features ? JSON.stringify(t.features) : null;
+
+      const checkStmt = db.prepare('SELECT id FROM organizations WHERE id = ?');
+      checkStmt.bind([orgId]);
+      const exists = checkStmt.step();
+      checkStmt.free();
+
+      const { hash: pinHash, salt: pinSalt } = hashPassword(pinText);
+
+      if (exists) {
+        db.run(
+          `UPDATE organizations SET
+            name = ?, organization_name = ?, code = ?, organization_code = ?,
+            owner_mobile = ?, phone = ?, owner_name = ?, status = ?,
+            secret_key = COALESCE(NULLIF(?, ''), secret_key),
+            pin = ?, pin_hash = ?, pin_salt = ?,
+            subscription_plan = ?, subscription_start_date = ?, subscription_end_date = ?,
+            trial_days = ?, is_trial = ?, features_json = ?, updated_at = ?
+          WHERE id = ?`,
+          [
+            name, name, code, code,
+            ownerMobile, ownerMobile, ownerName, status,
+            secretKey,
+            pinText, pinHash, pinSalt,
+            subPlan, subStart, subEnd,
+            tDays, isTr, featuresJson, now,
+            orgId
+          ]
+        );
+      } else {
+        db.run(
+          `INSERT INTO organizations (
+            id, name, organization_name, code, organization_code, owner_mobile, phone, owner_name, status,
+            secret_key, pin, pin_hash, pin_salt, subscription_plan, subscription_start_date, subscription_end_date,
+            trial_days, is_trial, features_json, created_at, updated_at, version
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          [
+            orgId, name, name, code, code, ownerMobile, ownerMobile, ownerName, status,
+            secretKey, pinText, pinHash, pinSalt, subPlan, subStart, subEnd,
+            tDays, isTr, featuresJson, t.createdAt || now, now
+          ]
+        );
+
+        // Ensure Admin user exists for newly inserted organization
+        const adminId = `u_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        db.run(
+          `INSERT OR IGNORE INTO users (id, tenant_id, organization_id, name, username, mobile, role, status, password_hash, password_salt, pin_hash, pin_salt, created_at, updated_at, version)
+           VALUES (?, ?, ?, ?, 'admin', ?, 'Admin', 'Active', ?, ?, ?, ?, ?, ?, 1)`,
+          [adminId, orgId, orgId, ownerName, ownerMobile, pinHash, pinSalt, pinHash, pinSalt, now, now]
+        );
+      }
+    }
+
+    scheduleDbSave();
+    return res.json({ success: true, count: tenants.length });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Sync tenants error' });
   }
 });
 
@@ -2647,6 +2837,306 @@ apiRouter.get('/admin/backups/download/:filename', (req: Request, res: Response)
     }
     res.setHeader('Content-Type', 'application/x-sqlite3');
     res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    const stream = fs.createReadStream(filePath);
+    stream.pipe(res);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to stream backup file' });
+  }
+});
+
+// -------------------------------------------------------------
+// DIRECT JSON BACKUP & DISK SNAPSHOT DOWNLOAD ENDPOINTS
+// -------------------------------------------------------------
+
+function getOrgBackupPrefix(orgName?: string, orgId?: string): string {
+  if (orgId === 'org-admin') return 'Master_Admin';
+  if (!orgName) return 'INOMS';
+  const lower = orgName.trim().toLowerCase();
+  if (lower.includes('master admin') || lower === 'admin' || lower === 'master') return 'Master_Admin';
+  if (lower.includes('inoms') || lower.includes('nibban')) return 'INOMS';
+  const clean = orgName.trim().replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return clean || 'INOMS';
+}
+
+// 1. Direct 1-Click JSON Backup Download for a single organization
+apiRouter.get('/backup/download-json', (req: Request, res: Response) => {
+  try {
+    const tenantId = (req.query.tenantId as string) || (req.headers['x-tenant-id'] as string) || 'org-admin';
+    const db = getDatabase();
+
+    // Fetch tenant config
+    const configStmt = db.prepare('SELECT * FROM tenant_configs WHERE tenant_id = ?');
+    configStmt.bind([tenantId]);
+    let companyConfig: any = null;
+    if (configStmt.step()) {
+      const cRow = configStmt.getAsObject();
+      if (cRow.config_json) {
+        try {
+          companyConfig = JSON.parse(cRow.config_json as string);
+        } catch (e) {}
+      }
+      if (!companyConfig) {
+        companyConfig = {
+          name: cRow.name || 'Organization',
+          phone: cRow.phone || '',
+          email: cRow.email || '',
+          address: cRow.address || '',
+          gstin: cRow.gstin || ''
+        };
+      }
+    }
+    configStmt.free();
+
+    // Fetch org details if config not found
+    let orgName = companyConfig?.name || '';
+    if (!orgName) {
+      const orgStmt = db.prepare('SELECT name, code FROM organizations WHERE id = ?');
+      orgStmt.bind([tenantId]);
+      if (orgStmt.step()) {
+        const oRow = orgStmt.getAsObject();
+        orgName = (oRow.name as string) || '';
+      }
+      orgStmt.free();
+    }
+    if (!orgName) orgName = tenantId === 'org-admin' ? 'Master Admin' : 'INOMS Workspace';
+
+    // Fetch all business collections
+    const collections = {
+      clients: getEntityRecords(db, 'clients', tenantId),
+      jobs: getEntityRecords(db, 'jobs', tenantId),
+      invoices: getEntityRecords(db, 'invoices', tenantId),
+      payments: getEntityRecords(db, 'payments', tenantId),
+      products: getEntityRecords(db, 'products', tenantId),
+      expenses: getEntityRecords(db, 'expenses', tenantId),
+      ledger: getEntityRecords(db, 'ledger', tenantId),
+      users: getEntityRecords(db, 'users', tenantId).map(u => {
+        const clean = { ...u };
+        delete clean.password_hash;
+        delete clean.password_salt;
+        delete clean.pin_hash;
+        delete clean.pin_salt;
+        return clean;
+      }),
+      categories: getEntityRecords(db, 'categories', tenantId),
+      racks: getEntityRecords(db, 'racks', tenantId),
+      equipments: getEntityRecords(db, 'equipments', tenantId),
+      problems: getEntityRecords(db, 'problems', tenantId)
+    };
+
+    const now = new Date();
+    const YYYY = now.getFullYear();
+    const MM = String(now.getMonth() + 1).padStart(2, '0');
+    const DD = String(now.getDate()).padStart(2, '0');
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const ss = String(now.getSeconds()).padStart(2, '0');
+
+    const prefix = getOrgBackupPrefix(orgName, tenantId);
+    const filename = `${prefix}_Local_Backup_${YYYY}-${MM}-${DD}_${hh}-${mm}-${ss}.json`;
+
+    const payload = {
+      version: '3.0.0',
+      exportedAt: now.toISOString(),
+      tenantId,
+      orgName,
+      companyConfig: companyConfig || { name: orgName },
+      ...collections
+    };
+
+    const jsonString = JSON.stringify(payload, null, 2);
+
+    // Also persist a timestamped copy to server ./data/backups/ on disk
+    try {
+      const backupsDir = path.join(process.cwd(), 'data', 'backups');
+      if (!fs.existsSync(backupsDir)) {
+        fs.mkdirSync(backupsDir, { recursive: true });
+      }
+      fs.writeFileSync(path.join(backupsDir, filename), jsonString, 'utf-8');
+    } catch (diskErr) {
+      console.warn('[BackupDownload] Could not write server disk snapshot:', diskErr);
+    }
+
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.status(200).send(jsonString);
+  } catch (err: any) {
+    console.error('[BackupDownload] Error generating backup download:', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to generate JSON backup' });
+  }
+});
+
+// 2. Master All-Organizations JSON Backup Download
+apiRouter.get('/backup/download-master-json', (_req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+
+    const stmt = db.prepare(`
+      SELECT id, name, code, owner_mobile, owner_name, status, created_at, secret_key, pin,
+             subscription_plan, subscription_start_date, subscription_end_date, trial_days, is_trial, features_json
+      FROM organizations 
+      WHERE status != "deleted"
+      ORDER BY created_at ASC, id ASC
+    `);
+    const organizations: any[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      organizations.push(row);
+    }
+    stmt.free();
+
+    const collections = {
+      clients: getEntityRecords(db, 'clients', 'all'),
+      jobs: getEntityRecords(db, 'jobs', 'all'),
+      invoices: getEntityRecords(db, 'invoices', 'all'),
+      payments: getEntityRecords(db, 'payments', 'all'),
+      products: getEntityRecords(db, 'products', 'all'),
+      expenses: getEntityRecords(db, 'expenses', 'all'),
+      ledger: getEntityRecords(db, 'ledger', 'all'),
+      users: getEntityRecords(db, 'users', 'all').map(u => {
+        const clean = { ...u };
+        delete clean.password_hash;
+        delete clean.password_salt;
+        delete clean.pin_hash;
+        delete clean.pin_salt;
+        return clean;
+      }),
+      categories: getEntityRecords(db, 'categories', 'all'),
+      racks: getEntityRecords(db, 'racks', 'all'),
+      equipments: getEntityRecords(db, 'equipments', 'all'),
+      problems: getEntityRecords(db, 'problems', 'all')
+    };
+
+    const now = new Date();
+    const YYYY = now.getFullYear();
+    const MM = String(now.getMonth() + 1).padStart(2, '0');
+    const DD = String(now.getDate()).padStart(2, '0');
+    const filename = `INOMS_Master_All_Orgs_Backup_${YYYY}-${MM}-${DD}.json`;
+
+    const payload = {
+      system: 'INOMS ERP',
+      version: '3.0.0',
+      exportedAt: now.toISOString(),
+      type: 'master_all_organizations',
+      organizations,
+      collections
+    };
+
+    const jsonString = JSON.stringify(payload, null, 2);
+
+    try {
+      const backupsDir = path.join(process.cwd(), 'data', 'backups');
+      if (!fs.existsSync(backupsDir)) {
+        fs.mkdirSync(backupsDir, { recursive: true });
+      }
+      fs.writeFileSync(path.join(backupsDir, filename), jsonString, 'utf-8');
+    } catch (diskErr) {}
+
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.status(200).send(jsonString);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to generate master backup' });
+  }
+});
+
+// 3. Save JSON Backup Snapshot directly into server data/backups/ disk folder
+apiRouter.post('/backup/save-snapshot', (req: Request, res: Response) => {
+  try {
+    const { tenantId, orgName, data, filename: customFilename } = req.body || {};
+    const now = new Date();
+    const YYYY = now.getFullYear();
+    const MM = String(now.getMonth() + 1).padStart(2, '0');
+    const DD = String(now.getDate()).padStart(2, '0');
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const ss = String(now.getSeconds()).padStart(2, '0');
+
+    const prefix = getOrgBackupPrefix(orgName || data?.orgName || data?.companyConfig?.name, tenantId || 'org-admin');
+    const filename = customFilename || `${prefix}_Local_Backup_${YYYY}-${MM}-${DD}_${hh}-${mm}-${ss}.json`;
+
+    const backupsDir = path.join(process.cwd(), 'data', 'backups');
+    if (!fs.existsSync(backupsDir)) {
+      fs.mkdirSync(backupsDir, { recursive: true });
+    }
+
+    const payload = data ? (typeof data === 'string' ? data : JSON.stringify(data, null, 2)) : '{}';
+    const filePath = path.join(backupsDir, filename);
+    fs.writeFileSync(filePath, payload, 'utf-8');
+
+    const stats = fs.statSync(filePath);
+    const sizeKB = `${Math.ceil(stats.size / 1024)} KB`;
+    const formattedDate = `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`;
+
+    res.json({
+      success: true,
+      filename,
+      size: sizeKB,
+      date: formattedDate,
+      downloadUrl: `/api/backup/download-file/${encodeURIComponent(filename)}`,
+      message: `Backup snapshot "${filename}" (${sizeKB}) saved safely to server disk!`
+    });
+  } catch (err: any) {
+    console.error('[SaveSnapshot] Error:', err);
+    res.status(500).json({ success: false, error: err?.message || 'Failed to save snapshot to disk' });
+  }
+});
+
+// 4. List all saved JSON backup snapshots from disk
+apiRouter.get('/backup/list-json-snapshots', (_req: Request, res: Response) => {
+  try {
+    const backupsDir = path.join(process.cwd(), 'data', 'backups');
+    if (!fs.existsSync(backupsDir)) {
+      return res.json({ success: true, snapshots: [] });
+    }
+
+    const files = fs.readdirSync(backupsDir);
+    const snapshots: any[] = [];
+
+    for (const file of files) {
+      if (file.toLowerCase().endsWith('.json')) {
+        try {
+          const filePath = path.join(backupsDir, file);
+          const stats = fs.statSync(filePath);
+          snapshots.push({
+            id: `snap_${file}`,
+            filename: file,
+            size: `${Math.ceil(stats.size / 1024)} KB`,
+            sizeBytes: stats.size,
+            mtime: stats.mtimeMs,
+            date: new Date(stats.mtimeMs).toISOString().replace('T', ' ').substring(0, 19),
+            downloadUrl: `/api/backup/download-file/${encodeURIComponent(file)}`
+          });
+        } catch (e) {}
+      }
+    }
+
+    // Sort newest first
+    snapshots.sort((a, b) => b.mtime - a.mtime);
+
+    res.json({ success: true, snapshots });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Failed to list backup snapshots' });
+  }
+});
+
+// 5. Download a specific saved JSON backup file from data/backups/
+apiRouter.get('/backup/download-file/:filename', (req: Request, res: Response) => {
+  try {
+    const { filename } = req.params;
+    const safeFilename = path.basename(filename);
+    const filePath = path.join(process.cwd(), 'data', 'backups', safeFilename);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, message: 'Backup file not found on server disk' });
+    }
+
+    const ext = path.extname(safeFilename).toLowerCase();
+    const contentType = ext === '.json' ? 'application/json; charset=utf-8' : 'application/octet-stream';
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     const stream = fs.createReadStream(filePath);
     stream.pipe(res);
   } catch (err: any) {

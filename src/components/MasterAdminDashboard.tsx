@@ -1884,6 +1884,7 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                       { id: 'payments', label: '💳 Payments & Cashbook' },
                       { id: 'inventory', label: '📦 Inventory & Stock' },
                       { id: 'expenses', label: '💸 Expenses' },
+                      { id: 'clients', label: '👥 Clients & Ledger' },
                       { id: 'reports', label: '📈 Reports & Analytics' },
                       { id: 'settings', label: '⚙️ System Settings' },
                     ].map((mod) => {

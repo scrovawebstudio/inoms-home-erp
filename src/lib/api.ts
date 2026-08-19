@@ -512,6 +512,22 @@ export async function updateOrgViaApi(
   }
 }
 
+export async function syncTenantsViaApi(
+  tenants: any[]
+): Promise<{ success: boolean; count?: number; message?: string }> {
+  if (!Array.isArray(tenants) || tenants.length === 0) return { success: true, count: 0 };
+  try {
+    const res = await fetch('/api/auth/sync-tenants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenants })
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, message: 'Could not sync tenants to server' };
+  }
+}
+
 export async function deleteOrgViaApi(
   id: string
 ): Promise<{ success: boolean; message?: string }> {
@@ -527,12 +543,28 @@ export async function deleteOrgViaApi(
   }
 }
 
-export async function fetchServerHealth(): Promise<any> {
+export async function fetchServerHealth(): Promise<{ status: string; ok: boolean; postgres?: boolean; time?: string }> {
   try {
-    const res = await fetch('/api/health');
-    return await res.json();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch('/api/health', {
+      method: 'GET',
+      signal: controller.signal,
+      headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+    });
+    clearTimeout(timeoutId);
+    if (!res.ok) {
+      return { status: 'offline', ok: false };
+    }
+    const data = await res.json();
+    return {
+      status: data.status || 'ok',
+      ok: true,
+      postgres: data.postgres,
+      time: data.time
+    };
   } catch (e) {
-    return { status: 'offline' };
+    return { status: 'offline', ok: false };
   }
 }
 
@@ -693,4 +725,56 @@ export async function clearOrgWorkspaceApi(tenantId: string): Promise<{ success:
     return { success: false, error: err?.message || 'Failed to clear workspace' };
   }
 }
+
+export async function saveBackupSnapshotToServer(
+  tenantId: string,
+  orgName: string,
+  data: any,
+  filename?: string
+): Promise<{ success: boolean; filename?: string; size?: string; date?: string; downloadUrl?: string; message?: string; error?: string }> {
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch('/api/backup/save-snapshot', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ tenantId, orgName, data, filename })
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to save snapshot to server' };
+  }
+}
+
+export async function listServerBackupSnapshots(): Promise<{
+  success: boolean;
+  snapshots?: Array<{
+    id: string;
+    filename: string;
+    size: string;
+    sizeBytes: number;
+    mtime: number;
+    date: string;
+    downloadUrl: string;
+  }>;
+  error?: string;
+}> {
+  try {
+    const res = await fetch('/api/backup/list-json-snapshots');
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to list snapshots' };
+  }
+}
+
+export function getDirectBackupDownloadUrl(tenantId: string = 'org-admin'): string {
+  return `/api/backup/download-json?tenantId=${encodeURIComponent(tenantId)}`;
+}
+
+export function getMasterBackupDownloadUrl(): string {
+  return '/api/backup/download-master-json';
+}
+
 

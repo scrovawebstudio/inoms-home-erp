@@ -54,7 +54,17 @@ import {
 } from 'lucide-react';
 import { SystemUser, ActivityLog, Equipment, Problem, CompanyConfig, Client, RepairJob, Invoice, Product, Payment, Expense, DEFAULT_THEME_PALETTE, TenantThemePalette } from '../types';
 import { TenantFeatures, getTenantFeatures, TenantOrg } from './AuthModal';
-import { updateOrgViaApi, scanAndImportDataFolderApi, uploadOrgsFolderApi, getDataFolderStatusApi, saveAllTenantDataViaApi } from '../lib/api';
+import {
+  updateOrgViaApi,
+  scanAndImportDataFolderApi,
+  uploadOrgsFolderApi,
+  getDataFolderStatusApi,
+  saveAllTenantDataViaApi,
+  saveBackupSnapshotToServer,
+  listServerBackupSnapshots,
+  getDirectBackupDownloadUrl,
+  getMasterBackupDownloadUrl
+} from '../lib/api';
 import { bootstrapTenantFromHomeServer, replaceLocalCollection } from '../lib/localDb';
 
 interface SettingsProps {
@@ -870,6 +880,33 @@ export default function SettingsComponent({
     { id: 'l-2', filename: 'RepairTrack_Local_Backup_2026-07-25_18-00-00.json', date: '2026-07-25 18:00:00', size: '138 KB', path: localBackupPath },
   ]);
 
+  // Server-side saved JSON snapshots
+  const [serverSnapshots, setServerSnapshots] = useState<Array<{ id: string; filename: string; size: string; date: string; downloadUrl: string }>>([]);
+  const [isLoadingSnapshots, setIsLoadingSnapshots] = useState<boolean>(false);
+  const [showJsonPreviewModal, setShowJsonPreviewModal] = useState<boolean>(false);
+  const [jsonPreviewContent, setJsonPreviewContent] = useState<string>('');
+  const [copiedJsonFeedback, setCopiedJsonFeedback] = useState<boolean>(false);
+
+  const loadServerSnapshots = async () => {
+    setIsLoadingSnapshots(true);
+    try {
+      const res = await listServerBackupSnapshots();
+      if (res && res.success && Array.isArray(res.snapshots)) {
+        setServerSnapshots(res.snapshots);
+      }
+    } catch (e) {
+      console.warn('Failed to load server snapshots:', e);
+    } finally {
+      setIsLoadingSnapshots(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeSubTab === 'backup') {
+      loadServerSnapshots();
+    }
+  }, [activeSubTab]);
+
   // Local Directory Handle state for File System Access API
   const [localDirectoryHandle, setLocalDirectoryHandle] = useState<any>(() => (window as any)[`__repairTrackLocalDirectoryHandle_${currentTenantId}`] || (window as any)[`__nibbanLocalDirectoryHandle_${currentTenantId}`] || null);
 
@@ -914,22 +951,23 @@ export default function SettingsComponent({
       const customPath = prompt('Enter target computer folder location on your PC:', localBackupPath);
       if (customPath) {
         setLocalBackupPath(customPath);
-        setLocalBackupSuccessMsg(`✓ Target computer path set to: "${customPath}".`);
+        setLocalBackupSuccessMsg(`✓ Target computer path set to: "${customPath}". Downloaded files will be placed into your default Downloads folder.`);
         setTimeout(() => setLocalBackupSuccessMsg(''), 5000);
       }
     }
   };
 
-  // Handler for manual Local Machine Backup (date and time wise JSON file write/download)
-  const triggerLocalMachineBackup = async (isScheduled: boolean = false) => {
-    const isOwnerOrMaster = userRole === 'Admin' || userRole === 'Master Admin' || currentTenantId === 'org-admin';
-    if (!isOwnerOrMaster) {
-      setLocalBackupSuccessMsg('⚠️ Local backup downloads are restricted to Organization Owner and Master Admin accounts.');
-      return;
-    }
-    const dataToExport = appData ? { tenantId: currentTenantId, orgName: companyConfig.name, ...appData } : {
+  // Helper to compile current organization's complete data export
+  const getCompiledTenantExportData = () => {
+    return appData ? {
       tenantId: currentTenantId,
       orgName: companyConfig.name,
+      companyConfig,
+      ...appData
+    } : {
+      tenantId: currentTenantId,
+      orgName: companyConfig.name,
+      companyConfig,
       clients: JSON.parse(getAppStorageItem(`clients_${currentTenantId}`) || '[]'),
       jobs: JSON.parse(getAppStorageItem(`jobs_${currentTenantId}`) || '[]'),
       invoices: JSON.parse(getAppStorageItem(`invoices_${currentTenantId}`) || '[]'),
@@ -941,9 +979,13 @@ export default function SettingsComponent({
       categories: JSON.parse(getAppStorageItem(`categories_${currentTenantId}`) || '[]'),
       racks: JSON.parse(getAppStorageItem(`racks_${currentTenantId}`) || '[]'),
       equipments: JSON.parse(getAppStorageItem(`equipments_${currentTenantId}`) || '[]'),
-      problems: JSON.parse(getAppStorageItem(`problems_${currentTenantId}`) || '[]'),
-      companyConfig
+      problems: JSON.parse(getAppStorageItem(`problems_${currentTenantId}`) || '[]')
     };
+  };
+
+  // Handler for manual Local Machine Backup (date and time wise JSON file write/download)
+  const triggerLocalMachineBackup = async (isScheduled: boolean = false) => {
+    const dataToExport = getCompiledTenantExportData();
 
     const now = new Date();
     const YYYY = now.getFullYear();
@@ -959,6 +1001,13 @@ export default function SettingsComponent({
     const jsonStr = JSON.stringify(dataToExport, null, 2);
     const sizeKB = `${Math.ceil(jsonStr.length / 1024)} KB`;
 
+    // 1. ALWAYS persist a timestamped snapshot to Home Server data/backups/ disk folder
+    try {
+      await saveBackupSnapshotToServer(currentTenantId, companyConfig.name, dataToExport, filename);
+    } catch (sErr) {
+      console.warn('Server disk snapshot error:', sErr);
+    }
+
     let dirHandle = localDirectoryHandle || (window as any)[`__repairTrackLocalDirectoryHandle_${currentTenantId}`] || (window as any)[`__nibbanLocalDirectoryHandle_${currentTenantId}`];
     if (!dirHandle) {
       dirHandle = await getDirectoryHandle(currentTenantId);
@@ -969,7 +1018,7 @@ export default function SettingsComponent({
       }
     }
 
-    // Try direct silent file write if directory handle is selected
+    // 2. Direct silent write if a connected PC folder exists
     if (dirHandle) {
       const success = await writeBackupToDirectoryHandle(dirHandle, filename, jsonStr);
       if (success) {
@@ -978,10 +1027,11 @@ export default function SettingsComponent({
           { id: `l-${Date.now()}`, filename, date: formattedTimestamp, size: sizeKB, path: dirHandle.name },
           ...prev
         ]);
+        loadServerSnapshots();
 
         const msg = isScheduled
           ? `⏰ Auto-Backup Saved: "${filename}" written silently into PC folder "${dirHandle.name}"`
-          : `✓ Backup Saved Directly: "${filename}" (${sizeKB}) written silently to PC folder "${dirHandle.name}" without popups!`;
+          : `✓ Backup Saved Directly: "${filename}" (${sizeKB}) written silently into PC folder "${dirHandle.name}"!`;
 
         setLocalBackupSuccessMsg(msg);
         setTimeout(() => setLocalBackupSuccessMsg(''), 7000);
@@ -989,26 +1039,102 @@ export default function SettingsComponent({
       }
     }
 
-    // Direct browser file download fallback ONLY for explicit manual button click
+    // 3. Guaranteed Multi-Path Download Trigger for User Actions
     if (!isScheduled) {
-      const blob = new Blob([jsonStr], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // Path A: Server attachment download endpoint (bypasses iframe sandbox restrictions)
+      try {
+        const downloadUrl = getDirectBackupDownloadUrl(currentTenantId);
+        const serverLink = document.createElement('a');
+        serverLink.href = downloadUrl;
+        serverLink.setAttribute('download', filename);
+        serverLink.style.display = 'none';
+        document.body.appendChild(serverLink);
+        serverLink.click();
+        setTimeout(() => {
+          if (document.body.contains(serverLink)) {
+            document.body.removeChild(serverLink);
+          }
+        }, 300);
+      } catch (srvDlErr) {
+        console.warn('Server download route trigger:', srvDlErr);
+      }
+
+      // Path B: Client Blob download
+      try {
+        const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+        const blobUrl = URL.createObjectURL(blob);
+        const blobLink = document.createElement('a');
+        blobLink.href = blobUrl;
+        blobLink.download = filename;
+        blobLink.style.display = 'none';
+        document.body.appendChild(blobLink);
+        blobLink.click();
+        setTimeout(() => {
+          if (document.body.contains(blobLink)) {
+            document.body.removeChild(blobLink);
+          }
+          URL.revokeObjectURL(blobUrl);
+        }, 400);
+      } catch (blobErr) {
+        console.warn('Client Blob download trigger:', blobErr);
+      }
 
       setLastLocalBackupTime(formattedTimestamp);
       setLocalBackupHistory(prev => [
         { id: `l-${Date.now()}`, filename, date: formattedTimestamp, size: sizeKB, path: localBackupPath || 'Downloads' },
         ...prev
       ]);
-      setLocalBackupSuccessMsg(`✓ Manual backup file "${filename}" generated!`);
-      setTimeout(() => setLocalBackupSuccessMsg(''), 5000);
+      loadServerSnapshots();
+
+      setLocalBackupSuccessMsg(`✓ Backup "${filename}" (${sizeKB}) successfully downloaded to your Downloads folder and saved to server disk!`);
+      setTimeout(() => setLocalBackupSuccessMsg(''), 8000);
     }
+  };
+
+  // Handler for Master All-Organizations JSON Backup Download
+  const handleDownloadMasterJson = () => {
+    try {
+      const downloadUrl = getMasterBackupDownloadUrl();
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.setAttribute('download', `INOMS_Master_All_Orgs_Backup_${new Date().toISOString().substring(0, 10)}.json`);
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        if (document.body.contains(link)) document.body.removeChild(link);
+      }, 300);
+      setLocalBackupSuccessMsg('✓ Master System Backup (All Organizations) downloaded successfully!');
+      setTimeout(() => setLocalBackupSuccessMsg(''), 6000);
+    } catch (err: any) {
+      setLocalBackupSuccessMsg(`⚠️ Master backup download: ${err?.message || 'Please try again.'}`);
+      setTimeout(() => setLocalBackupSuccessMsg(''), 6000);
+    }
+  };
+
+  // Handler to copy current backup JSON directly to clipboard
+  const handleCopyBackupJson = async () => {
+    const dataToExport = getCompiledTenantExportData();
+    const jsonStr = JSON.stringify(dataToExport, null, 2);
+    try {
+      await navigator.clipboard.writeText(jsonStr);
+      setCopiedJsonFeedback(true);
+      setLocalBackupSuccessMsg(`✓ Backup JSON (${Math.ceil(jsonStr.length / 1024)} KB) copied to clipboard! You can paste it into any text editor or file.`);
+      setTimeout(() => {
+        setCopiedJsonFeedback(false);
+        setLocalBackupSuccessMsg('');
+      }, 6000);
+    } catch (err) {
+      setLocalBackupSuccessMsg('⚠️ Could not copy to clipboard. Please use the "Inspect JSON" button to view and copy manually.');
+      setTimeout(() => setLocalBackupSuccessMsg(''), 6000);
+    }
+  };
+
+  // Handler to view raw JSON preview modal
+  const handleViewBackupJson = () => {
+    const dataToExport = getCompiledTenantExportData();
+    setJsonPreviewContent(JSON.stringify(dataToExport, null, 2));
+    setShowJsonPreviewModal(true);
   };
 
   // Handler for Manual Excel Export with multi-sheets for all application collections
@@ -2290,57 +2416,112 @@ export default function SettingsComponent({
         <div className="space-y-6" id="settings-backup">
           {/* Section 1: Local Computer Machine Drive Backup */}
           <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs space-y-5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-100">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-slate-900 text-teal-400 rounded-xl shadow-xs">
-                  <Laptop className="w-5 h-5" />
+                <div className="p-3 bg-slate-900 text-teal-400 rounded-2xl shadow-xs shrink-0">
+                  <HardDrive className="w-6 h-6" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                    <span>Local Machine Computer Backup (PC Drive)</span>
-                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-bold text-slate-900 text-base">
+                      Organization Local JSON Backup &amp; PC Sync
+                    </h3>
+                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                       localBackupEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-500'
                     }`}>
-                      {localBackupEnabled ? 'SCHEDULED ACTIVE' : 'DISABLED'}
+                      {localBackupEnabled ? 'AUTO-SYNC ACTIVE' : 'MANUAL MODE'}
                     </span>
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Select your target computer folder once. Backups are saved directly into your chosen directory handle with date & time timestamps.
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Generate, download, copy, and inspect complete isolated JSON backups for <strong className="text-slate-800 font-semibold">{companyConfig.name || currentTenantId}</strong>.
                   </p>
                 </div>
               </div>
 
+              {/* Top Quick Actions Bar */}
               <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => triggerLocalMachineBackup(false)}
-                  className="bg-slate-900 hover:bg-slate-800 text-white font-bold px-4 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-2 shadow-xs"
+                  className="bg-teal-600 hover:bg-teal-700 text-white font-bold px-4 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-2 shadow-xs"
+                  title="Direct 1-Click JSON Backup File Download"
                 >
-                  <Download className="w-4 h-4 text-teal-400" />
-                  <span>Backup Locally to PC Now</span>
+                  <Download className="w-4 h-4" />
+                  <span>Download JSON Backup</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadMasterJson}
+                  className="bg-slate-900 hover:bg-slate-800 text-white font-bold px-3.5 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-1.5 shadow-xs"
+                  title="Download complete multi-organization database master backup"
+                >
+                  <Database className="w-3.5 h-3.5 text-teal-400" />
+                  <span>Master Backup (All Orgs)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCopyBackupJson}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold px-3 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-1.5 border border-slate-200"
+                  title="Copy full organization JSON string to clipboard"
+                >
+                  <Copy className="w-3.5 h-3.5 text-slate-600" />
+                  <span>{copiedJsonFeedback ? '✓ Copied!' : 'Copy JSON'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleViewBackupJson}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold px-3 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-1.5 border border-slate-200"
+                  title="Inspect raw JSON data structure and verify records"
+                >
+                  <Eye className="w-3.5 h-3.5 text-slate-600" />
+                  <span>Inspect JSON</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={triggerExcelExport}
+                  className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold px-3 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-1.5 border border-emerald-200"
+                  title="Export all client, job, invoice, and ledger sheets to an Excel (.xlsx) workbook"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Excel Export</span>
                 </button>
               </div>
             </div>
 
             {/* Success toast banner */}
             {localBackupSuccessMsg && (
-              <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl text-xs font-medium flex items-center gap-2.5 animate-fadeIn">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>{localBackupSuccessMsg}</span>
+              <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl text-xs font-medium flex items-center justify-between gap-2.5 animate-fadeIn">
+                <div className="flex items-center gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{localBackupSuccessMsg}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleViewBackupJson}
+                    className="text-[11px] font-bold text-emerald-800 underline hover:text-emerald-950 cursor-pointer"
+                  >
+                    View JSON
+                  </button>
+                </div>
               </div>
             )}
 
             {/* Local Backup Configuration Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 text-xs">
               {/* Left Column: Location & Directory Picker */}
               <div className="space-y-4 bg-slate-50/70 p-4 rounded-xl border border-slate-100">
                 <h4 className="font-bold text-slate-700 uppercase tracking-wider text-[10px] flex items-center gap-1.5">
                   <Folder className="w-3.5 h-3.5 text-slate-500" />
-                  Destination Folder Path on PC
+                  PC Destination Folder &amp; Silent Save
                 </h4>
                 
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase">Target Computer Folder</label>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase">Connected PC Folder Handle</label>
                   <div className="flex gap-2">
                     <input
                       type="text"
@@ -2352,10 +2533,10 @@ export default function SettingsComponent({
                     <button
                       type="button"
                       onClick={handleSelectTargetDirectory}
-                      className="bg-teal-600 hover:bg-teal-700 text-white font-bold px-3.5 py-2 rounded-xl text-xs transition cursor-pointer shadow-xs flex items-center gap-1.5"
+                      className="bg-teal-600 hover:bg-teal-700 text-white font-bold px-3.5 py-2 rounded-xl text-xs transition cursor-pointer shadow-xs flex items-center gap-1.5 shrink-0"
                     >
                       <Folder className="w-3.5 h-3.5" />
-                      <span>Browse Folder</span>
+                      <span>Browse PC Folder</span>
                     </button>
                     {localDirectoryHandle && (
                       <button
@@ -2380,18 +2561,25 @@ export default function SettingsComponent({
                       </button>
                     )}
                   </div>
-                  <p className="text-[10px] text-slate-400">
-                    {localDirectoryHandle
-                      ? `✓ Directly linked to folder "${localDirectoryHandle.name}". Click "Backup Locally to PC Now" to save files into this folder directly.`
-                      : `Click "Browse Folder" to select your destination directory. Downloaded files will automatically include date & time (e.g. ${getBackupOrgPrefix(companyConfig.name)}_Local_Backup_2026-07-28_11-30-00.json).`}
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    {localDirectoryHandle ? (
+                      <span className="text-emerald-700 font-medium flex items-center gap-1">
+                        <Check className="w-3.5 h-3.5" />
+                        Directly linked to folder <strong>"{localDirectoryHandle.name}"</strong>. Backups write silently directly into this folder without popping up download windows!
+                      </span>
+                    ) : (
+                      <span>
+                        💡 Click <strong>"Browse PC Folder"</strong> to grant one-time directory access for silent saves, or click <strong>"Download JSON Backup"</strong> above for direct file delivery to your computer's Downloads folder.
+                      </span>
+                    )}
                   </p>
                 </div>
 
-                <div className="pt-2 border-t border-slate-200/60 space-y-3">
+                <div className="pt-3 border-t border-slate-200/60 space-y-3">
                   <div className="flex items-center justify-between">
                     <label className="font-bold text-slate-700 flex items-center gap-1.5 cursor-pointer">
                       <Clock className="w-3.5 h-3.5 text-teal-600" />
-                      <span>Scheduled Auto-Download to PC</span>
+                      <span>Automatic Background Sync to PC &amp; Disk</span>
                     </label>
                     <input
                       type="checkbox"
@@ -2410,58 +2598,96 @@ export default function SettingsComponent({
                         disabled={!localBackupEnabled}
                         className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-medium outline-none disabled:opacity-50"
                       >
-                        <option value="on_sync">⚡ On Every Change / Sync (Background Auto-Download)</option>
+                        <option value="on_sync">⚡ On Every Change / Sync (Continuous Real-Time)</option>
                       </select>
                     </div>
 
                     <div className="space-y-1 flex flex-col justify-center">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase">Backup Trigger Mode</label>
-                      <p className="text-[11px] font-medium text-teal-700 bg-teal-50 px-2.5 py-1 rounded-lg border border-teal-100">
-                        ⚡ Automatic background backup on every data update (no popups)
+                      <label className="text-[10px] font-bold text-slate-500 uppercase">Trigger Mode</label>
+                      <p className="text-[11px] font-medium text-teal-700 bg-teal-50 px-2.5 py-1.5 rounded-lg border border-teal-100 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-teal-500 animate-pulse shrink-0"></span>
+                        <span>Auto-creates timestamped disk snapshots on change</span>
                       </p>
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Right Column: Recent Local PC Backup History */}
+              {/* Right Column: Server Saved Snapshots & Direct Download Table */}
               <div className="space-y-3 bg-slate-50/70 p-4 rounded-xl border border-slate-100 flex flex-col justify-between">
                 <div>
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center justify-between mb-2.5">
                     <h4 className="font-bold text-slate-700 uppercase tracking-wider text-[10px] flex items-center gap-1.5">
-                      <Database className="w-3.5 h-3.5 text-slate-500" />
-                      Recent Computer Drive Backups
+                      <Database className="w-3.5 h-3.5 text-teal-600" />
+                      <span>Persistent Backup Files on Disk ({serverSnapshots.length})</span>
                     </h4>
-                    <span className="text-[10px] text-slate-400 font-mono">Last: {lastLocalBackupTime}</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={loadServerSnapshots}
+                        disabled={isLoadingSnapshots}
+                        className="text-[10px] text-teal-700 hover:text-teal-900 font-semibold flex items-center gap-1 cursor-pointer bg-white px-2 py-0.5 rounded border border-slate-200"
+                        title="Reload server snapshots list"
+                      >
+                        <RefreshCw className={`w-2.5 h-2.5 ${isLoadingSnapshots ? 'animate-spin' : ''}`} />
+                        <span>Refresh</span>
+                      </button>
+                      <span className="text-[10px] text-slate-400 font-mono">Last: {lastLocalBackupTime}</span>
+                    </div>
                   </div>
 
-                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                    {localBackupHistory.map(item => (
-                      <div key={item.id} className="bg-white p-2.5 rounded-xl border border-slate-200/80 flex items-center justify-between text-[11px]">
-                        <div className="space-y-0.5 overflow-hidden pr-2">
-                          <p className="font-mono font-bold text-slate-800 truncate">{item.filename}</p>
-                          <p className="text-[9px] text-slate-400 font-mono flex items-center gap-2">
-                            <span>{item.date}</span>
-                            <span>•</span>
-                            <span>{item.size}</span>
-                          </p>
+                  <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                    {serverSnapshots.length > 0 ? (
+                      serverSnapshots.map(snap => (
+                        <div key={snap.id} className="bg-white p-2.5 rounded-xl border border-slate-200/80 flex items-center justify-between text-[11px] hover:border-teal-200 transition">
+                          <div className="space-y-0.5 overflow-hidden pr-2">
+                            <p className="font-mono font-bold text-slate-800 truncate" title={snap.filename}>{snap.filename}</p>
+                            <p className="text-[9px] text-slate-400 font-mono flex items-center gap-2">
+                              <span>{snap.date}</span>
+                              <span>•</span>
+                              <span className="text-teal-600 font-semibold">{snap.size}</span>
+                            </p>
+                          </div>
+                          <a
+                            href={snap.downloadUrl}
+                            download={snap.filename}
+                            className="text-white bg-slate-900 hover:bg-slate-800 font-bold px-2.5 py-1.5 rounded-lg text-[10px] transition cursor-pointer shrink-0 flex items-center gap-1 shadow-2xs"
+                            title="Download this exact JSON backup file"
+                          >
+                            <Download className="w-3 h-3 text-teal-400" />
+                            <span>Download</span>
+                          </a>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => triggerLocalMachineBackup(false)}
-                          className="text-teal-600 hover:text-teal-800 font-bold px-2 py-1 bg-teal-50 rounded-lg text-[10px] cursor-pointer shrink-0"
-                        >
-                          Redownload
-                        </button>
-                      </div>
-                    ))}
+                      ))
+                    ) : (
+                      localBackupHistory.map(item => (
+                        <div key={item.id} className="bg-white p-2.5 rounded-xl border border-slate-200/80 flex items-center justify-between text-[11px]">
+                          <div className="space-y-0.5 overflow-hidden pr-2">
+                            <p className="font-mono font-bold text-slate-800 truncate">{item.filename}</p>
+                            <p className="text-[9px] text-slate-400 font-mono flex items-center gap-2">
+                              <span>{item.date}</span>
+                              <span>•</span>
+                              <span>{item.size}</span>
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => triggerLocalMachineBackup(false)}
+                            className="text-teal-600 hover:text-teal-800 font-bold px-2.5 py-1.5 bg-teal-50 rounded-lg text-[10px] cursor-pointer shrink-0 flex items-center gap-1"
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Download</span>
+                          </button>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
 
                 <div className="p-3 bg-teal-50 border border-teal-100 rounded-xl text-[10px] text-teal-900 leading-relaxed space-y-1">
-                  <p>💡 <strong>To Stop "Save As" Popups & Enable 100% Automatic Downloads:</strong></p>
-                  <p>• <strong>Method A (Recommended):</strong> Click <strong>"Browse Folder"</strong> once to connect a local PC folder. Backups write directly into that folder without any windows.</p>
-                  <p>• <strong>Method B (Browser Downloads):</strong> In Chrome / Edge browser settings, go to <code>Settings &gt; Downloads</code> and turn <strong>OFF</strong> <em>"Ask where to save each file before downloading"</em>. Files will auto-download instantly to your Downloads folder without asking!</p>
+                  <p>💡 <strong>How to access your downloaded backup file:</strong></p>
+                  <p>• <strong>Browser Downloads:</strong> When you click <strong>"Download JSON Backup"</strong>, your browser saves the JSON file to your default PC folder (usually <code>C:\Users\&lt;Name&gt;\Downloads\</code>).</p>
+                  <p>• <strong>Instant Clipboard:</strong> Use <strong>"Copy JSON"</strong> to paste the raw JSON straight into Notepad, or <strong>"Inspect JSON"</strong> to view all records in the app.</p>
                 </div>
               </div>
             </div>

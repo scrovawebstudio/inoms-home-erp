@@ -18,8 +18,14 @@ app.get('/api/health', (_req, res) => {
   res.status(200).json({ status: 'ok', postgres: isPostgresActive(), time: new Date().toISOString() });
 });
 
-// Security & Body parsing middleware
-app.use((_req, res, next) => {
+// Security, CORS & Body parsing middleware
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Tenant-Id');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('X-XSS-Protection', '1; mode=block');
@@ -27,6 +33,7 @@ app.use((_req, res, next) => {
 });
 
 app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Mount all authoritative Home Server API endpoints under /api
 app.use('/api', apiRouter);
