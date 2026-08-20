@@ -219,7 +219,7 @@ export async function getValidTenantToken(tenantId: string): Promise<string | nu
   } catch (e) {}
 
   const refreshedToken = await ensureTenantSessionViaApi(tenantId, savedUser);
-  return refreshedToken || getAuthToken();
+  return refreshedToken || currentToken || getAuthToken();
 }
 
 export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
@@ -305,7 +305,7 @@ export async function saveAllTenantDataViaApi(
       body: JSON.stringify({ tenantId, companyConfig, collections })
     });
 
-    if (res.status === 401) {
+    if (res.status === 401 || res.status === 403) {
       // Re-issue token and retry once
       const newToken = await ensureTenantSessionViaApi(tenantId);
       if (newToken) {
@@ -402,7 +402,7 @@ export async function saveTenantCollectionViaApi(
           body: JSON.stringify({ tenantId, entity, items, config })
         });
 
-        if (res.status === 401) {
+        if (res.status === 401 || res.status === 403) {
           const newToken = await ensureTenantSessionViaApi(tenantId);
           if (newToken) {
             headers['Authorization'] = `Bearer ${newToken}`;
