@@ -304,7 +304,9 @@ export interface CompanyConfig {
   localBackupEnabled?: boolean;
   localBackupPath?: string;
   localBackupScheduleTime?: string;
-  localBackupFrequency?: 'on_sync';
+  localBackupFrequency?: 'on_change' | 'on_sync' | 'minutes' | 'hours' | 'custom' | 'manual' | 'daily' | 'mins_30' | 'hourly_1' | 'hourly_2' | 'hourly_3' | 'hourly_4' | 'hourly_5' | 'hourly_6' | 'hourly_12';
+  localBackupInterval?: number;
+  localBackupScheduleTimes?: string[];
   lastLocalBackupTime?: string;
   themePalette?: TenantThemePalette;
   appName?: string;

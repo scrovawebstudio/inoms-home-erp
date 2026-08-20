@@ -375,7 +375,11 @@ export default function Billing({
   }, [initialJobForInvoice, invoices, onClearInitialJobForInvoice]);
 
   // Filter invoices strictly by tenant context
-  const filteredInvoices = invoices.filter(inv => {
+  const filteredInvoices = [...invoices].sort((first, second) => {
+    const firstTime = new Date(`${first.date || ''}T${first.time || '00:00:00'}`).getTime();
+    const secondTime = new Date(`${second.date || ''}T${second.time || '00:00:00'}`).getTime();
+    return secondTime - firstTime || second.id.localeCompare(first.id);
+  }).filter(inv => {
     const matchesSearch = inv.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
       inv.clientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (inv.linkedJobId && inv.linkedJobId.toLowerCase().includes(searchTerm.toLowerCase()));

@@ -1805,7 +1805,13 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                     <input
                       type="checkbox"
                       checked={editAllowLiveQueue}
-                      onChange={(e) => setEditAllowLiveQueue(e.target.checked)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setEditAllowLiveQueue(checked);
+                        setEditAllowedModules((modules) => checked
+                          ? modules.includes('live_queue') ? modules : [...modules, 'live_queue']
+                          : modules.filter((module) => module !== 'live_queue'));
+                      }}
                       className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500 cursor-pointer"
                     />
                   </label>
@@ -1895,10 +1901,14 @@ Login Page: Access with registered mobile and PIN on the portal.`;
                             type="checkbox"
                             checked={isChecked}
                             onChange={(e) => {
-                              if (e.target.checked) {
-                                setEditAllowedModules([...editAllowedModules, mod.id]);
+                              const checked = e.target.checked;
+                              if (checked) {
+                                setEditAllowedModules((modules) => modules.includes(mod.id) ? modules : [...modules, mod.id]);
                               } else {
-                                setEditAllowedModules(editAllowedModules.filter((m) => m !== mod.id));
+                                setEditAllowedModules((modules) => modules.filter((module) => module !== mod.id));
+                              }
+                              if (mod.id === 'live_queue') {
+                                setEditAllowLiveQueue(checked);
                               }
                             }}
                             className="w-3.5 h-3.5 text-teal-600 rounded cursor-pointer"

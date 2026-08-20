@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import MicrosoftAuthQR from './MicrosoftAuthQR';
-import { saveDirectoryHandle, getDirectoryHandle, removeDirectoryHandle, writeBackupToDirectoryHandle } from '../lib/directoryHandleStorage';
+import { saveDirectoryHandle, getDirectoryHandle, removeDirectoryHandle, writeBackupToDirectoryHandle, requestFolderPermission } from '../lib/directoryHandleStorage';
 import { getBackupOrgPrefix } from '../lib/backupUtils';
 import { getAppStorageItem, setAppStorageItem, removeAppStorageItem } from '../lib/storage';
 import { clearOrgWorkspaceApi } from '../lib/api';
@@ -63,7 +63,7 @@ import {
   saveBackupSnapshotToServer,
   listServerBackupSnapshots,
   getDirectBackupDownloadUrl,
-  getMasterBackupDownloadUrl
+  fetchOwnOrganizationPinViaApi
 } from '../lib/api';
 import { bootstrapTenantFromHomeServer, replaceLocalCollection } from '../lib/localDb';
 
@@ -101,11 +101,15 @@ interface SettingsProps {
     payments: Payment[];
     expenses: Expense[];
     users?: SystemUser[];
+    logs?: ActivityLog[];
     categories?: any[];
     racks?: any[];
     equipments?: Equipment[];
     problems?: Problem[];
     companyConfig?: CompanyConfig;
+    organization?: TenantOrg;
+    backupVersion?: number;
+    fontSize?: string;
   };
   onRestoreData?: (data: any) => void;
 }
@@ -168,6 +172,7 @@ export default function SettingsComponent({
   const isConfigDirty = JSON.stringify(localConfig) !== JSON.stringify(companyConfig);
   const isFontDirty = localFontSize !== fontSize;
   const isDirty = isConfigDirty || isFontDirty;
+  const homeServerSyncEnabled = tenantFeatures?.allowHomeServerSync !== false;
 
   const handleSaveAllSettings = async () => {
     setIsSavingSettings(true);
@@ -177,7 +182,7 @@ export default function SettingsComponent({
       if (localFontSize !== fontSize) {
         onChangeFontSize(localFontSize);
       }
-      if (currentTenantId) {
+      if (currentTenantId && homeServerSyncEnabled) {
         const { companyConfig: _cfg, ...collectionsOnly } = (appData || {}) as any;
         await saveAllTenantDataViaApi(currentTenantId, localConfig, collectionsOnly || {}).catch(() => {});
       }
@@ -216,6 +221,10 @@ export default function SettingsComponent({
     message: string;
   } | null>(null);
   const [dataFolderStatus, setDataFolderStatus] = useState<any>(null);
+  const [localBackupFiles, setLocalBackupFiles] = useState<Array<{ name: string; path: string; modifiedAt: number; data: any }>>([]);
+  const [isScanningLocalBackups, setIsScanningLocalBackups] = useState<boolean>(false);
+  const [localScanResult, setLocalScanResult] = useState<{ scannedFiles: number; foundFiles: number; message: string; error?: boolean } | null>(null);
+  const localBackupFolderInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadDataFolderStatus = async () => {
     try {
@@ -231,8 +240,6 @@ export default function SettingsComponent({
       loadDataFolderStatus();
     }
   }, [activeSubTab]);
-
-  const localOrgsFolderInputRef = useRef<HTMLInputElement | null>(null);
 
   const applyImportedData = async (res: any) => {
     if (!res || !res.success) return;
@@ -339,7 +346,7 @@ export default function SettingsComponent({
             // Then: push to Home Server if tenant config enables cloud sync
             let apiResult: any = null;
             try {
-              const shouldSyncToServer = cfg?.cloudSyncEnabled === true || (cfg?.syncMode && cfg.syncMode !== 'offline');
+              const shouldSyncToServer = homeServerSyncEnabled && (cfg?.cloudSyncEnabled === true || (cfg?.syncMode && cfg.syncMode !== 'offline'));
               if (shouldSyncToServer) {
                 apiResult = await saveAllTenantDataViaApi(tid, cfg || {}, tenantCollections);
               } else {
@@ -412,7 +419,7 @@ export default function SettingsComponent({
 
           // Then push to Home Server only if tenant config allows cloud sync
           try {
-            const shouldSyncToServer = cfg?.cloudSyncEnabled === true || (cfg?.syncMode && cfg.syncMode !== 'offline');
+            const shouldSyncToServer = homeServerSyncEnabled && (cfg?.cloudSyncEnabled === true || (cfg?.syncMode && cfg.syncMode !== 'offline'));
             if (shouldSyncToServer) {
               await saveAllTenantDataViaApi(currentTenantId, cfg || {}, tenantCollections);
             } else {
@@ -459,57 +466,69 @@ export default function SettingsComponent({
     }
   };
 
-  const handleUploadLocalOrgsFolder = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const fileList = e.target.files;
+  const handleScanLocalBackups = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = event.target.files;
     if (!fileList || fileList.length === 0) return;
-    setIsScanningDataFolder(true);
-    setDataFolderResult(null);
+
+    setIsScanningLocalBackups(true);
+    setLocalBackupFiles([]);
+    setLocalScanResult(null);
 
     try {
-      const jsonFiles: { path: string; content: string }[] = [];
-      for (let i = 0; i < fileList.length; i++) {
-        const f = fileList[i];
-        if (f.name.toLowerCase().endsWith('.json')) {
-          const relPath = f.webkitRelativePath || f.name;
-          const text = await f.text();
-          if (text && text.trim()) {
-            jsonFiles.push({ path: relPath, content: text });
+      const files: Array<{ name: string; path: string; modifiedAt: number; data: any }> = [];
+      for (let index = 0; index < fileList.length; index += 1) {
+        const file = fileList[index];
+        if (!file.name.toLowerCase().endsWith('.json')) continue;
+        try {
+          const data = JSON.parse(await file.text());
+          const hasBackupShape = data && typeof data === 'object' && (
+            data.tenantId || data.orgName || data.companyConfig || data.clients || data.jobs || data.invoices
+          );
+          if (hasBackupShape) {
+            files.push({
+              name: file.name,
+              path: file.webkitRelativePath || file.name,
+              modifiedAt: file.lastModified,
+              data
+            });
           }
+        } catch {
+          // Ignore unrelated or malformed JSON files in the selected folder.
         }
       }
 
-      if (jsonFiles.length === 0) {
-        setDataFolderResult({
-          success: false,
-          filesScanned: fileList.length,
-          filesImported: [],
-          counts: {},
-          message: 'No .json files found in the selected folder hierarchy.'
-        });
-        setIsScanningDataFolder(false);
-        return;
-      }
-
-      const res = await uploadOrgsFolderApi(jsonFiles);
-      setDataFolderResult(res);
-      await loadDataFolderStatus();
-      if (res.success) {
-        await applyImportedData(res);
-      }
+      files.sort((first, second) => second.modifiedAt - first.modifiedAt);
+      const message = `${files.length} valid backup file(s) found in ${fileList.length} selected local file(s).`;
+      setLocalBackupFiles(files);
+      setLocalScanResult({ scannedFiles: fileList.length, foundFiles: files.length, message });
+      setLocalBackupSuccessMsg(message);
+      setTimeout(() => setLocalBackupSuccessMsg(''), 6000);
     } catch (err: any) {
-      setDataFolderResult({
-        success: false,
-        filesScanned: 0,
-        filesImported: [],
-        counts: {},
-        message: err?.message || 'Failed to upload and import organizations folder'
-      });
+      const message = `Unable to scan selected local backup files: ${err?.message || 'Please try again.'}`;
+      setLocalScanResult({ scannedFiles: fileList.length, foundFiles: 0, message, error: true });
+      setLocalBackupSuccessMsg(message);
+      setTimeout(() => setLocalBackupSuccessMsg(''), 6000);
     } finally {
-      setIsScanningDataFolder(false);
-      if (localOrgsFolderInputRef.current) {
-        localOrgsFolderInputRef.current.value = '';
-      }
+      setIsScanningLocalBackups(false);
+      event.target.value = '';
     }
+  };
+
+  const restoreLocalBackup = async (backup: { name: string; data: any }) => {
+    if (!backup.data || typeof backup.data !== 'object') return;
+    if (!window.confirm(`Restore the latest organisation backup "${backup.name}"? Current local data will be replaced.`)) return;
+    if (onRestoreData) {
+      onRestoreData(backup.data);
+      return;
+    }
+    const parsed = backup.data;
+    const collections = ['clients', 'jobs', 'invoices', 'products', 'ledger', 'payments', 'expenses', 'users', 'categories', 'racks', 'equipments', 'problems'];
+    collections.forEach((collection) => {
+      if (parsed[collection]) setAppStorageItem(`${collection}_${currentTenantId}`, JSON.stringify(parsed[collection]));
+    });
+    if (parsed.companyConfig) setAppStorageItem(`company_config_${currentTenantId}`, JSON.stringify(parsed.companyConfig));
+    setLocalBackupSuccessMsg(`Latest backup "${backup.name}" restored. Refreshing organisation data...`);
+    setTimeout(() => window.location.reload(), 1200);
   };
 
   useEffect(() => {
@@ -517,6 +536,15 @@ export default function SettingsComponent({
       setOrgPinInput(activeTenant.pin || '');
     }
   }, [activeTenant?.pin]);
+
+  useEffect(() => {
+    if (!currentTenantId || currentTenantId === 'org-admin' || tenantFeatures?.allowHomeServerSync === false) return;
+    fetchOwnOrganizationPinViaApi(currentTenantId).then((res) => {
+      if (res.success && res.pin !== undefined) {
+        setOrgPinInput(res.pin);
+      }
+    }).catch(() => {});
+  }, [currentTenantId, tenantFeatures?.allowHomeServerSync]);
 
   const handleSaveOrgPin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -863,10 +891,16 @@ export default function SettingsComponent({
     updateLocalConfig({ localBackupScheduleTime: val });
   };
 
-  const localBackupFrequency = 'on_sync';
+  const localBackupFrequency = localConfig.localBackupFrequency || 'on_change';
   const setLocalBackupFrequency = (val: CompanyConfig['localBackupFrequency']) => {
     updateLocalConfig({ localBackupFrequency: val });
   };
+  const localBackupInterval = localConfig.localBackupInterval || 5;
+  const setLocalBackupInterval = (val: number) => updateLocalConfig({ localBackupInterval: val });
+  const localBackupScheduleTimes = localConfig.localBackupScheduleTimes?.length
+    ? localConfig.localBackupScheduleTimes
+    : [localBackupScheduleTime];
+  const setLocalBackupScheduleTimes = (times: string[]) => updateLocalConfig({ localBackupScheduleTimes: times });
 
   const lastLocalBackupTime = localConfig.lastLocalBackupTime || 'None';
   const setLastLocalBackupTime = (val: string) => {
@@ -883,15 +917,12 @@ export default function SettingsComponent({
   // Server-side saved JSON snapshots
   const [serverSnapshots, setServerSnapshots] = useState<Array<{ id: string; filename: string; size: string; date: string; downloadUrl: string }>>([]);
   const [isLoadingSnapshots, setIsLoadingSnapshots] = useState<boolean>(false);
-  const [showJsonPreviewModal, setShowJsonPreviewModal] = useState<boolean>(false);
-  const [jsonPreviewContent, setJsonPreviewContent] = useState<string>('');
-  const [copiedJsonFeedback, setCopiedJsonFeedback] = useState<boolean>(false);
 
   const loadServerSnapshots = async () => {
     setIsLoadingSnapshots(true);
     try {
       const res = await listServerBackupSnapshots();
-      if (res && res.success && Array.isArray(res.snapshots)) {
+      if (homeServerSyncEnabled && res && res.success && Array.isArray(res.snapshots)) {
         setServerSnapshots(res.snapshots);
       }
     } catch (e) {
@@ -903,9 +934,10 @@ export default function SettingsComponent({
 
   useEffect(() => {
     if (activeSubTab === 'backup') {
-      loadServerSnapshots();
+      if (homeServerSyncEnabled) loadServerSnapshots();
+      else setServerSnapshots([]);
     }
-  }, [activeSubTab]);
+  }, [activeSubTab, homeServerSyncEnabled]);
 
   // Local Directory Handle state for File System Access API
   const [localDirectoryHandle, setLocalDirectoryHandle] = useState<any>(() => (window as any)[`__repairTrackLocalDirectoryHandle_${currentTenantId}`] || (window as any)[`__nibbanLocalDirectoryHandle_${currentTenantId}`] || null);
@@ -934,6 +966,12 @@ export default function SettingsComponent({
         // @ts-ignore
         const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
         if (handle) {
+          const permissionGranted = await requestFolderPermission(handle);
+          if (!permissionGranted) {
+            setLocalBackupSuccessMsg('PC folder permission was not granted. Automatic backups cannot write to this folder.');
+            setTimeout(() => setLocalBackupSuccessMsg(''), 6000);
+            return;
+          }
           await saveDirectoryHandle(handle, currentTenantId);
           (window as any)[`__repairTrackLocalDirectoryHandle_${currentTenantId}`] = handle;
           (window as any)[`__nibbanLocalDirectoryHandle_${currentTenantId}`] = handle;
@@ -962,11 +1000,15 @@ export default function SettingsComponent({
     return appData ? {
       tenantId: currentTenantId,
       orgName: companyConfig.name,
+      backupVersion: 1,
       companyConfig,
       ...appData
     } : {
       tenantId: currentTenantId,
       orgName: companyConfig.name,
+      backupVersion: 1,
+      organization: activeTenant,
+      fontSize,
       companyConfig,
       clients: JSON.parse(getAppStorageItem(`clients_${currentTenantId}`) || '[]'),
       jobs: JSON.parse(getAppStorageItem(`jobs_${currentTenantId}`) || '[]'),
@@ -976,6 +1018,7 @@ export default function SettingsComponent({
       payments: JSON.parse(getAppStorageItem(`payments_${currentTenantId}`) || '[]'),
       expenses: JSON.parse(getAppStorageItem(`expenses_${currentTenantId}`) || '[]'),
       users: JSON.parse(getAppStorageItem(`users_${currentTenantId}`) || '[]'),
+      logs,
       categories: JSON.parse(getAppStorageItem(`categories_${currentTenantId}`) || '[]'),
       racks: JSON.parse(getAppStorageItem(`racks_${currentTenantId}`) || '[]'),
       equipments: JSON.parse(getAppStorageItem(`equipments_${currentTenantId}`) || '[]'),
@@ -1002,10 +1045,12 @@ export default function SettingsComponent({
     const sizeKB = `${Math.ceil(jsonStr.length / 1024)} KB`;
 
     // 1. ALWAYS persist a timestamped snapshot to Home Server data/backups/ disk folder
-    try {
-      await saveBackupSnapshotToServer(currentTenantId, companyConfig.name, dataToExport, filename);
-    } catch (sErr) {
-      console.warn('Server disk snapshot error:', sErr);
+    if (homeServerSyncEnabled) {
+      try {
+        await saveBackupSnapshotToServer(currentTenantId, companyConfig.name, dataToExport, filename);
+      } catch (sErr) {
+        console.warn('Server disk snapshot error:', sErr);
+      }
     }
 
     let dirHandle = localDirectoryHandle || (window as any)[`__repairTrackLocalDirectoryHandle_${currentTenantId}`] || (window as any)[`__nibbanLocalDirectoryHandle_${currentTenantId}`];
@@ -1042,21 +1087,23 @@ export default function SettingsComponent({
     // 3. Guaranteed Multi-Path Download Trigger for User Actions
     if (!isScheduled) {
       // Path A: Server attachment download endpoint (bypasses iframe sandbox restrictions)
-      try {
-        const downloadUrl = getDirectBackupDownloadUrl(currentTenantId);
-        const serverLink = document.createElement('a');
-        serverLink.href = downloadUrl;
-        serverLink.setAttribute('download', filename);
-        serverLink.style.display = 'none';
-        document.body.appendChild(serverLink);
-        serverLink.click();
-        setTimeout(() => {
-          if (document.body.contains(serverLink)) {
-            document.body.removeChild(serverLink);
-          }
-        }, 300);
-      } catch (srvDlErr) {
-        console.warn('Server download route trigger:', srvDlErr);
+      if (homeServerSyncEnabled) {
+        try {
+          const downloadUrl = getDirectBackupDownloadUrl(currentTenantId);
+          const serverLink = document.createElement('a');
+          serverLink.href = downloadUrl;
+          serverLink.setAttribute('download', filename);
+          serverLink.style.display = 'none';
+          document.body.appendChild(serverLink);
+          serverLink.click();
+          setTimeout(() => {
+            if (document.body.contains(serverLink)) {
+              document.body.removeChild(serverLink);
+            }
+          }, 300);
+        } catch (srvDlErr) {
+          console.warn('Server download route trigger:', srvDlErr);
+        }
       }
 
       // Path B: Client Blob download
@@ -1089,52 +1136,6 @@ export default function SettingsComponent({
       setLocalBackupSuccessMsg(`✓ Backup "${filename}" (${sizeKB}) successfully downloaded to your Downloads folder and saved to server disk!`);
       setTimeout(() => setLocalBackupSuccessMsg(''), 8000);
     }
-  };
-
-  // Handler for Master All-Organizations JSON Backup Download
-  const handleDownloadMasterJson = () => {
-    try {
-      const downloadUrl = getMasterBackupDownloadUrl();
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.setAttribute('download', `INOMS_Master_All_Orgs_Backup_${new Date().toISOString().substring(0, 10)}.json`);
-      link.style.display = 'none';
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => {
-        if (document.body.contains(link)) document.body.removeChild(link);
-      }, 300);
-      setLocalBackupSuccessMsg('✓ Master System Backup (All Organizations) downloaded successfully!');
-      setTimeout(() => setLocalBackupSuccessMsg(''), 6000);
-    } catch (err: any) {
-      setLocalBackupSuccessMsg(`⚠️ Master backup download: ${err?.message || 'Please try again.'}`);
-      setTimeout(() => setLocalBackupSuccessMsg(''), 6000);
-    }
-  };
-
-  // Handler to copy current backup JSON directly to clipboard
-  const handleCopyBackupJson = async () => {
-    const dataToExport = getCompiledTenantExportData();
-    const jsonStr = JSON.stringify(dataToExport, null, 2);
-    try {
-      await navigator.clipboard.writeText(jsonStr);
-      setCopiedJsonFeedback(true);
-      setLocalBackupSuccessMsg(`✓ Backup JSON (${Math.ceil(jsonStr.length / 1024)} KB) copied to clipboard! You can paste it into any text editor or file.`);
-      setTimeout(() => {
-        setCopiedJsonFeedback(false);
-        setLocalBackupSuccessMsg('');
-      }, 6000);
-    } catch (err) {
-      setLocalBackupSuccessMsg('⚠️ Could not copy to clipboard. Please use the "Inspect JSON" button to view and copy manually.');
-      setTimeout(() => setLocalBackupSuccessMsg(''), 6000);
-    }
-  };
-
-  // Handler to view raw JSON preview modal
-  const handleViewBackupJson = () => {
-    const dataToExport = getCompiledTenantExportData();
-    setJsonPreviewContent(JSON.stringify(dataToExport, null, 2));
-    setShowJsonPreviewModal(true);
   };
 
   // Handler for Manual Excel Export with multi-sheets for all application collections
@@ -1415,25 +1416,6 @@ export default function SettingsComponent({
     e.target.value = '';
   };
 
-  // Auto-backup interval checking effect for Local Machine Backup
-  useEffect(() => {
-    if (!localBackupEnabled || !localBackupScheduleTime) return;
-    const isOwnerOrMaster = userRole === 'Admin' || userRole === 'Master Admin' || currentTenantId === 'org-admin';
-    if (!isOwnerOrMaster) return;
-
-    const interval = setInterval(() => {
-      const now = new Date();
-      const currentHHMM = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      
-      // If current time matches scheduled time and seconds <= 1, fire auto-download
-      if (currentHHMM === localBackupScheduleTime && now.getSeconds() === 0) {
-        triggerLocalMachineBackup(true);
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [localBackupEnabled, localBackupScheduleTime, localBackupPath]);
-
   // Admin states
   const [showAddUserModal, setShowAddUserModal] = useState(false);
   const [editingUser, setEditingUser] = useState<SystemUser | null>(null);
@@ -1569,7 +1551,7 @@ export default function SettingsComponent({
         )}
         
         {/* Horizontal Navigation Menu */}
-        <div className="flex border-b border-slate-100 mt-2 gap-2 text-xs font-bold overflow-x-auto pb-1">
+        <div className="flex border-b border-slate-100 mt-1 gap-1 text-[11px] font-bold overflow-x-auto pb-0.5">
           {(((userRole === 'Admin' || userRole === 'Master Admin' || !currentUser || currentUser.role === 'Admin' || currentTenantId === 'org-admin')
             ? ['profile', 'theme', 'backup', 'masters', 'admin']
             : ['profile', 'theme', 'backup']
@@ -1577,7 +1559,7 @@ export default function SettingsComponent({
             <button
               key={tab}
               onClick={() => setActiveSubTab(tab)}
-              className={`pb-2.5 px-3 uppercase tracking-wider transition border-b-2 cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+              className={`pb-1.5 px-2.5 uppercase tracking-wider transition border-b-2 cursor-pointer whitespace-nowrap flex items-center gap-1 ${
                 activeSubTab === tab
                   ? 'border-teal-600 text-teal-600 font-black'
                   : 'border-transparent text-slate-400 hover:text-slate-700'
@@ -2028,6 +2010,69 @@ export default function SettingsComponent({
                 </div>
               </div>
 
+              {/* Organization Security PIN under the authenticator setup */}
+              <div className="border border-slate-200 rounded-2xl p-5 bg-white space-y-4 shadow-2xs">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-slate-100 text-teal-600 rounded-xl border border-slate-200">
+                      <Key className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                        Organization Security PIN
+                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
+                          orgPinInput.trim().length > 0
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                        }`}>
+                          {orgPinInput.trim().length > 0 ? `PIN Active (${orgPinInput.trim().length} digits)` : 'TOTP Only'}
+                        </span>
+                      </h3>
+                      <p className="text-[11px] text-slate-500">Optional static access code for organisation owner login.</p>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold bg-slate-100 text-slate-700 px-2 py-1 rounded-lg border border-slate-200">
+                    {activeTenant?.code || companyConfig.name || 'ORG'}
+                  </span>
+                </div>
+
+                {orgPinStatusMsg && (
+                  <div className={`p-2.5 rounded-lg text-[11px] font-medium flex items-center gap-2 ${
+                    orgPinStatusMsg.isError ? 'bg-rose-50 text-rose-800 border border-rose-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                  }`}>
+                    {orgPinStatusMsg.isError ? <AlertCircle className="w-3.5 h-3.5 shrink-0 text-rose-600" /> : <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-600" />}
+                    <span>{orgPinStatusMsg.text}</span>
+                  </div>
+                )}
+
+                <form onSubmit={handleSaveOrgPin} className="flex flex-col sm:flex-row sm:items-end gap-2.5">
+                  <div className="flex-1">
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Security PIN</label>
+                    <div className="relative flex items-center">
+                      <input
+                        type={showOrgPin ? 'text' : 'password'}
+                        value={orgPinInput}
+                        onChange={(e) => setOrgPinInput(e.target.value)}
+                        placeholder="4 to 6 digits, or leave blank"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 pr-10 text-slate-800 font-mono text-sm tracking-widest outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-100 transition"
+                      />
+                      <button type="button" onClick={() => setShowOrgPin(!showOrgPin)} title={showOrgPin ? 'Hide PIN' : 'Show PIN'} className="absolute right-2 p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer">
+                        {showOrgPin ? <EyeOff className="w-4 h-4 text-teal-600" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                  <button type="submit" disabled={isSavingOrgPin} className="bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs py-2.5 px-4 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50">
+                    {isSavingOrgPin ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                    <span>{isSavingOrgPin ? 'Saving...' : 'Save PIN'}</span>
+                  </button>
+                  {orgPinInput.trim().length > 0 && (
+                    <button type="button" onClick={() => { setOrgPinInput(''); setTimeout(() => handleSaveOrgPin(), 50); }} disabled={isSavingOrgPin} className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs py-2.5 px-3 rounded-xl transition cursor-pointer disabled:opacity-50">
+                      Clear
+                    </button>
+                  )}
+                </form>
+              </div>
+
               {/* Application Appearance & Typography Customization */}
               <div className="border border-slate-200 rounded-2xl p-5 bg-slate-50/50 space-y-4">
                 <div>
@@ -2374,19 +2419,21 @@ export default function SettingsComponent({
                 </div>
                 <div>
                   <h3 className="font-extrabold text-base text-white tracking-tight flex items-center gap-2">
-                    <span>Home Server Auto-Sync Active</span>
+                    <span>{homeServerSyncEnabled ? 'Home Server Auto-Sync Active' : 'Local-only Storage Active'}</span>
                     <span className="bg-emerald-400/20 text-emerald-300 text-[10px] font-black px-2.5 py-0.5 rounded-full border border-emerald-400/30">
                       ✓ Staff Account Linked
                     </span>
                   </h3>
                   <p className="text-xs text-slate-300 mt-0.5">
-                    Your technician/staff account continuously syncs job cards, invoices, client ledgers, and stock logs directly to the Organization Home Server database.
+                    {homeServerSyncEnabled
+                      ? 'Your technician/staff account continuously syncs job cards, invoices, client ledgers, and stock logs directly to the Organization Home Server database.'
+                      : 'This organisation is operating locally. Job cards, invoices, client ledgers, and stock logs are saved on this device.'}
                   </p>
                 </div>
               </div>
 
               <div className="bg-white/10 p-4 rounded-xl border border-white/10 text-xs text-slate-200 space-y-2">
-                <p>• <strong>Real-Time Organization Updates:</strong> Everything you enter on your machine automatically updates the Organization Owner account via the Home Server backend.</p>
+                <p>• <strong>{homeServerSyncEnabled ? 'Real-Time Organization Updates' : 'Local Data Protection'}:</strong> {homeServerSyncEnabled ? 'Everything you enter on your machine automatically updates the Organization Owner account via the Home Server backend.' : 'Everything you enter is kept in this organisation\'s local storage until you export or back it up locally.'}</p>
                 <p>• <strong>Data Security Policy:</strong> Local JSON file downloads are restricted to Organization Owner accounts to prevent unauthorized data leaks from staff machines.</p>
               </div>
 
@@ -2394,13 +2441,15 @@ export default function SettingsComponent({
                 <button
                   type="button"
                   onClick={() => {
-                    setLocalBackupSuccessMsg('✓ Synced latest staff entries directly with Home Server database!');
+                    setLocalBackupSuccessMsg(homeServerSyncEnabled
+                      ? '✓ Synced latest staff entries directly with Home Server database!'
+                      : '✓ Latest staff entries are safely stored on this device.');
                     setTimeout(() => setLocalBackupSuccessMsg(''), 5000);
                   }}
                   className="bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold px-4 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-2 shadow-xs"
                 >
                   <RefreshCw className="w-4 h-4" />
-                  <span>Sync with Home Server Now</span>
+                  <span>{homeServerSyncEnabled ? 'Sync with Home Server Now' : 'Confirm Local Save'}</span>
                 </button>
               </div>
 
@@ -2450,45 +2499,6 @@ export default function SettingsComponent({
                   <span>Download JSON Backup</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={handleDownloadMasterJson}
-                  className="bg-slate-900 hover:bg-slate-800 text-white font-bold px-3.5 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-1.5 shadow-xs"
-                  title="Download complete multi-organization database master backup"
-                >
-                  <Database className="w-3.5 h-3.5 text-teal-400" />
-                  <span>Master Backup (All Orgs)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleCopyBackupJson}
-                  className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold px-3 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-1.5 border border-slate-200"
-                  title="Copy full organization JSON string to clipboard"
-                >
-                  <Copy className="w-3.5 h-3.5 text-slate-600" />
-                  <span>{copiedJsonFeedback ? '✓ Copied!' : 'Copy JSON'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleViewBackupJson}
-                  className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold px-3 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-1.5 border border-slate-200"
-                  title="Inspect raw JSON data structure and verify records"
-                >
-                  <Eye className="w-3.5 h-3.5 text-slate-600" />
-                  <span>Inspect JSON</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={triggerExcelExport}
-                  className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold px-3 py-2.5 rounded-xl transition cursor-pointer text-xs flex items-center gap-1.5 border border-emerald-200"
-                  title="Export all client, job, invoice, and ledger sheets to an Excel (.xlsx) workbook"
-                >
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Excel Export</span>
-                </button>
               </div>
             </div>
 
@@ -2498,15 +2508,6 @@ export default function SettingsComponent({
                 <div className="flex items-center gap-2.5">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                   <span>{localBackupSuccessMsg}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleViewBackupJson}
-                    className="text-[11px] font-bold text-emerald-800 underline hover:text-emerald-950 cursor-pointer"
-                  >
-                    View JSON
-                  </button>
                 </div>
               </div>
             )}
@@ -2589,26 +2590,97 @@ export default function SettingsComponent({
                     />
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase">Frequency</label>
-                      <select
-                        value={localBackupFrequency}
-                        onChange={e => setLocalBackupFrequency(e.target.value as any)}
-                        disabled={!localBackupEnabled}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-medium outline-none disabled:opacity-50"
-                      >
-                        <option value="on_sync">⚡ On Every Change / Sync (Continuous Real-Time)</option>
-                      </select>
+                  <div className={`space-y-3 ${!localBackupEnabled ? 'opacity-50 pointer-events-none' : ''}`}>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase">Automatic Backup Frequency</label>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {[
+                        { value: 'on_change', label: 'On Every Change', icon: '⚡' },
+                        { value: 'minutes', label: 'Every Minutes', icon: '◷' },
+                        { value: 'hours', label: 'Every Hour', icon: '◴' },
+                        { value: 'custom', label: 'Custom Time', icon: '◫' }
+                      ].map(option => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => setLocalBackupFrequency(option.value as CompanyConfig['localBackupFrequency'])}
+                          className={`px-2 py-2 rounded-xl border text-[11px] font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                            localBackupFrequency === option.value
+                              ? 'bg-teal-600 text-white border-teal-600 shadow-xs'
+                              : 'bg-white text-slate-700 border-slate-200 hover:border-teal-300 hover:bg-teal-50'
+                          }`}
+                        >
+                          <span>{option.icon}</span><span>{option.label}</span>
+                        </button>
+                      ))}
                     </div>
 
-                    <div className="space-y-1 flex flex-col justify-center">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase">Trigger Mode</label>
-                      <p className="text-[11px] font-medium text-teal-700 bg-teal-50 px-2.5 py-1.5 rounded-lg border border-teal-100 flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-teal-500 animate-pulse shrink-0"></span>
-                        <span>Auto-creates timestamped disk snapshots on change</span>
-                      </p>
-                    </div>
+                    {localBackupFrequency === 'minutes' && (
+                      <div className="flex flex-wrap gap-2 items-center bg-white p-2.5 rounded-xl border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase">Repeat every</span>
+                        {[5, 10, 30].map(minutes => (
+                          <button key={minutes} type="button" onClick={() => setLocalBackupInterval(minutes)} className={`px-3 py-1.5 rounded-lg border text-xs font-bold cursor-pointer ${localBackupInterval === minutes ? 'bg-teal-600 text-white border-teal-600' : 'bg-slate-50 text-slate-700 border-slate-200'}`}>
+                            {minutes} min
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {localBackupFrequency === 'hours' && (
+                      <div className="flex flex-wrap gap-2 items-center bg-white p-2.5 rounded-xl border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase">Repeat every</span>
+                        {[1, 3, 6, 8, 12].map(hours => (
+                          <button key={hours} type="button" onClick={() => setLocalBackupInterval(hours)} className={`px-3 py-1.5 rounded-lg border text-xs font-bold cursor-pointer ${localBackupInterval === hours ? 'bg-teal-600 text-white border-teal-600' : 'bg-slate-50 text-slate-700 border-slate-200'}`}>
+                            {hours} hr
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {localBackupFrequency === 'custom' && (
+                      <div className="bg-white p-2.5 rounded-xl border border-slate-200 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase">Daily backup time</span>
+                          <span className="text-[10px] text-slate-400">Choose one or both times</span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {['Morning', 'Evening'].map((label, index) => (
+                            <label key={label} className="flex items-center gap-2 text-xs font-semibold text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2">
+                              <input
+                                type="checkbox"
+                                checked={localBackupScheduleTimes.length > index}
+                                onChange={event => {
+                                  const next = [...localBackupScheduleTimes];
+                                  if (event.target.checked) {
+                                    while (next.length <= index) next.push(index === 0 ? '10:00' : '18:00');
+                                  } else {
+                                    next.splice(index, 1);
+                                  }
+                                  setLocalBackupScheduleTimes(next.length ? next : ['18:00']);
+                                }}
+                                className="w-3.5 h-3.5 text-teal-600 rounded cursor-pointer"
+                              />
+                              <span>{label}</span>
+                              <input
+                                type="time"
+                                value={localBackupScheduleTimes[index] || (index === 0 ? '10:00' : '18:00')}
+                                onChange={event => {
+                                  const next = [...localBackupScheduleTimes];
+                                  while (next.length <= index) next.push(index === 0 ? '10:00' : '18:00');
+                                  next[index] = event.target.value;
+                                  setLocalBackupScheduleTimes(next);
+                                }}
+                                className="ml-auto bg-white border border-slate-200 rounded-md px-1.5 py-1 text-xs font-mono"
+                              />
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <p className="text-[11px] font-medium text-teal-700 bg-teal-50 px-2.5 py-1.5 rounded-lg border border-teal-100 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-teal-500 animate-pulse shrink-0"></span>
+                      <span>Automatic backups are saved only to the connected PC folder selected above. Manual downloads still use the browser Downloads folder.</span>
+                    </p>
                   </div>
                 </div>
               </div>
@@ -2687,127 +2759,91 @@ export default function SettingsComponent({
                 <div className="p-3 bg-teal-50 border border-teal-100 rounded-xl text-[10px] text-teal-900 leading-relaxed space-y-1">
                   <p>💡 <strong>How to access your downloaded backup file:</strong></p>
                   <p>• <strong>Browser Downloads:</strong> When you click <strong>"Download JSON Backup"</strong>, your browser saves the JSON file to your default PC folder (usually <code>C:\Users\&lt;Name&gt;\Downloads\</code>).</p>
-                  <p>• <strong>Instant Clipboard:</strong> Use <strong>"Copy JSON"</strong> to paste the raw JSON straight into Notepad, or <strong>"Inspect JSON"</strong> to view all records in the app.</p>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Section 1.5: Copied data Folder Auto-Import & Detection */}
+          {/* Section 1.5: Local PC Backup Scanner */}
           <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs space-y-4">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
                   <FolderSync className="w-5 h-5 text-teal-600" />
                   <h4 className="font-bold text-sm text-slate-800">
-                    Local <code className="text-xs bg-slate-100 text-teal-700 px-1.5 py-0.5 rounded font-mono">data/orgs/</code> Organizations Folder Auto-Import &amp; Migration
+                    Scan PC for Organisation JSON Backups
                   </h4>
                   <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-teal-50 text-teal-700 rounded-full border border-teal-200">
-                    Dual Sync Engine
+                    Local Restore
                   </span>
                 </div>
                 <p className="text-slate-500 text-xs max-w-2xl">
-                  Easily import all your organizations (<code className="font-mono text-slate-700">org-1785064628487</code>, <code className="font-mono text-slate-700">org-1785681060978</code>, etc.) and their complete records directly into the SQLite database.
+                  Select a folder on this PC to find JSON backup files. The newest valid backup is shown first and can be restored after confirmation.
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <input
                   type="file"
-                  ref={localOrgsFolderInputRef}
-                  onChange={handleUploadLocalOrgsFolder}
+                  ref={localBackupFolderInputRef}
+                  onChange={handleScanLocalBackups}
                   {...({ webkitdirectory: '', directory: '', multiple: true } as any)}
                   className="hidden"
                 />
-
                 <button
                   type="button"
-                  onClick={() => localOrgsFolderInputRef.current?.click()}
-                  disabled={isScanningDataFolder}
-                  className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold py-2.5 px-4 rounded-xl transition flex items-center gap-2 shadow-xs cursor-pointer"
-                  title="Select your data/orgs or data folder from your PC to upload & import all organizations"
-                >
-                  <Folder className="w-4 h-4 text-indigo-200" />
-                  <span>Select Local 'data/orgs' Folder from PC</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleScanDataFolder}
-                  disabled={isScanningDataFolder}
+                  onClick={() => localBackupFolderInputRef.current?.click()}
+                  disabled={isScanningLocalBackups}
                   className="bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-xs font-bold py-2.5 px-4 rounded-xl transition flex items-center gap-2 shadow-xs cursor-pointer"
-                  title="Scan the server data/ and data/orgs/ directory on disk"
+                  title="Choose a local folder and scan its JSON backup files"
                 >
-                  <RefreshCw className={`w-4 h-4 ${isScanningDataFolder ? 'animate-spin' : ''}`} />
-                  <span>{isScanningDataFolder ? 'Scanning...' : 'Scan Server data/ Folder'}</span>
+                  <RefreshCw className={`w-4 h-4 ${isScanningLocalBackups ? 'animate-spin' : ''}`} />
+                  <span>{isScanningLocalBackups ? 'Scanning Folder...' : 'Choose Folder & Scan Backups'}</span>
                 </button>
               </div>
             </div>
 
-            {/* Folder Status Summary */}
-            {dataFolderStatus && (
-              <div className="bg-slate-50 border border-slate-200/70 rounded-xl p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                <div className="space-y-0.5">
-                  <span className="text-[10px] uppercase font-bold text-slate-400">Primary Database</span>
-                  <div className="font-semibold text-slate-700 flex items-center gap-1.5">
-                    <span className={`w-2 h-2 rounded-full ${dataFolderStatus.sqliteDatabase?.exists ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-                    <span>{dataFolderStatus.sqliteDatabase?.exists ? `${Math.round((dataFolderStatus.sqliteDatabase?.sizeBytes || 0) / 1024)} KB on disk` : 'In-Memory Only'}</span>
-                  </div>
-                </div>
-
-                <div className="space-y-0.5">
-                  <span className="text-[10px] uppercase font-bold text-slate-400">Data Files Found</span>
-                  <div className="font-semibold text-slate-700">
-                    <span>{dataFolderStatus.filesFound?.length || 0} file(s) ({dataFolderStatus.jsonFilesCount || 0} JSON)</span>
-                  </div>
-                </div>
-
-                <div className="space-y-0.5">
-                  <span className="text-[10px] uppercase font-bold text-slate-400">Clients in Database</span>
-                  <div className="font-semibold text-slate-700">
-                    <span className="text-teal-700 font-bold">{dataFolderStatus.currentCounts?.clients || 0}</span> clients
-                  </div>
-                </div>
-
-                <div className="space-y-0.5">
-                  <span className="text-[10px] uppercase font-bold text-slate-400">Jobs &amp; Invoices</span>
-                  <div className="font-semibold text-slate-700">
-                    <span className="text-teal-700 font-bold">{dataFolderStatus.currentCounts?.jobs || 0}</span> jobs / <span className="text-teal-700 font-bold">{dataFolderStatus.currentCounts?.invoices || 0}</span> inv
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Scan / Import Result Banner */}
-            {dataFolderResult && (
-              <div className={`p-4 rounded-xl border text-xs space-y-2 ${dataFolderResult.success ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-rose-50 border-rose-200 text-rose-900'}`}>
+            {localScanResult && (
+              <div className={`p-4 rounded-xl border text-xs ${localScanResult.error ? 'bg-rose-50 border-rose-200 text-rose-900' : 'bg-emerald-50 border-emerald-200 text-emerald-900'}`}>
                 <div className="flex items-center gap-2 font-bold">
-                  {dataFolderResult.success ? <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" /> : <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />}
-                  <span>{dataFolderResult.message}</span>
+                  {localScanResult.error ? <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" /> : <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />}
+                  <span>{localScanResult.message}</span>
                 </div>
-                {dataFolderResult.filesImported && dataFolderResult.filesImported.length > 0 && (
-                  <div className="space-y-1 text-[11px] pt-1">
-                    <p className="font-semibold">Imported files:</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {dataFolderResult.filesImported.map((file, idx) => (
-                        <span key={idx} className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-mono text-[10px]">
-                          {file}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 pt-2 text-[11px] font-semibold text-emerald-800">
-                      <div>Orgs: {dataFolderResult.counts?.organizations || 0}</div>
-                      <div>Clients: {dataFolderResult.counts?.clients || 0}</div>
-                      <div>Jobs: {dataFolderResult.counts?.jobs || 0}</div>
-                      <div>Invoices: {dataFolderResult.counts?.invoices || 0}</div>
-                      <div>Products: {dataFolderResult.counts?.products || 0}</div>
-                      <div>Payments: {dataFolderResult.counts?.payments || 0}</div>
-                    </div>
-                    <p className="text-[10px] text-emerald-700 italic pt-1">Refreshing page with imported data...</p>
-                  </div>
+                {!localScanResult.error && (
+                  <p className="mt-1 text-[11px] text-slate-600">
+                    The browser scanned the local folder you selected for readable JSON backup files. No server data was used.
+                  </p>
                 )}
               </div>
             )}
+
+            {localBackupFiles.length > 0 && (
+              <div className="bg-slate-50 border border-slate-200/70 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="font-bold text-slate-700">{localBackupFiles.length} valid JSON backup{localBackupFiles.length === 1 ? '' : 's'} found</span>
+                  <button
+                    type="button"
+                    onClick={() => restoreLocalBackup(localBackupFiles[0])}
+                    className="bg-teal-600 hover:bg-teal-700 text-white font-bold px-3 py-2 rounded-lg text-xs flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Restore Latest Backup</span>
+                  </button>
+                </div>
+                <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                  {localBackupFiles.slice(0, 8).map((backup, index) => (
+                    <div key={`${backup.path}-${backup.modifiedAt}`} className="flex items-center justify-between gap-3 bg-white border border-slate-200 rounded-lg px-3 py-2 text-[11px]">
+                      <div className="min-w-0">
+                        <p className="font-mono font-bold text-slate-800 truncate" title={backup.path}>{backup.path}</p>
+                        <p className="text-slate-400">{index === 0 ? 'Newest valid backup' : 'Backup file'} · {new Date(backup.modifiedAt).toLocaleString()}</p>
+                      </div>
+                      {index === 0 && <span className="text-[10px] font-bold uppercase text-teal-700 bg-teal-50 border border-teal-100 rounded px-2 py-1 shrink-0">Latest</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
           </div>
 
           {/* Section 2: Local Database Backup & Disk Export */}
@@ -2817,10 +2853,10 @@ export default function SettingsComponent({
                 <div className="space-y-1">
                   <h4 className="font-bold text-sm text-white flex items-center gap-2">
                     <HardDrive className="w-4 h-4 text-teal-400" />
-                    <span>Database Backup &amp; Local Disks Management</span>
+                    <span>Restore Organisation Data</span>
                   </h4>
                   <p className="text-slate-300 text-[11px]">
-                    All application data is securely stored in local station storage. You can export multi-sheet Excel files or download JSON backups to your computer disk drive anytime.
+                    Restore an organisation from a previously exported Excel workbook or from the latest JSON backup found on this PC.
                   </p>
                 </div>
 
@@ -2835,70 +2871,12 @@ export default function SettingsComponent({
 
                   <button
                     type="button"
-                    onClick={() => {
-                      window.open('/api/admin/download-sqlite', '_blank');
-                    }}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-3.5 rounded-xl transition text-center flex items-center gap-1.5 cursor-pointer shadow-xs"
-                    title="Download primary SQLite database file (inoms_primary.db) to inspect in DB Browser for SQLite"
-                  >
-                    <Database className="w-4 h-4 text-indigo-100" />
-                    <span>Download SQLite (.db)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={triggerExcelExport}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2.5 px-3.5 rounded-xl transition text-center flex items-center gap-1.5 cursor-pointer shadow-xs"
-                    title="Export all collections into an Excel Workbook (.xlsx)"
-                  >
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-100" />
-                    <span>Export Excel (.xlsx)</span>
-                  </button>
-
-                  <button
-                    type="button"
                     onClick={() => restoreExcelInputRef.current?.click()}
                     className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2.5 px-3.5 rounded-xl transition text-center flex items-center gap-1.5 cursor-pointer shadow-xs"
                     title="Restore application data from an exported Excel file (.xlsx)"
                   >
                     <Upload className="w-4 h-4 text-emerald-100" />
                     <span>Restore Excel (.xlsx)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const dataToExport = appData ? { tenantId: currentTenantId, orgName: companyConfig.name, ...appData } : {
-                        tenantId: currentTenantId,
-                        orgName: companyConfig.name,
-                        clients: JSON.parse(getAppStorageItem(`clients_${currentTenantId}`) || '[]'),
-                        jobs: JSON.parse(getAppStorageItem(`jobs_${currentTenantId}`) || '[]'),
-                        invoices: JSON.parse(getAppStorageItem(`invoices_${currentTenantId}`) || '[]'),
-                        products: JSON.parse(getAppStorageItem(`products_${currentTenantId}`) || '[]'),
-                        ledger: JSON.parse(getAppStorageItem(`ledger_${currentTenantId}`) || '[]'),
-                        payments: JSON.parse(getAppStorageItem(`payments_${currentTenantId}`) || '[]'),
-                        expenses: JSON.parse(getAppStorageItem(`expenses_${currentTenantId}`) || '[]'),
-                        users: JSON.parse(getAppStorageItem(`users_${currentTenantId}`) || '[]'),
-                        categories: JSON.parse(getAppStorageItem(`categories_${currentTenantId}`) || '[]'),
-                        racks: JSON.parse(getAppStorageItem(`racks_${currentTenantId}`) || '[]'),
-                        equipments: JSON.parse(getAppStorageItem(`equipments_${currentTenantId}`) || '[]'),
-                        problems: JSON.parse(getAppStorageItem(`problems_${currentTenantId}`) || '[]'),
-                        companyConfig
-                      };
-                      const jsonStr = JSON.stringify(dataToExport, null, 2);
-                      const blob = new Blob([jsonStr], { type: 'application/json' });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      const orgPrefix = getBackupOrgPrefix(companyConfig.name, currentTenantId);
-                      a.download = `${orgPrefix}_Local_Backup_${new Date().toISOString().split('T')[0]}.json`;
-                      a.click();
-                      URL.revokeObjectURL(url);
-                    }}
-                    className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold py-2.5 px-3.5 rounded-xl transition text-center flex items-center gap-1.5 border border-slate-700 cursor-pointer"
-                  >
-                    <Download className="w-4 h-4 text-teal-400" />
-                    <span>Export JSON</span>
                   </button>
 
                   <label className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold py-2.5 px-3.5 rounded-xl transition cursor-pointer text-center flex items-center gap-1.5 border border-slate-700">
@@ -3209,185 +3187,6 @@ export default function SettingsComponent({
               </div>
             </div>
           )}
-
-          {/* Organization Security PIN & 2FA Access Management Card */}
-          <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs space-y-5">
-            <div className="flex items-center justify-between flex-wrap gap-3 border-b border-slate-100 pb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-teal-50 text-teal-600 rounded-xl border border-teal-100">
-                  <Key className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-extrabold text-base text-slate-800 tracking-tight flex items-center gap-2">
-                    <span>Organization Security PIN &amp; 2FA Access</span>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                      orgPinInput.trim().length > 0
-                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                        : 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                    }`}>
-                      {orgPinInput.trim().length > 0 ? `● PIN Active (${orgPinInput.trim().length} digits)` : '🛡️ TOTP 2FA Only (PIN Blank)'}
-                    </span>
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Configure your workspace security PIN and Microsoft Authenticator two-factor authentication for owner logins.
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-mono font-bold bg-slate-100 text-slate-700 px-2.5 py-1 rounded-lg border border-slate-200">
-                  Workspace: {activeTenant?.code || companyConfig.name || 'ORG'}
-                </span>
-              </div>
-            </div>
-
-            {orgPinStatusMsg && (
-              <div className={`p-3.5 rounded-xl text-xs font-medium flex items-center gap-2 ${
-                orgPinStatusMsg.isError
-                  ? 'bg-rose-50 text-rose-800 border border-rose-200'
-                  : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-              }`}>
-                {orgPinStatusMsg.isError ? <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" /> : <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />}
-                <span>{orgPinStatusMsg.text}</span>
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Left Column: Security PIN Configuration */}
-              <form onSubmit={handleSaveOrgPin} className="bg-slate-50/80 p-5 rounded-2xl border border-slate-200/80 space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Security PIN (Access Code)
-                  </label>
-                  <p className="text-[11px] text-slate-500 mb-2.5">
-                    Used to quickly unlock this workspace during owner mobile login.
-                  </p>
-                  
-                  <div className="relative flex items-center">
-                    <input
-                      type={showOrgPin ? 'text' : 'password'}
-                      value={orgPinInput}
-                      onChange={(e) => setOrgPinInput(e.target.value)}
-                      placeholder="Enter 4 to 6 digit security PIN (or leave blank)"
-                      className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 pr-11 text-slate-800 font-mono text-sm tracking-widest outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-100 transition"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowOrgPin(!showOrgPin)}
-                      title={showOrgPin ? 'Hide PIN (Mask as *)' : 'Show PIN'}
-                      className="absolute right-2.5 p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
-                    >
-                      {showOrgPin ? <EyeOff className="w-4 h-4 text-teal-600" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="bg-white p-3 rounded-xl border border-slate-200/70 text-[11px] space-y-1 text-slate-600">
-                  <div className="font-semibold text-slate-700 flex items-center gap-1.5">
-                    <Info className="w-3.5 h-3.5 text-teal-600 shrink-0" />
-                    <span>How PIN &amp; 2FA Work:</span>
-                  </div>
-                  <p className="leading-relaxed">
-                    • <strong>Static PIN Set:</strong> You can log in using either your Security PIN or your Microsoft Authenticator 6-digit passcode.
-                  </p>
-                  <p className="leading-relaxed">
-                    • <strong>Blank PIN:</strong> If kept blank, static PIN login is disabled and the workspace <strong>only accepts the 6-digit dynamic passcode from Microsoft Authenticator app</strong>.
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="submit"
-                    disabled={isSavingOrgPin}
-                    className="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs py-2.5 px-4 rounded-xl transition shadow-xs hover:shadow flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                  >
-                    {isSavingOrgPin ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Saving...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Check className="w-3.5 h-3.5" />
-                        <span>Save Security PIN</span>
-                      </>
-                    )}
-                  </button>
-
-                  {orgPinInput.trim().length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setOrgPinInput('');
-                        setTimeout(() => handleSaveOrgPin(), 50);
-                      }}
-                      disabled={isSavingOrgPin}
-                      className="bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold text-xs py-2.5 px-3 rounded-xl transition cursor-pointer"
-                    >
-                      Clear PIN (TOTP Only)
-                    </button>
-                  )}
-                </div>
-              </form>
-
-              {/* Right Column: Microsoft Authenticator 2FA Card */}
-              <div className="bg-slate-900 text-white p-5 rounded-2xl border border-slate-800 space-y-4 flex flex-col justify-between">
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-lg bg-teal-500/20 text-teal-400 border border-teal-500/30 flex items-center justify-center">
-                        <QrCode className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <h4 className="font-bold text-sm text-white">Microsoft Authenticator 2FA</h4>
-                        <p className="text-[10px] text-slate-400">Standard RFC 6238 TOTP (30-second rotating code)</p>
-                      </div>
-                    </div>
-                    <span className="text-[10px] bg-teal-500/20 text-teal-300 border border-teal-500/30 font-bold px-2 py-0.5 rounded-full">
-                      ✓ Supported
-                    </span>
-                  </div>
-
-                  <p className="text-xs text-slate-300 leading-relaxed">
-                    Link your smartphone's <strong>Microsoft Authenticator</strong> or <strong>Google Authenticator</strong> app to scan this organization's QR code. You can use dynamic 6-digit codes to authenticate securely from any device.
-                  </p>
-
-                  {activeTenant?.secretKey && (
-                    <div className="bg-slate-800/90 p-3 rounded-xl border border-slate-700/80 space-y-1.5">
-                      <div className="flex items-center justify-between text-[11px] text-slate-400">
-                        <span>Secret Key (Manual Entry):</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (activeTenant?.secretKey) {
-                              navigator.clipboard.writeText(activeTenant.secretKey);
-                              setCopiedSecret(true);
-                              setTimeout(() => setCopiedSecret(false), 3000);
-                            }
-                          }}
-                          className="text-teal-400 hover:text-teal-300 font-bold flex items-center gap-1 cursor-pointer"
-                        >
-                          <Copy className="w-3 h-3" />
-                          <span>{copiedSecret ? 'Copied!' : 'Copy'}</span>
-                        </button>
-                      </div>
-                      <div className="font-mono text-xs font-bold text-amber-300 tracking-wider break-all select-all">
-                        {activeTenant.secretKey}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setShowMicrosoftAuthQRModal(true)}
-                  className="w-full bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs py-2.5 px-4 rounded-xl transition flex items-center justify-center gap-2 cursor-pointer shadow-md"
-                >
-                  <QrCode className="w-4 h-4" />
-                  <span>View Microsoft Authenticator QR Code</span>
-                </button>
-              </div>
-            </div>
-          </div>
 
           {/* Staff Control Main Section Header */}
           <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex items-center justify-between gap-3">

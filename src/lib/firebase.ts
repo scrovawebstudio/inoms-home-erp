@@ -15,6 +15,18 @@ import { getAppStorageItem } from './storage';
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 export const auth = getAuth(app);
 
+function isHomeServerSyncEnabledForTenant(tenantId: string): boolean {
+  if (tenantId === 'org-admin') return true;
+  try {
+    const raw = getAppStorageItem('tenants_v3') || localStorage.getItem('tenants_v3');
+    const tenants = raw ? JSON.parse(raw) : [];
+    const tenant = Array.isArray(tenants) ? tenants.find((item: TenantOrg) => item.id === tenantId) : null;
+    return tenant?.features?.allowHomeServerSync !== false;
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Executes official Google Login popup to authenticate the user using Firebase Auth.
  * Authentication identity only — NO business data is stored or retrieved from Firebase.
@@ -53,30 +65,15 @@ export async function fetchTenantsOnce(force = false): Promise<TenantOrg[]> {
     return cachedTenants || [];
   }
 
-  isFetchingTenants = true;
+  // Tenant metadata is maintained locally. Business data must never be
+  // fetched as a complete multi-organisation payload after login.
   try {
-    const res = await fetch('/api/auth/tenants');
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success && Array.isArray(data.tenants)) {
-        const list: TenantOrg[] = data.tenants;
-        const seen = new Set<string>();
-        const deduped: TenantOrg[] = [];
-        for (const t of list) {
-          if (!t || !t.id) continue;
-          if (!seen.has(t.id)) {
-            seen.add(t.id);
-            deduped.push(t);
-          }
-        }
-        cachedTenants = deduped;
-        tenantListeners.forEach(cb => {
-          try { cb(deduped); } catch (e) {}
-        });
-      }
+    const raw = getAppStorageItem('tenants_v3') || localStorage.getItem('tenants_v3');
+    const list = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(list)) {
+      cachedTenants = list.filter((tenant: TenantOrg) => !!tenant?.id);
+      tenantListeners.forEach(cb => cb(cachedTenants || []));
     }
-  } catch (err) {
-    // Graceful offline fallback
   } finally {
     isFetchingTenants = false;
   }
@@ -93,21 +90,8 @@ export function subscribeTenants(onUpdate: (tenants: TenantOrg[]) => void) {
     fetchTenantsOnce();
   }
 
-  // Set up gentle shared polling only once across all subscribers (every 60s, paused if hidden)
-  if (!tenantPollTimer) {
-    tenantPollTimer = setInterval(() => {
-      if (typeof document !== 'undefined' && !document.hidden) {
-        fetchTenantsOnce(true);
-      }
-    }, 60000);
-  }
-
   return () => {
     tenantListeners.delete(onUpdate);
-    if (tenantListeners.size === 0 && tenantPollTimer) {
-      clearInterval(tenantPollTimer);
-      tenantPollTimer = null;
-    }
   };
 }
 
@@ -184,6 +168,7 @@ export function subscribeCompanyConfig(tenantId: string, onUpdate: (config: Comp
 export async function saveCompanyConfigToFirestore(tenantId: string, config: CompanyConfig): Promise<void> {
   if (!tenantId) return;
   await saveLocalRecord(tenantId, 'config', { ...config, id: tenantId });
+  if (!isHomeServerSyncEnabledForTenant(tenantId)) return;
   try {
     saveTenantCollectionViaApi(tenantId, 'config', undefined, config).catch(() => {});
   } catch (e) {}
@@ -276,6 +261,7 @@ export async function saveTenantCollectionToFirestore(
   if (!tenantId || !collectionName) return;
   // 1. Atomically replace collection in local IndexedDB replica
   await replaceLocalCollection(tenantId, collectionName, items, false, false);
+  if (!isHomeServerSyncEnabledForTenant(tenantId)) return;
   // 2. Persist directly to Home Server SQLite database
   try {
     saveTenantCollectionViaApi(tenantId, collectionName, items).catch(() => {});

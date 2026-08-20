@@ -3,6 +3,7 @@
  */
 
 import { getAuthToken, setAuthToken, clearAuthToken } from './localDb';
+import { getAppStorageItem } from './storage';
 
 export interface LoginResponse {
   success: boolean;
@@ -337,6 +338,18 @@ const syncDebounceTimers = new Map<string, any>();
 const inFlightSaveRequests = new Map<string, Promise<{ success: boolean; message?: string }>>();
 const lastSerializedSavePayloads = new Map<string, string>();
 
+function isTenantHomeServerEnabled(tenantId: string): boolean {
+  if (tenantId === 'org-admin' || tenantId === 'global_system_branding') return true;
+  try {
+    const raw = typeof window !== 'undefined' ? getAppStorageItem('tenants_v3') : null;
+    const tenants = raw ? JSON.parse(raw) : [];
+    const tenant = Array.isArray(tenants) ? tenants.find((item: any) => item.id === tenantId) : null;
+    return tenant?.features?.allowHomeServerSync !== false;
+  } catch {
+    return true;
+  }
+}
+
 export async function saveTenantCollectionViaApi(
   tenantId: string,
   entity: string,
@@ -344,6 +357,7 @@ export async function saveTenantCollectionViaApi(
   config?: any
 ): Promise<{ success: boolean; message?: string }> {
   if (!tenantId || !entity) return { success: false, message: 'Tenant and entity required' };
+  if (!isTenantHomeServerEnabled(tenantId)) return { success: true, message: 'Local-only tenant; server save skipped' };
 
   const requestKey = `${tenantId}:${entity}`;
   const payloadSignature = JSON.stringify({
@@ -542,6 +556,18 @@ export async function updateOrgViaApi(
     return await res.json();
   } catch (err: any) {
     return { success: false, message: 'Server connection error' };
+  }
+}
+
+export async function fetchOwnOrganizationPinViaApi(tenantId: string): Promise<{ success: boolean; pin?: string; message?: string }> {
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(`/api/auth/my-org-pin?tenantId=${encodeURIComponent(tenantId)}`, { headers });
+    return await res.json();
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Could not load organisation PIN' };
   }
 }
 

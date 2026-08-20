@@ -3,6 +3,17 @@ import { getAppStorageItem, setAppStorageItem } from './storage';
 
 const DB_NAME = 'inoms_local_replica_v2';
 const DB_VERSION = 1;
+function isHomeServerSyncEnabled(tenantId: string): boolean {
+  if (tenantId === 'org-admin') return true;
+  try {
+    const raw = getAppStorageItem('tenants_v3') || localStorage.getItem('tenants_v3');
+    const tenants = raw ? JSON.parse(raw) : [];
+    const tenant = Array.isArray(tenants) ? tenants.find((item: any) => item.id === tenantId) : null;
+    return tenant?.features?.allowHomeServerSync !== false;
+  } catch {
+    return true;
+  }
+}
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -140,7 +151,7 @@ export async function saveLocalRecord<T extends { id: string; version?: number }
   const tx = db.transaction(['entities', 'pending_ops'], 'readwrite');
   await tx.objectStore('entities').put(entityRecord);
 
-  if (queuePush && getAuthToken()) {
+    if (queuePush && isHomeServerSyncEnabled(tenantId) && getAuthToken()) {
     const opId = `op_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const pendingOp: PendingOp = {
       id: opId,
@@ -158,7 +169,7 @@ export async function saveLocalRecord<T extends { id: string; version?: number }
   await tx.done;
 
   // Trigger background push if online and authenticated
-  if (queuePush && navigator.onLine && getAuthToken()) {
+  if (queuePush && isHomeServerSyncEnabled(tenantId) && navigator.onLine && getAuthToken()) {
     pushPendingOperations(tenantId).catch(() => {});
   }
 }
@@ -182,7 +193,7 @@ export async function deleteLocalRecord(
     await tx.objectStore('entities').put(existing);
   }
 
-  if (queuePush && getAuthToken()) {
+    if (queuePush && isHomeServerSyncEnabled(tenantId) && getAuthToken()) {
     const opId = `op_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const pendingOp: PendingOp = {
       id: opId,
@@ -199,7 +210,7 @@ export async function deleteLocalRecord(
 
   await tx.done;
 
-  if (queuePush && navigator.onLine && getAuthToken()) {
+  if (queuePush && isHomeServerSyncEnabled(tenantId) && navigator.onLine && getAuthToken()) {
     pushPendingOperations(tenantId).catch(() => {});
   }
 }
@@ -228,7 +239,7 @@ export async function replaceLocalCollection<T extends { id: string }>(
   for (const existing of existingRecords) {
     if (!newItemIdSet.has(existing.id)) {
       await entitiesStore.delete(existing.key);
-      if (queuePush && getAuthToken()) {
+      if (queuePush && isHomeServerSyncEnabled(tenantId) && getAuthToken()) {
         await pendingStore.put({
           id: `op_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
           tenantId,
@@ -257,7 +268,7 @@ export async function replaceLocalCollection<T extends { id: string }>(
       data: item
     });
 
-    if (queuePush && getAuthToken()) {
+    if (queuePush && isHomeServerSyncEnabled(tenantId) && getAuthToken()) {
       await pendingStore.put({
         id: `op_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         tenantId,
@@ -272,7 +283,7 @@ export async function replaceLocalCollection<T extends { id: string }>(
 
   await tx.done;
 
-  if (queuePush && navigator.onLine && getAuthToken()) {
+  if (queuePush && isHomeServerSyncEnabled(tenantId) && navigator.onLine && getAuthToken()) {
     pushPendingOperations(tenantId).catch(() => {});
   }
 
@@ -293,6 +304,7 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
   collections: Record<string, any[]>;
 } | null> {
   if (!tenantId) return null;
+  if (!isHomeServerSyncEnabled(tenantId)) return null;
   const token = getAuthToken();
 
   const headers: Record<string, string> = {
@@ -317,50 +329,80 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
       return null;
     }
 
-    const collections = data.collections || {};
+    let collections = data.collections || {};
     const totalServerRecords = Object.values(collections).reduce((acc: number, arr: any) => acc + (Array.isArray(arr) ? arr.length : 0), 0);
+
+    // Local-first merge: never discard records created or edited while the
+    // server was disabled or unreachable. Local records win on duplicate IDs.
+    const entityList = ['clients', 'jobs', 'invoices', 'products', 'ledger', 'payments', 'expenses', 'users', 'categories', 'racks', 'equipments', 'problems', 'logs'];
+    const localCollections: Record<string, any[]> = {};
+    let localHasData = false;
+    for (const entityName of entityList) {
+      let parsed: any[] = [];
+      // A present localStorage collection is a complete tenant snapshot and
+      // must remain authoritative so local deletions are not resurrected.
+      const stored = getAppStorageItem(`${entityName}_${tenantId}`) || getAppStorageItem(`app_storage_${entityName}_${tenantId}`);
+      if (stored !== null && stored !== undefined) {
+        try {
+          const storedParsed = JSON.parse(stored);
+          if (Array.isArray(storedParsed)) parsed = storedParsed;
+        } catch (e) {}
+      } else {
+        try {
+          parsed = await getLocalCollection(tenantId, entityName);
+        } catch (e) {}
+      }
+      if (parsed.length || stored !== null && stored !== undefined) {
+        localHasData = true;
+        localCollections[entityName] = parsed;
+      } else {
+        const indexedRecords = await getLocalCollection(tenantId, entityName).catch(() => []);
+        if (indexedRecords.length) {
+          localHasData = true;
+          localCollections[entityName] = indexedRecords;
+        }
+      }
+    }
+
+    if (localHasData) {
+      const mergedCollections: Record<string, any[]> = { ...collections };
+      for (const entityName of entityList) {
+        const serverItems = Array.isArray(collections[entityName]) ? collections[entityName] : [];
+        const localItems = localCollections[entityName] || [];
+        const merged = new Map<string, any>();
+        serverItems.forEach(item => { if (item?.id) merged.set(item.id, item); });
+        localItems.forEach(item => { if (item?.id) merged.set(item.id, item); });
+        if (merged.size > 0) mergedCollections[entityName] = Array.from(merged.values());
+      }
+      collections = mergedCollections;
+
+      const localConfigRaw = getAppStorageItem(`company_config_${tenantId}`);
+      let localConfig: any = data.companyConfig || null;
+      if (localConfigRaw) {
+        try { localConfig = JSON.parse(localConfigRaw); } catch (e) {}
+      }
+      if (token) {
+        await fetch('/api/sync/save-all', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-tenant-id': tenantId,
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ tenantId, companyConfig: localConfig, collections })
+        }).catch(() => {});
+      }
+      data.companyConfig = localConfig;
+    }
 
     // Safeguard: If server returned 0 records, check if local storage has valid records
     // Prevent accidental data wipe on refresh when server was newly initialized
     if (totalServerRecords === 0) {
-      let localHasData = false;
-      const localCollections: Record<string, any[]> = {};
-      const entityList = ['clients', 'jobs', 'invoices', 'products', 'ledger', 'payments', 'expenses', 'users', 'categories', 'racks', 'equipments', 'problems'];
-      for (const entityName of entityList) {
-        const stored = getAppStorageItem(`${entityName}_${tenantId}`) || getAppStorageItem(`app_storage_${entityName}_${tenantId}`);
-        if (stored) {
-          try {
-            const parsed = JSON.parse(stored);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              localHasData = true;
-              localCollections[entityName] = parsed;
-            }
-          } catch (e) {}
-        }
-      }
-
       if (localHasData) {
         console.info(`[Bootstrap] Home Server has 0 records for ${tenantId}, preserving ${Object.keys(localCollections).length} local collections.`);
-        let cfg: any = null;
-        const cfgStored = getAppStorageItem(`company_config_${tenantId}`);
-        if (cfgStored) {
-          try { cfg = JSON.parse(cfgStored); } catch (e) {}
-        }
-        // Save local collections to server in background
-        if (token) {
-          fetch('/api/sync/save-all', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-tenant-id': tenantId,
-              'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({ tenantId, companyConfig: cfg, collections: localCollections })
-          }).catch(() => {});
-        }
         return {
           serverRevision: 1,
-          companyConfig: cfg,
+          companyConfig: data.companyConfig,
           collections: localCollections
         };
       }
@@ -433,6 +475,7 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
 // 2. Incremental Delta Pull
 export async function pullDeltaFromHomeServer(tenantId: string): Promise<number> {
   if (!tenantId) return 0;
+  if (!isHomeServerSyncEnabled(tenantId)) return 0;
   const token = getAuthToken();
 
   try {
@@ -470,21 +513,28 @@ export async function pullDeltaFromHomeServer(tenantId: string): Promise<number>
 
       if (operation === 'delete') {
         const existing = await entitiesStore.get(key);
-        if (existing) {
+        const existingUpdatedAt = existing?.data?.updatedAt || existing?.updatedAt || '';
+        const remoteTimestamp = change.timestamp || '';
+        if (existing && (!existingUpdatedAt || !remoteTimestamp || existingUpdatedAt <= remoteTimestamp)) {
           existing.deletedAt = change.timestamp || new Date().toISOString();
           await entitiesStore.put(existing);
         }
       } else if (recordData) {
-        await entitiesStore.put({
-          key,
-          tenantId,
-          entity,
-          id: entityId,
-          version: recordData.version || 1,
-          updatedAt: recordData.updatedAt || new Date().toISOString(),
-          deletedAt: null,
-          data: recordData
-        });
+        const existing = await entitiesStore.get(key);
+        const localUpdatedAt = existing?.data?.updatedAt || existing?.updatedAt || '';
+        const remoteUpdatedAt = recordData.updatedAt || change.timestamp || '';
+        if (!existing || !localUpdatedAt || !remoteUpdatedAt || localUpdatedAt <= remoteUpdatedAt) {
+          await entitiesStore.put({
+            key,
+            tenantId,
+            entity,
+            id: entityId,
+            version: recordData.version || 1,
+            updatedAt: remoteUpdatedAt || new Date().toISOString(),
+            deletedAt: null,
+            data: recordData
+          });
+        }
       }
       affectedEntities.add(entity);
     }
@@ -517,6 +567,7 @@ export async function pushPendingOperations(tenantId: string): Promise<{
   remainingCount: number;
 }> {
   if (!tenantId) return { success: false, committedCount: 0, remainingCount: 0 };
+  if (!isHomeServerSyncEnabled(tenantId)) return { success: false, committedCount: 0, remainingCount: 0 };
   const token = getAuthToken();
 
   if (isPushing) return { success: true, committedCount: 0, remainingCount: 0 };

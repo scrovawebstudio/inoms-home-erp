@@ -409,8 +409,11 @@ apiRouter.all('/auth/lookup-mobile', (req, res) => {
 });
 
 // List organizations metadata (Returns all active organizations registered in SQLite)
-apiRouter.get('/auth/tenants', (_req, res) => {
+apiRouter.get('/auth/tenants', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
+    if (!isMasterAdminSession(req.user)) {
+      return res.status(403).json({ success: false, message: 'Master Admin access required.' });
+    }
     const db = getDatabase();
     const stmt = db.prepare(`
       SELECT id, name, code, owner_mobile, owner_name, status, created_at,
@@ -1657,9 +1660,35 @@ apiRouter.post('/auth/update-org', (req, res) => {
   }
 });
 
-// Bulk Synchronize Organizations from Cloud Firestore & Client to SQLite
-apiRouter.post('/auth/sync-tenants', (req, res) => {
+// Return only the authenticated user's current organisation PIN.
+apiRouter.get('/auth/my-org-pin', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
   try {
+    const requestedTenantId = String(req.query.tenantId || '');
+    if (!req.user?.tenantId || !requestedTenantId || req.user.tenantId !== requestedTenantId) {
+      return res.status(403).json({ success: false, message: 'Organisation PIN access denied.' });
+    }
+
+    const db = getDatabase();
+    const stmt = db.prepare('SELECT pin FROM organizations WHERE id = ? LIMIT 1');
+    stmt.bind([requestedTenantId]);
+    let pin = '';
+    if (stmt.step()) {
+      const row = stmt.getAsObject();
+      pin = row.pin !== undefined && row.pin !== null && row.pin !== '••••••' ? String(row.pin) : '';
+    }
+    stmt.free();
+    res.json({ success: true, pin });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Could not load organisation PIN' });
+  }
+});
+
+// Bulk Synchronize Organizations from Cloud Firestore & Client to SQLite
+apiRouter.post('/auth/sync-tenants', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    if (!isMasterAdminSession(req.user)) {
+      return res.status(403).json({ success: false, message: 'Master Admin access required.' });
+    }
     const { tenants } = req.body || {};
     if (!Array.isArray(tenants)) {
       return res.status(400).json({ success: false, message: 'Invalid tenants array' });

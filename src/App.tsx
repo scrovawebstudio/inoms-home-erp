@@ -92,7 +92,7 @@ import Inventory from './components/Inventory';
 import Expenses from './components/Expenses';
 import SettingsComponent from './components/Settings';
 import Reports from './components/Reports';
-import AuthModal, { TenantOrg, SystemAnnouncement, INITIAL_TENANTS } from './components/AuthModal';
+import AuthModal, { TenantOrg, SystemAnnouncement, INITIAL_TENANTS, getTenantFeatures } from './components/AuthModal';
 import MasterAdminDashboard from './components/MasterAdminDashboard';
 import {
   subscribeTenants,
@@ -447,6 +447,7 @@ export default function App() {
     }
     return INITIAL_TENANTS[0];
   });
+  const homeServerSyncEnabled = activeTenant.id === 'org-admin' || getTenantFeatures(activeTenant).allowHomeServerSync;
 
   // Lifted Company Config state strictly isolated by active tenant
   const [companyConfig, setCompanyConfig] = useState<CompanyConfig>(() => {
@@ -559,8 +560,10 @@ export default function App() {
     setAppStorageItem(`company_config_${activeTenant.id}`, JSON.stringify(companyConfig));
     setActiveCompany(companyConfig.name || activeTenant.name);
 
-    // Persist active tenant companyConfig to Cloud Firestore
-    saveCompanyConfigToFirestore(activeTenant.id, companyConfig);
+    // Persist active tenant config remotely only when this organisation opted in.
+    if (homeServerSyncEnabled) {
+      saveCompanyConfigToFirestore(activeTenant.id, companyConfig);
+    }
 
     // Synchronize global application branding ONLY if updated by Master Admin or if appLogoUrl is explicitly set
     const isMasterAdminOrg = activeTenant.id === 'org-admin' || activeTenant.code === 'ADMIN-00' || activeTenant.ownerMobile?.includes('8149862034');
@@ -573,13 +576,15 @@ export default function App() {
       };
       setAppStorageItem('global_system_branding', JSON.stringify(globalBrandingPayload));
 
-      // Persist global_system_branding to Cloud Firestore so incognito / other devices receive logos & titles
-      saveCompanyConfigToFirestore('global_system_branding', {
-        ...companyConfig,
-        ...globalBrandingPayload
-      });
+      // Global branding is a Master Admin setting; never upload it from a local-only tenant.
+      if (homeServerSyncEnabled && isMasterAdminOrg) {
+        saveCompanyConfigToFirestore('global_system_branding', {
+          ...companyConfig,
+          ...globalBrandingPayload
+        });
+      }
     }
-  }, [companyConfig, activeTenant?.id, systemAppName, systemAppTagline, systemAppLogo]);
+  }, [companyConfig, activeTenant?.id, homeServerSyncEnabled, systemAppName, systemAppTagline, systemAppLogo]);
 
   React.useEffect(() => {
     document.documentElement.style.fontSize = `${fontSize}px`;
@@ -638,7 +643,7 @@ export default function App() {
 
   // Sync latest client state to the server (reconnect or manual retry)
   const syncOfflineChangesToServer = React.useCallback(async (reason = 'reconnect') => {
-    if (!isAuthenticated || !activeTenant?.id || isSyncingToServerRef.current) return;
+    if (!homeServerSyncEnabled || !isAuthenticated || !activeTenant?.id || isSyncingToServerRef.current) return;
     
     isSyncingToServerRef.current = true;
     setIsServerSaving(true);
@@ -689,9 +694,14 @@ export default function App() {
       setIsServerSaving(false);
       isSyncingToServerRef.current = false;
     }
-  }, [isAuthenticated, activeTenant?.id, companyConfig]);
+  }, [homeServerSyncEnabled, isAuthenticated, activeTenant?.id, companyConfig]);
 
   const checkServerStatus = React.useCallback(async () => {
+    if (!homeServerSyncEnabled) {
+      setServerStatus('offline');
+      setIsServerSaving(false);
+      return false;
+    }
     try {
       const health = await fetchServerHealth();
       const isOk = !!(health && (health.status === 'ok' || health.ok === true));
@@ -717,10 +727,15 @@ export default function App() {
       setServerStatus('offline');
       return false;
     }
-  }, [syncOfflineChangesToServer]);
+  }, [homeServerSyncEnabled, syncOfflineChangesToServer]);
 
   // Periodic Server Health Check every 4 seconds + on window focus & online events
   React.useEffect(() => {
+    if (!homeServerSyncEnabled) {
+      setServerStatus('offline');
+      setIsServerSaving(false);
+      return;
+    }
     checkServerStatus();
     const interval = setInterval(checkServerStatus, 4500);
 
@@ -738,7 +753,7 @@ export default function App() {
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
     };
-  }, [checkServerStatus]);
+  }, [homeServerSyncEnabled, checkServerStatus]);
 
   const handleAuthenticated = (tenant: TenantOrg, role: string, loggedInUser?: SystemUser) => {
     setActiveTenant(tenant);
@@ -754,10 +769,12 @@ export default function App() {
       removeAppSessionItem('current_user');
     }
 
-    // Ensure active tenant session is established with Home Server SQLite
-    try {
-      ensureTenantSessionViaApi(tenant.id, loggedInUser);
-    } catch (e) {}
+    // Establish a Home Server session only for organisations with the add-on enabled.
+    if (tenant.id === 'org-admin' || getTenantFeatures(tenant).allowHomeServerSync) {
+      try {
+        ensureTenantSessionViaApi(tenant.id, loggedInUser);
+      } catch (e) {}
+    }
 
     if (role === 'Admin') {
       setActiveTab('master_admin');
@@ -849,38 +866,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Subscribe to real-time Cloud Firestore updates for Multi-Tenant Organizations
-  React.useEffect(() => {
-    // Initial fetch from Home Server SQLite API
-    fetchTenantsViaApi().then(res => {
-      if (res?.success && Array.isArray(res.tenants) && res.tenants.length > 0) {
-        setTenants((prev) => {
-          const mergedMap = new Map<string, TenantOrg>();
-          prev.forEach(t => mergedMap.set(t.id, t));
-          res.tenants?.forEach((st: any) => mergedMap.set(st.id, st));
-          const updated = ensureAdminActive(Array.from(mergedMap.values()));
-          setAppStorageItem('tenants_v3', JSON.stringify(updated));
-          return updated;
-        });
-      }
-    }).catch(() => {});
-
-    const unsubscribe = subscribeTenants((cloudTenants) => {
-      if (Array.isArray(cloudTenants) && cloudTenants.length > 0) {
-        setTenants((prev) => {
-          const mergedMap = new Map<string, TenantOrg>();
-          prev.forEach(t => mergedMap.set(t.id, t));
-          cloudTenants.forEach(ct => mergedMap.set(ct.id, ct));
-          const updated = ensureAdminActive(Array.from(mergedMap.values()));
-          setAppStorageItem('tenants_v3', JSON.stringify(updated));
-          syncTenantsViaApi(updated).catch(() => {});
-          return updated;
-        });
-      }
-    });
-    return () => unsubscribe();
-  }, []);
-
   // Synchronize activeTenant with latest tenants list so subscription/plan updates propagate immediately
   React.useEffect(() => {
     if (!activeTenant?.id) return;
@@ -894,7 +879,9 @@ export default function App() {
         latest.status !== activeTenant.status ||
         latest.name !== activeTenant.name ||
         latest.code !== activeTenant.code ||
-        latest.ownerMobile !== activeTenant.ownerMobile
+        latest.ownerMobile !== activeTenant.ownerMobile ||
+        latest.pin !== activeTenant.pin ||
+        JSON.stringify(latest.features) !== JSON.stringify(activeTenant.features)
       ) {
         setActiveTenant(latest);
         setAppStorageItem('active_tenant_v3', JSON.stringify(latest));
@@ -926,9 +913,8 @@ export default function App() {
       return next;
     });
 
-    // Save to Firestore and Server SQLite DB so it syncs instantly across all devices
-    await saveTenantToFirestore(newTenant);
-    syncTenantsViaApi([newTenant]).catch(() => {});
+    // Tenant metadata remains local until an authenticated Master Admin action saves it.
+    if (activeTenant.id === 'org-admin') await saveTenantToFirestore(newTenant);
   };
 
   const handleUpdateTenant = async (updatedTenant: TenantOrg) => {
@@ -947,9 +933,7 @@ export default function App() {
       }));
     }
 
-    // Save to Firestore and Server SQLite DB
-    await saveTenantToFirestore(updatedTenant);
-    syncTenantsViaApi([updatedTenant]).catch(() => {});
+    if (activeTenant.id === 'org-admin') await saveTenantToFirestore(updatedTenant);
     triggerSaveNotification(`✓ Organization details for "${updatedTenant.name}" updated successfully!`);
   };
 
@@ -1449,7 +1433,10 @@ export default function App() {
     const unSubProblems = subscribeTenantCollection<Problem>(tId, 'problems', handleCloudCollectionUpdate('problems', setProblems), () => problemsRef.current);
 
     // 1. Initial authoritative bootstrap and a single lightweight delta pull per tenant session.
-    bootstrapTenantFromHomeServer(tId)
+    const bootstrapPromise = homeServerSyncEnabled
+      ? bootstrapTenantFromHomeServer(tId)
+      : Promise.resolve(null);
+    bootstrapPromise
       .then(bData => {
         if (bData && bData.collections) {
           if (bData.collections.clients) setClients(bData.collections.clients);
@@ -1515,16 +1502,21 @@ export default function App() {
     });
 
     // 4. Lightweight Cross-Device Live Polling (Checks server revision every 3.5s & on tab focus)
-    const unSubLivePolling = startLiveSyncPolling(tId, async () => {
-      try {
-        await pullDeltaFromHomeServer(tId);
-      } catch (_) {}
-    }, 3500);
+    const unSubLivePolling = homeServerSyncEnabled
+      ? startLiveSyncPolling(tId, async () => {
+          try {
+            await pullDeltaFromHomeServer(tId);
+          } catch (_) {}
+        }, 3500)
+      : () => {};
 
     const handleOnline = () => {
-      if (!navigator.onLine || !getAuthToken()) return;
-      pullDeltaFromHomeServer(tId).catch(() => {});
-      pushPendingOperations(tId).catch(() => {});
+      if (!homeServerSyncEnabled || !navigator.onLine || !getAuthToken()) return;
+      // Push local-first changes before pulling remote state so reconnect cannot
+      // replace offline edits with an older server snapshot.
+      pushPendingOperations(tId)
+        .then(() => pullDeltaFromHomeServer(tId))
+        .catch(() => {});
     };
     window.addEventListener('online', handleOnline);
 
@@ -1550,7 +1542,7 @@ export default function App() {
       unSubEquipments();
       unSubProblems();
     };
-  }, [activeTenant?.id]);
+  }, [activeTenant?.id, homeServerSyncEnabled]);
 
   // Global Save Notification Status Banner (Green for 3 sec)
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -1632,7 +1624,7 @@ export default function App() {
         broadcastLocalMutation(activeTenant.id, entity, items);
       });
 
-      if (isAuthenticated) {
+      if (isAuthenticated && homeServerSyncEnabled) {
         try {
           setIsServerSaving(true);
           const saveRes = await saveAllTenantDataViaApi(activeTenant.id, companyConfig, collectionBundle);
@@ -1669,6 +1661,7 @@ export default function App() {
     };
   }, [
     activeTenant?.id,
+    homeServerSyncEnabled,
     clients,
     ledger,
     jobs,
@@ -1704,12 +1697,17 @@ export default function App() {
     // CRITICAL: Prevent any background backup from triggering before user completes authentication
     if (!isAuthenticated) return;
     // SECURITY GUARD: Only Organization Owners (Admin) and Master Admin can execute local backups to PC folder
-    const isAllowedRoleForBackup = userRole === 'Admin' || userRole === 'Master Admin' || activeTenant?.id === 'org-admin';
+    const isAllowedRoleForBackup = userRole === 'Admin'
+      || String(userRole) === 'Org Admin'
+      || userRole === 'Master Admin'
+      || currentUser?.role === 'Admin'
+      || currentUser?.role === 'Org Admin'
+      || activeTenant?.id === 'org-admin';
     if (!isAllowedRoleForBackup) return;
 
     const isEnabled = companyConfig.localBackupEnabled ?? true;
     if (!isEnabled) return;
-    const freq = companyConfig.localBackupFrequency || 'daily';
+    const freq = companyConfig.localBackupFrequency || 'on_change';
     if (freq === 'manual') return;
 
     // Calculate snapshot fingerprint of current data collections
@@ -1725,18 +1723,24 @@ export default function App() {
       categories,
       racks,
       equipments,
-      problems
+      problems,
+      logs,
+      fontSize,
+      // Include organisation details, but ignore the timestamp written by the backup itself.
+      { ...companyConfig, lastLocalBackupTime: undefined }
     ]);
 
-    // GUARD: Ignore initial mount & initial 2.5-second hydration window on page refresh/login
+    const isChangeBasedBackup = freq === 'on_change' || freq === 'on_sync';
+
+    // GUARD: Ignore initial mount & initial 2.5-second hydration window for change-based backups.
     const isInitialHydration = (Date.now() - mountTimeRef.current) < 2500;
-    if (isInitialHydration || lastBackedUpSnapshotRef.current === null) {
+    if (isChangeBasedBackup && (isInitialHydration || lastBackedUpSnapshotRef.current === null)) {
       lastBackedUpSnapshotRef.current = currentSnapshot;
       return;
     }
 
-    // If data hasn't changed since last backed up snapshot, skip!
-    if (lastBackedUpSnapshotRef.current === currentSnapshot) {
+    // If data hasn't changed since last backed up snapshot, skip change-based backups.
+    if (isChangeBasedBackup && lastBackedUpSnapshotRef.current === currentSnapshot) {
       return;
     }
 
@@ -1756,6 +1760,8 @@ export default function App() {
         const dataToExport = {
           tenantId: activeTenant.id,
           orgName: companyConfig.name || activeTenant.name,
+          organization: activeTenant,
+          backupVersion: 1,
           clients,
           jobs,
           invoices,
@@ -1768,6 +1774,8 @@ export default function App() {
           racks,
           equipments,
           problems,
+          logs,
+          fontSize,
           companyConfig
         };
 
@@ -1784,30 +1792,38 @@ export default function App() {
         const filename = `${orgPrefix}_Local_Backup_${YYYY}-${MM}-${DD}_${hh}-${mm}-${ss}.json`;
         const jsonStr = JSON.stringify(dataToExport, null, 2);
 
-        // 1. Always save a persistent JSON snapshot to the Home Server data/backups/ disk folder
-        try {
-          await saveBackupSnapshotToServer(activeTenant.id, companyConfig.name || activeTenant.name, dataToExport, filename);
-        } catch (serverSnapErr) {
-          console.warn('Server disk snapshot failed:', serverSnapErr);
+        // 1. Save a server snapshot only when this organisation has Home Server access.
+        if (homeServerSyncEnabled) {
+          try {
+            await saveBackupSnapshotToServer(activeTenant.id, companyConfig.name || activeTenant.name, dataToExport, filename);
+          } catch (serverSnapErr) {
+            console.warn('Server disk snapshot failed:', serverSnapErr);
+          }
         }
 
-        // 2. If connected PC folder handle exists, write directly into connected folder
+        // 2. Write directly into the connected PC folder when available.
+        let savedToConnectedFolder = false;
         if (dirHandle) {
           const success = await writeBackupToDirectoryHandle(dirHandle, filename, jsonStr);
           if (success) {
-            setCompanyConfig(prev => ({ ...prev, lastLocalBackupTime: formattedTimestamp }));
-            return;
+            savedToConnectedFolder = true;
           }
         }
 
         setCompanyConfig(prev => ({ ...prev, lastLocalBackupTime: formattedTimestamp }));
+        if (savedToConnectedFolder) {
+          triggerSaveNotification(`✓ Automatic JSON backup saved to ${dirHandle?.name || 'the connected PC folder'}.`);
+        } else {
+          triggerSaveNotification('Automatic backup could not access the selected PC folder. Choose the folder again in Backup Settings.', true);
+        }
       } catch (err) {
         console.warn('Background local backup skipped:', err);
+        triggerSaveNotification('Automatic JSON backup could not be created.', true);
       }
     };
 
-    // 1. On Every Change / Sync Mode
-    if (freq === 'on_sync') {
+    // 1. On Every Change Mode
+    if (isChangeBasedBackup) {
       if (backupTimerRef.current) {
         clearTimeout(backupTimerRef.current);
       }
@@ -1821,13 +1837,15 @@ export default function App() {
       };
     }
 
-    // 2. Fixed Daily Time Mode
-    if (freq === 'daily') {
-      const schedTime = companyConfig.localBackupScheduleTime || '18:00';
+    // 2. Custom time mode, supporting one or two daily times.
+    if (freq === 'custom' || freq === 'daily') {
+      const scheduleTimes = companyConfig.localBackupScheduleTimes?.length
+        ? companyConfig.localBackupScheduleTimes
+        : [companyConfig.localBackupScheduleTime || '18:00'];
       const interval = setInterval(() => {
         const now = new Date();
         const currentHHMM = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-        if (currentHHMM === schedTime && now.getSeconds() === 0) {
+        if (scheduleTimes.includes(currentHHMM) && now.getSeconds() === 0) {
           performBackgroundLocalBackup();
         }
       }, 1000);
@@ -1835,18 +1853,11 @@ export default function App() {
     }
 
     // 3. Periodic Duration Intervals (30 mins, 1 hour to 12 hours)
-    const intervalMap: { [key: string]: number } = {
-      mins_30: 30 * 60 * 1000,
-      hourly_1: 1 * 60 * 60 * 1000,
-      hourly_2: 2 * 60 * 60 * 1000,
-      hourly_3: 3 * 60 * 60 * 1000,
-      hourly_4: 4 * 60 * 60 * 1000,
-      hourly_5: 5 * 60 * 60 * 1000,
-      hourly_6: 6 * 60 * 60 * 1000,
-      hourly_12: 12 * 60 * 60 * 1000,
-    };
-
-    const intervalMs = intervalMap[freq];
+    const intervalMs = freq === 'minutes'
+      ? (companyConfig.localBackupInterval || 5) * 60 * 1000
+      : freq === 'hours'
+      ? (companyConfig.localBackupInterval || 1) * 60 * 60 * 1000
+      : undefined;
     if (intervalMs) {
       const interval = setInterval(() => {
         performBackgroundLocalBackup();
@@ -1856,10 +1867,15 @@ export default function App() {
   }, [
     isAuthenticated,
     userRole,
+    currentUser?.role,
     activeTenant.id,
+    homeServerSyncEnabled,
+    companyConfig,
     companyConfig.localBackupEnabled,
     companyConfig.localBackupFrequency,
+    companyConfig.localBackupInterval,
     companyConfig.localBackupScheduleTime,
+    companyConfig.localBackupScheduleTimes,
     clients,
     jobs,
     invoices,
@@ -1871,7 +1887,9 @@ export default function App() {
     categories,
     racks,
     equipments,
-    problems
+    problems,
+    logs,
+    fontSize
   ]);
 
   // Git-like Pull-First database synchronization handler
@@ -1879,9 +1897,16 @@ export default function App() {
     setIsSyncing(true);
     const syncStartTime = Date.now();
     try {
+      if (!homeServerSyncEnabled) {
+        triggerSaveNotification('✓ Organisation is in local-only mode. All changes are saved on this device.');
+        return;
+      }
       console.info(`[Home Server Sync] Pull-First Sync initiated for tenant: ${activeTenant.id}`);
 
-      // STEP 1: PULL authoritative state FIRST from Home Server SQLite
+      // STEP 1: Push local-first changes before pulling server state.
+      await pushPendingOperations(activeTenant.id);
+
+      // STEP 2: Pull the merged/authoritative state from Home Server SQLite
       const bootstrap = await bootstrapTenantFromHomeServer(activeTenant.id);
       if (bootstrap && bootstrap.collections) {
         const col = bootstrap.collections;
@@ -1904,9 +1929,6 @@ export default function App() {
         await pullDeltaFromHomeServer(activeTenant.id);
       }
 
-      // STEP 2: PUSH only pending uncommitted local operations
-      await pushPendingOperations(activeTenant.id);
-
       // Sync Company Config & Global System Branding
       await saveCompanyConfigToFirestore(activeTenant.id, companyConfig);
       const isMasterAdminOrg = activeTenant.id === 'org-admin' || activeTenant.code === 'ADMIN-00' || activeTenant.ownerMobile?.includes('8149862034');
@@ -1923,7 +1945,12 @@ export default function App() {
       setIsQuotaExhaustedState(isQuotaExhausted());
 
       // STEP 3: Admin-only PC Folder write (Optional, only if Admin previously configured folder handle)
-      const isAllowedRoleForBackup = userRole === 'Admin' || userRole === 'Master Admin' || activeTenant?.id === 'org-admin';
+      const isAllowedRoleForBackup = userRole === 'Admin'
+        || String(userRole) === 'Org Admin'
+        || userRole === 'Master Admin'
+        || currentUser?.role === 'Admin'
+        || currentUser?.role === 'Org Admin'
+        || activeTenant?.id === 'org-admin';
       let pcFolderSynced = false;
       if (isAllowedRoleForBackup) {
         const dirHandle = (window as any)[`__nibbanLocalDirectoryHandle_${activeTenant.id}`] || (await getDirectoryHandle(activeTenant.id));
@@ -2051,7 +2078,15 @@ export default function App() {
   const addJob = (newJob: Omit<RepairJob, 'id'>) => {
     try {
       const orgPrefix = getOrgPrefix(companyConfig.name || activeTenant.name, activeTenant.code);
-      const jobId = `${orgPrefix}/2026/${jobs.length + 101}`;
+      const usedJobNumbers = new Set(
+        jobs
+          .map(job => job.id.match(/\/(\d+)$/)?.[1])
+          .filter(Boolean)
+          .map(Number)
+      );
+      let nextJobNumber = 101;
+      while (usedJobNumbers.has(nextJobNumber)) nextJobNumber += 1;
+      const jobId = `${orgPrefix}/2026/${nextJobNumber}`;
       const nowIso = new Date().toISOString();
       const formattedNow = new Date().toLocaleString('en-IN', {
         day: '2-digit', month: 'short', year: 'numeric',
@@ -2268,7 +2303,7 @@ export default function App() {
       }
 
       // Handle Advance Refund if checked and advance was taken
-      if (updatedJob.advanceRefunded && newAdvance > 0 && (!oldJob || !oldJob.advanceRefunded)) {
+      if (updatedJob.advanceRefunded && newAdvance > 0 && (!oldJob || !oldJob.advanceRefunded) && !oldIsPaid) {
         const refundAmount = newAdvance;
         const payDate = new Date().toISOString().split('T')[0];
         const payMode = updatedJob.advanceRefundMode || 'Cash';
@@ -2401,6 +2436,52 @@ export default function App() {
             }
             return c;
           }));
+        }
+      }
+
+      // A paid job changed to Not Repaired: reverse the paid bill once and keep
+      // the reversal visible in payment history.
+      if (oldIsPaid && updatedJob.repairOutcome === 'Not Repaired' && updatedJob.advanceRefunded) {
+        const linkedPaidInvoice = invoices.find(invoice => invoice.linkedJobId === updatedJob.id);
+        const paidAmountToReturn = linkedPaidInvoice?.paidAmount || payments
+          .filter(payment => payment.linkedJobId === updatedJob.id && payment.amount > 0)
+          .reduce((total, payment) => total + payment.amount, 0);
+        const refundRef = `REFUND-${updatedJob.id}`;
+        const alreadyRefunded = payments.some(payment => payment.refNo === refundRef);
+
+        if (paidAmountToReturn > 0 && !alreadyRefunded) {
+          const refundPayment: Payment = {
+            id: `pay-refund-${updatedJob.id}-${Date.now()}`,
+            tenantId: activeTenant.id,
+            date: new Date().toISOString().split('T')[0],
+            clientId: updatedJob.clientId,
+            clientName: updatedJob.clientName,
+            amount: -paidAmountToReturn,
+            mode: updatedJob.advanceRefundMode || updatedJob.advancePaymentMode || 'Cash',
+            refNo: refundRef,
+            remarks: `Paid amount returned because job card #${updatedJob.id} was marked Not Repaired.`,
+            linkedJobId: updatedJob.id,
+            invoiceId: linkedPaidInvoice?.id
+          };
+          setPayments(prev => [refundPayment, ...prev]);
+          setLedger(prev => [{
+            id: `l-refund-${updatedJob.id}-${Date.now()}`,
+            tenantId: activeTenant.id,
+            clientId: updatedJob.clientId,
+            date: new Date().toLocaleDateString('en-IN'),
+            type: 'Paid Amount Returned - Not Repaired',
+            refNo: refundRef,
+            debit: paidAmountToReturn,
+            credit: 0,
+            balance: 0
+          }, ...prev]);
+        }
+
+        if (linkedPaidInvoice) {
+          setInvoices(prev => prev.map(invoice => invoice.id === linkedPaidInvoice.id
+            ? { ...invoice, isPaid: false, paidAmount: 0, balanceAmount: invoice.grandTotal }
+            : invoice
+          ));
         }
       }
 
@@ -2642,7 +2723,15 @@ export default function App() {
   const addInvoice = (newInvoice: Omit<Invoice, 'id'>) => {
     try {
       const orgPrefix = getOrgPrefix(companyConfig.name || activeTenant.name, activeTenant.code);
-      const invoiceNo = `${orgPrefix}/2026/BILL/${invoices.length + 459}`;
+      const usedInvoiceNumbers = new Set(
+        invoices
+          .map(invoice => invoice.id.match(/\/BILL\/(\d+)$/)?.[1])
+          .filter(Boolean)
+          .map(Number)
+      );
+      let nextInvoiceNumber = 459;
+      while (usedInvoiceNumbers.has(nextInvoiceNumber)) nextInvoiceNumber += 1;
+      const invoiceNo = `${orgPrefix}/2026/BILL/${nextInvoiceNumber}`;
       const paid = newInvoice.isPaid !== false ? newInvoice.paidAmount : 0;
       const bal = newInvoice.grandTotal - paid;
       const invoice: Invoice = {
@@ -3559,8 +3648,12 @@ export default function App() {
                   title={
                     !isOnline
                       ? 'Device is offline. All data is saved locally in browser storage & PC backups until internet returns.'
+                      : !homeServerSyncEnabled
+                      ? 'Local-only mode. Data is saved on this device.'
                       : isSyncing
                       ? 'Synchronizing changes in real time with Home Server...'
+                      : !homeServerSyncEnabled
+                      ? 'Local-only mode. Data is saved on this device.'
                       : `Data synchronized in real time with Home Server. Last sync: ${lastSyncedAt || 'Just now'}. Click to trigger manual sync.`
                   }
                   className={`flex-1 px-2.5 py-1.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center gap-1.5 font-bold text-xs shadow-xs ${
@@ -3573,7 +3666,12 @@ export default function App() {
                       : 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300 hover:bg-emerald-500/30'
                   }`}
                 >
-                  {!isOnline ? (
+                  {!homeServerSyncEnabled ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-teal-300 shrink-0" />
+                      <span className="text-[10px] font-extrabold uppercase tracking-wide">Local</span>
+                    </>
+                  ) : !isOnline ? (
                     <>
                       <WifiOff className="w-3.5 h-3.5 text-amber-300 shrink-0" />
                       <span className="text-[10px] font-extrabold uppercase tracking-wide">Offline</span>
@@ -3581,7 +3679,7 @@ export default function App() {
                   ) : isSyncing ? (
                     <>
                       <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-200 shrink-0" />
-                      <span className="text-[10px] font-extrabold uppercase tracking-wide">Syncing</span>
+                      <span className="text-[10px] font-extrabold uppercase tracking-wide">{homeServerSyncEnabled ? 'Syncing' : 'Saving Locally'}</span>
                     </>
                   ) : justSynced ? (
                     <>
@@ -3597,6 +3695,8 @@ export default function App() {
                 </button>
               </div>
 
+              {homeServerSyncEnabled ? (
+              <>
               {/* Server Live Health Status Indicator (Green / Red Dot) */}
               <div className="px-3.5 py-2.5 border-b border-white/10 flex flex-col gap-2 shrink-0 bg-black/20" id="mobile-server-health-indicator">
                 <div className="flex items-center justify-between">
@@ -3671,6 +3771,13 @@ export default function App() {
                   </div>
                 )}
               </div>
+              </>
+              ) : (
+                <div className="px-3.5 py-2.5 border-b border-white/10 text-[10px] text-teal-200 flex items-center gap-2 bg-black/20">
+                  <WifiOff className="w-3.5 h-3.5 text-teal-300" />
+                  <span>Local-only mode · Saved on this device</span>
+                </div>
+              )}
 
               <nav className="p-4 space-y-1.5">
                 {getNavItems().map((menu) => {
@@ -3781,7 +3888,12 @@ export default function App() {
                   : 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300 hover:bg-emerald-500/30'
               }`}
             >
-              {!isOnline ? (
+                  {!homeServerSyncEnabled ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-teal-300 shrink-0" />
+                      <span className="text-[10px] font-extrabold uppercase tracking-wide">Local</span>
+                    </>
+                  ) : !isOnline ? (
                 <>
                   <WifiOff className="w-3.5 h-3.5 text-amber-300 shrink-0" />
                   <span className="text-[10px] font-extrabold uppercase tracking-wide">Offline</span>
@@ -3789,7 +3901,7 @@ export default function App() {
               ) : isSyncing ? (
                 <>
                   <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-200 shrink-0" />
-                  <span className="text-[10px] font-extrabold uppercase tracking-wide">Syncing</span>
+                      <span className="text-[10px] font-extrabold uppercase tracking-wide">{homeServerSyncEnabled ? 'Syncing' : 'Saving Locally'}</span>
                 </>
               ) : justSynced ? (
                 <>
@@ -3805,6 +3917,8 @@ export default function App() {
             </button>
           </div>
 
+          {homeServerSyncEnabled ? (
+          <>
           {/* Desktop Server Live Health Status Indicator (Green / Red Dot) */}
           <div className="px-3.5 py-2.5 border-b border-white/10 flex flex-col gap-2 shrink-0 bg-black/20" id="desktop-server-health-indicator">
             <div className="flex items-center justify-between">
@@ -3879,6 +3993,13 @@ export default function App() {
               </div>
             )}
           </div>
+          </>
+          ) : (
+            <div className="px-3.5 py-2.5 border-b border-white/10 text-[10px] text-teal-200 flex items-center gap-2 bg-black/20">
+              <WifiOff className="w-3.5 h-3.5 text-teal-300" />
+              <span>Local-only mode · Saved on this device</span>
+            </div>
+          )}
 
           {/* Menu items */}
           <nav className="p-4 pt-3.5 space-y-1.5" id="sidebar-nav">
@@ -4003,7 +4124,7 @@ export default function App() {
       {/* 2. Main Workstage Section */}
       <main className="flex-1 flex flex-col overflow-hidden h-full">
         {/* Sticky Server Disconnected Warning Banner */}
-        {serverStatus === 'offline' && (
+        {homeServerSyncEnabled && serverStatus === 'offline' && (
           <div className="w-full bg-gradient-to-r from-rose-700 via-rose-600 to-red-700 text-white px-3 sm:px-5 py-2.5 text-xs font-bold flex items-center justify-between shadow-lg shrink-0 border-b border-rose-800 z-40 animate-in fade-in duration-200">
             <div className="flex items-center gap-2.5 min-w-0">
               <span className="relative flex h-2.5 w-2.5 shrink-0">
@@ -4313,6 +4434,7 @@ export default function App() {
               jobs={jobs}
               clients={clients}
               invoices={invoices}
+              payments={payments}
               companyConfig={companyConfig}
               userRole={userRole}
               currentUser={currentUser}
@@ -4443,6 +4565,8 @@ export default function App() {
               onDeleteProblem={deleteProblem}
               appData={{
                 clients,
+                organization: activeTenant,
+                backupVersion: 1,
                 jobs,
                 invoices,
                 products,
@@ -4450,11 +4574,13 @@ export default function App() {
                 payments,
                 expenses,
                 users,
+                logs,
                 categories,
                 racks,
                 equipments,
                 problems,
-                companyConfig
+                companyConfig,
+                fontSize
               }}
               onRestoreData={(restored) => {
                 const tagTenant = (items: any[]) => Array.isArray(items) ? items.map(item => ({ ...item, tenantId: activeTenant.id })) : items;
@@ -4498,6 +4624,11 @@ export default function App() {
                   setUsers(items);
                   replaceLocalCollection(activeTenant.id, 'users', items, true);
                 }
+                if (restored.logs) {
+                  const items = tagTenant(restored.logs);
+                  setLogs(items);
+                  replaceLocalCollection(activeTenant.id, 'logs', items, true);
+                }
                 if (restored.categories) {
                   const items = tagTenant(restored.categories);
                   setCategories(items);
@@ -4519,6 +4650,7 @@ export default function App() {
                   replaceLocalCollection(activeTenant.id, 'problems', items, true);
                 }
                 if (restored.companyConfig) setCompanyConfig(prev => ({ ...prev, ...restored.companyConfig }));
+                if (restored.fontSize) setFontSize(String(restored.fontSize));
                 
                 // Immediately flush queue to Home Server backend
                 if (getAuthToken()) {

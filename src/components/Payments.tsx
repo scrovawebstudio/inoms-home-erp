@@ -79,7 +79,11 @@ export default function Payments({
   const [linkedRef, setLinkedRef] = useState('');
 
   // Filter payments by search term and selected date range
-  const filteredPayments = payments.filter(p => {
+  const filteredPayments = [...payments].sort((first, second) => {
+    const firstTime = new Date(first.date || 0).getTime();
+    const secondTime = new Date(second.date || 0).getTime();
+    return secondTime - firstTime || second.id.localeCompare(first.id);
+  }).filter(p => {
     const matchesSearch =
       p.clientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (p.refNo && p.refNo.toLowerCase().includes(searchTerm.toLowerCase())) ||

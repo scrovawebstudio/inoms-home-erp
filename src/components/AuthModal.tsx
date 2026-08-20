@@ -432,8 +432,6 @@ export default function AuthModal({
         setDetectedTenant(match);
         setMobileSubmitted(true);
 
-        // Keep server in sync with active tenant
-        syncTenantsViaApi([match]).catch(() => {});
       } else {
         setDetectedTenant(null);
         setMobileSubmitted(false);
@@ -788,6 +786,7 @@ export default function AuthModal({
 
       const newOrg: TenantOrg = (apiRes.success && apiRes.org) ? {
         ...apiRes.org,
+        pin: apiRes.org.pin && apiRes.org.pin !== '••••••' ? apiRes.org.pin : (trialPin.trim() || '1234'),
         secretKey: apiRes.org.secretKey || generatedSecret
       } : {
         id: `org-${Date.now()}`,
@@ -863,6 +862,7 @@ export default function AuthModal({
     );
     const newOrg: TenantOrg = (apiRes.success && apiRes.org) ? {
       ...apiRes.org,
+      pin: apiRes.org.pin && apiRes.org.pin !== '••••••' ? apiRes.org.pin : (regOrgPin.trim() || '1234'),
       secretKey: apiRes.org.secretKey || regSecretKey
     } : {
       id: `org-${Date.now()}`,

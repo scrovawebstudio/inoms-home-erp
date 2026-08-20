@@ -16,7 +16,7 @@ import {
   Receipt,
   Clock
 } from 'lucide-react';
-import { RepairJob, Client, CompanyConfig, JobStatus, Invoice, SystemUser, getEffectiveBillAmount, sortJobsByLatest } from '../types';
+import { RepairJob, Client, CompanyConfig, JobStatus, Invoice, Payment, SystemUser, getEffectiveBillAmount, sortJobsByLatest } from '../types';
 import { TenantFeatures, getTenantFeatures } from './AuthModal';
 import LockedAddonModal, { AddonType } from './LockedAddonModal';
 import { openWhatsAppForJob } from '../lib/whatsappUtils';
@@ -32,6 +32,7 @@ interface OutwardsProps {
   jobs: RepairJob[];
   clients: Client[];
   invoices?: Invoice[];
+  payments?: Payment[];
   companyConfig: CompanyConfig;
   userRole?: string;
   currentUser?: SystemUser | null;
@@ -47,6 +48,7 @@ export default function Outwards({
   jobs,
   clients,
   invoices = [],
+  payments = [],
   companyConfig,
   userRole,
   currentUser,
@@ -127,7 +129,7 @@ export default function Outwards({
     setEditPaymentStatus(isNotRepairedJob ? 'Not Repaired' : (job.paymentStatus || ''));
     setEditPaymentMode(job.advancePaymentMode || 'UPI');
     setEditRepairOutcome(isNotRepairedJob ? 'Not Repaired' : (job.repairOutcome || 'Repaired'));
-    setEditAdvanceRefunded(job.advanceRefunded || false);
+    setEditAdvanceRefunded(job.advanceRefunded || payments.some(payment => payment.refNo === `REFUND-${job.id}`));
     setEditAdvanceRefundMode(job.advanceRefundMode || 'UPI');
   };
 
@@ -204,6 +206,15 @@ export default function Outwards({
         handleSendWhatsAppNotification(updated);
       }
     }
+  };
+
+  const getRefundableAmount = (job: RepairJob): number => {
+    const linkedInvoice = invoices.find(invoice => invoice.linkedJobId === job.id);
+    const invoicePaid = linkedInvoice?.paidAmount || 0;
+    const linkedPayments = payments
+      .filter(payment => payment.linkedJobId === job.id && payment.amount > 0)
+      .reduce((total, payment) => total + payment.amount, 0);
+    return Math.max(invoicePaid, linkedPayments, job.advanceAmount || 0);
   };
 
   const handleSendWhatsAppNotification = (job: RepairJob) => {
@@ -554,6 +565,11 @@ export default function Outwards({
                       </div>
                     </td>
                     <td className="py-3.5 px-4 whitespace-nowrap">
+                      {job.repairOutcome === 'Not Repaired' || job.paymentStatus === 'Not Repaired' ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-black bg-amber-100 text-amber-800 border border-amber-300">
+                          ⚪ NOT REPAIRED
+                        </span>
+                      ) : (
                       <span
                         className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-black ${
                           job.paymentStatus === 'Unpaid'
@@ -563,6 +579,7 @@ export default function Outwards({
                       >
                         {job.paymentStatus === 'Unpaid' ? '✕ UNPAID' : `✓ PAID ${job.advancePaymentMode ? `(${job.advancePaymentMode})` : ''}`}
                       </span>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono font-black text-emerald-600 text-sm whitespace-nowrap">
                       ₹{getEffectiveBillAmount(job).toLocaleString('en-IN')}
@@ -768,26 +785,30 @@ export default function Outwards({
                   </div>
                 </div>
 
-                {/* Advance Refund handling for Not Repaired jobs */}
+                {/* Refund handling for Not Repaired jobs */}
                 {editRepairOutcome === 'Not Repaired' && (
                   <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3.5 space-y-2">
+                    {(() => {
+                      const refundableAmount = getRefundableAmount(editingJob);
+                      const hasRefund = editAdvanceRefunded;
+                      return (
+                        <>
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                       <div>
                         <span className="font-bold text-amber-900 text-xs flex items-center gap-1">
                           ⚠️ Device Not Repaired
-                          {editingJob.advanceAmount && editingJob.advanceAmount > 0 ? (
-                            <span className="text-rose-700 font-extrabold">| Advance Taken: ₹{editingJob.advanceAmount.toLocaleString('en-IN')}</span>
+                          {refundableAmount > 0 ? (
+                            <span className="text-rose-700 font-extrabold">| Amount to Return: ₹{refundableAmount.toLocaleString('en-IN')}</span>
                           ) : (
-                            <span className="text-slate-600 font-normal">(No Advance Taken)</span>
+                            <span className="text-slate-600 font-normal">(No Payment Taken)</span>
                           )}
                         </span>
                         <p className="text-[10px] text-amber-800 mt-0.5">
-                          Billing and fixes are disabled for unrepairable devices.
-                          {editingJob.advanceAmount && editingJob.advanceAmount > 0 ? ' Advance payment taken during inward intake should be returned to the client.' : ''}
+                          Billing and fixes are disabled for unrepairable devices. Any advance or bill payment must be returned before marking the refund complete.
                         </p>
                       </div>
 
-                      {editingJob.advanceAmount && editingJob.advanceAmount > 0 ? (
+                      {refundableAmount > 0 ? (
                         <label className="flex items-center gap-2 cursor-pointer bg-white px-3 py-1.5 rounded-lg border border-amber-300 shadow-2xs shrink-0">
                           <input
                             type="checkbox"
@@ -795,12 +816,12 @@ export default function Outwards({
                             onChange={(e) => setEditAdvanceRefunded(e.target.checked)}
                             className="w-4 h-4 text-amber-600 rounded"
                           />
-                          <span className="font-bold text-xs text-amber-900">Return Advance (₹{editingJob.advanceAmount})</span>
+                          <span className="font-bold text-xs text-amber-900">{hasRefund ? `Mark ₹${refundableAmount.toLocaleString('en-IN')} Returned` : `Return ₹${refundableAmount.toLocaleString('en-IN')}`}</span>
                         </label>
                       ) : null}
                     </div>
 
-                    {editingJob.advanceAmount && editingJob.advanceAmount > 0 && editAdvanceRefunded && (
+                    {refundableAmount > 0 && editAdvanceRefunded && (
                       <div className="flex items-center gap-2 pt-2 border-t border-amber-200/60 text-xs">
                         <label className="font-bold text-amber-900 uppercase text-[10px]">Refund Payment Mode:</label>
                         <select
@@ -812,9 +833,12 @@ export default function Outwards({
                           <option value="Cash">Cash</option>
                           <option value="Bank Transfer">Bank Transfer</option>
                         </select>
-                        <span className="text-emerald-700 font-bold ml-auto text-[11px]">✓ Refund marked</span>
+                        <span className="text-emerald-700 font-bold ml-auto text-[11px]">✓ Refund will be added to Payment History after save</span>
                       </div>
                     )}
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
 
