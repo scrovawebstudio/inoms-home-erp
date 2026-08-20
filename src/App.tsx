@@ -96,6 +96,7 @@ import AuthModal, { TenantOrg, SystemAnnouncement, INITIAL_TENANTS, getTenantFea
 import MasterAdminDashboard from './components/MasterAdminDashboard';
 import {
   subscribeTenants,
+  broadcastTenantListUpdate,
   saveTenantToFirestore,
   deleteTenantFromFirestore,
   saveCompanyConfigToFirestore,
@@ -866,7 +867,7 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Subscribe to real-time organization updates from Home Server / Firestore
+  // Subscribe to real-time organization updates from Home Server / SQLite
   React.useEffect(() => {
     const unsubscribe = subscribeTenants((cloudTenants) => {
       if (Array.isArray(cloudTenants) && cloudTenants.length > 0) {
@@ -879,7 +880,7 @@ export default function App() {
               localMap.set(ct.id, {
                 ...existing,
                 ...ct,
-                features: ct.features || existing?.features
+                features: ct.features !== undefined ? ct.features : existing?.features
               });
             }
           });
@@ -892,7 +893,7 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Synchronize activeTenant with latest tenants list so subscription/plan updates propagate immediately
+  // Synchronize activeTenant with latest tenants list so subscription/plan/features updates propagate immediately
   React.useEffect(() => {
     if (!activeTenant?.id) return;
     const latest = tenants.find(t => t.id === activeTenant.id);
@@ -931,20 +932,30 @@ export default function App() {
     setAppStorageItem(`ledger_${newTenant.id}`, JSON.stringify([]));
     setAppStorageItem(`logs_${newTenant.id}`, JSON.stringify([]));
 
+    let nextTenants: TenantOrg[] = [];
     setTenants(prev => {
       const exists = prev.some(t => t.id === newTenant.id);
-      if (exists) return prev;
+      if (exists) {
+        nextTenants = prev;
+        return prev;
+      }
       const next = [...prev, newTenant];
+      nextTenants = next;
       setAppStorageItem('tenants_v3', JSON.stringify(next));
       return next;
     });
 
+    if (nextTenants.length > 0) {
+      broadcastTenantListUpdate(nextTenants);
+    }
     await saveTenantToFirestore(newTenant);
   };
 
   const handleUpdateTenant = async (updatedTenant: TenantOrg) => {
+    let nextTenants: TenantOrg[] = [];
     setTenants(prev => {
       const next = prev.map(t => t.id === updatedTenant.id ? updatedTenant : t);
+      nextTenants = next;
       setAppStorageItem('tenants_v3', JSON.stringify(next));
       return next;
     });
@@ -958,6 +969,9 @@ export default function App() {
       }));
     }
 
+    if (nextTenants.length > 0) {
+      broadcastTenantListUpdate(nextTenants);
+    }
     await saveTenantToFirestore(updatedTenant);
     triggerSaveNotification(`✓ Organization details for "${updatedTenant.name}" updated successfully!`);
   };

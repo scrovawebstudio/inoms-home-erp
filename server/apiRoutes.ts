@@ -408,12 +408,9 @@ apiRouter.all('/auth/lookup-mobile', (req, res) => {
   }
 });
 
-// List organizations metadata (Returns all active organizations registered in SQLite)
-apiRouter.get('/auth/tenants', authMiddleware, (req: AuthenticatedRequest, res) => {
+// List organizations metadata (Returns all active organizations registered in SQLite, sanitized without sensitive PIN/passwords)
+apiRouter.get('/auth/tenants', (req: Request, res: Response) => {
   try {
-    if (!isMasterAdminSession(req.user)) {
-      return res.status(403).json({ success: false, message: 'Master Admin access required.' });
-    }
     const db = getDatabase();
     const stmt = db.prepare(`
       SELECT id, name, code, owner_mobile, owner_name, status, created_at,

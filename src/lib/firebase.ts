@@ -114,7 +114,7 @@ export async function fetchTenantsOnce(force = false): Promise<TenantOrg[]> {
       if (data && data.success && Array.isArray(data.tenants)) {
         const serverTenants: TenantOrg[] = data.tenants;
         
-        // Merge with local tenants to preserve any offline creations
+        // Merge with local tenants to preserve any offline creations, giving server features precedence
         const localMap = new Map<string, TenantOrg>();
         (cachedTenants || []).forEach(t => { if (t.id) localMap.set(t.id, t); });
 
@@ -124,7 +124,7 @@ export async function fetchTenantsOnce(force = false): Promise<TenantOrg[]> {
             localMap.set(st.id, {
               ...existing,
               ...st,
-              features: st.features || existing?.features
+              features: st.features !== undefined ? st.features : existing?.features
             });
           }
         });
@@ -146,6 +146,30 @@ export async function fetchTenantsOnce(force = false): Promise<TenantOrg[]> {
   return cachedTenants || INITIAL_TENANTS;
 }
 
+let tenantBroadcastChannel: BroadcastChannel | null = null;
+if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
+  try {
+    tenantBroadcastChannel = new BroadcastChannel('inoms_tenants_broadcast');
+    tenantBroadcastChannel.onmessage = (event) => {
+      if (event.data && event.data.type === 'TENANTS_UPDATED' && Array.isArray(event.data.tenants)) {
+        cachedTenants = event.data.tenants;
+        setAppStorageItem('tenants_v3', JSON.stringify(cachedTenants));
+        tenantListeners.forEach(cb => {
+          try { cb(cachedTenants!); } catch (_) {}
+        });
+      }
+    };
+  } catch (_) {}
+}
+
+export function broadcastTenantListUpdate(tenants: TenantOrg[]) {
+  if (tenantBroadcastChannel) {
+    try {
+      tenantBroadcastChannel.postMessage({ type: 'TENANTS_UPDATED', tenants });
+    } catch (_) {}
+  }
+}
+
 export function subscribeTenants(onUpdate: (tenants: TenantOrg[]) => void) {
   tenantListeners.add(onUpdate);
 
@@ -164,16 +188,16 @@ export function subscribeTenants(onUpdate: (tenants: TenantOrg[]) => void) {
     } catch (_) {}
   }
 
-  // Trigger background server sync
+  // Trigger background server sync immediately
   fetchTenantsOnce(true);
 
-  // Setup periodic sync every 10s if online
+  // Setup periodic sync every 4s if online
   if (!tenantPollTimer && typeof window !== 'undefined') {
     tenantPollTimer = setInterval(() => {
       if (navigator.onLine) {
         fetchTenantsOnce(true);
       }
-    }, 10000);
+    }, 4000);
   }
 
   return () => {
