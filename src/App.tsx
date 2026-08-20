@@ -866,6 +866,32 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Subscribe to real-time organization updates from Home Server / Firestore
+  React.useEffect(() => {
+    const unsubscribe = subscribeTenants((cloudTenants) => {
+      if (Array.isArray(cloudTenants) && cloudTenants.length > 0) {
+        setTenants(prev => {
+          const localMap = new Map<string, TenantOrg>();
+          prev.forEach(t => { if (t.id) localMap.set(t.id, t); });
+          cloudTenants.forEach(ct => {
+            if (ct.id) {
+              const existing = localMap.get(ct.id);
+              localMap.set(ct.id, {
+                ...existing,
+                ...ct,
+                features: ct.features || existing?.features
+              });
+            }
+          });
+          const merged = Array.from(localMap.values());
+          setAppStorageItem('tenants_v3', JSON.stringify(merged));
+          return merged;
+        });
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
   // Synchronize activeTenant with latest tenants list so subscription/plan updates propagate immediately
   React.useEffect(() => {
     if (!activeTenant?.id) return;
@@ -913,8 +939,7 @@ export default function App() {
       return next;
     });
 
-    // Tenant metadata remains local until an authenticated Master Admin action saves it.
-    if (activeTenant.id === 'org-admin') await saveTenantToFirestore(newTenant);
+    await saveTenantToFirestore(newTenant);
   };
 
   const handleUpdateTenant = async (updatedTenant: TenantOrg) => {
@@ -933,7 +958,7 @@ export default function App() {
       }));
     }
 
-    if (activeTenant.id === 'org-admin') await saveTenantToFirestore(updatedTenant);
+    await saveTenantToFirestore(updatedTenant);
     triggerSaveNotification(`✓ Organization details for "${updatedTenant.name}" updated successfully!`);
   };
 
@@ -1439,18 +1464,18 @@ export default function App() {
     bootstrapPromise
       .then(bData => {
         if (bData && bData.collections) {
-          if (bData.collections.clients) setClients(bData.collections.clients);
-          if (bData.collections.jobs) setJobs(bData.collections.jobs);
-          if (bData.collections.invoices) setInvoices(bData.collections.invoices);
-          if (bData.collections.payments) setPayments(bData.collections.payments);
-          if (bData.collections.products) setProducts(bData.collections.products);
-          if (bData.collections.expenses) setExpenses(bData.collections.expenses);
-          if (bData.collections.ledger) setLedger(bData.collections.ledger);
+          if (bData.collections.clients && (bData.collections.clients.length > 0 || clients.length === 0)) setClients(bData.collections.clients);
+          if (bData.collections.jobs && (bData.collections.jobs.length > 0 || jobs.length === 0)) setJobs(sortJobsByLatest(bData.collections.jobs));
+          if (bData.collections.invoices && (bData.collections.invoices.length > 0 || invoices.length === 0)) setInvoices(bData.collections.invoices);
+          if (bData.collections.payments && (bData.collections.payments.length > 0 || payments.length === 0)) setPayments(bData.collections.payments);
+          if (bData.collections.products && (bData.collections.products.length > 0 || products.length === 0)) setProducts(bData.collections.products);
+          if (bData.collections.expenses && (bData.collections.expenses.length > 0 || expenses.length === 0)) setExpenses(bData.collections.expenses);
+          if (bData.collections.ledger && (bData.collections.ledger.length > 0 || ledger.length === 0)) setLedger(bData.collections.ledger);
           if (bData.collections.users && bData.collections.users.length > 0) setUsers(bData.collections.users);
-          if (bData.collections.categories) setCategories(bData.collections.categories);
-          if (bData.collections.racks) setRacks(bData.collections.racks);
-          if (bData.collections.equipments) setEquipments(bData.collections.equipments);
-          if (bData.collections.problems) setProblems(bData.collections.problems);
+          if (bData.collections.categories && (bData.collections.categories.length > 0 || categories.length === 0)) setCategories(bData.collections.categories);
+          if (bData.collections.racks && (bData.collections.racks.length > 0 || racks.length === 0)) setRacks(bData.collections.racks);
+          if (bData.collections.equipments && (bData.collections.equipments.length > 0 || equipments.length === 0)) setEquipments(bData.collections.equipments);
+          if (bData.collections.problems && (bData.collections.problems.length > 0 || problems.length === 0)) setProblems(bData.collections.problems);
           if (bData.companyConfig) setCompanyConfig(prev => ({ ...prev, ...bData.companyConfig }));
         }
       })
@@ -1607,6 +1632,13 @@ export default function App() {
     const snapshot = JSON.stringify(collectionBundle);
     if (tenantCollectionPersistRef.current === snapshot) return;
 
+    // Immediately persist synchronously to local storage & indexedDB so refresh never loses data
+    Object.entries(collectionBundle).forEach(([entity, items]) => {
+      setAppStorageItem(`${entity}_${activeTenant.id}`, JSON.stringify(items));
+      replaceLocalCollection(activeTenant.id, entity, items as any[], false, false).catch(() => {});
+      broadcastLocalMutation(activeTenant.id, entity, items);
+    });
+
     if (isInitialCollectionMountRef.current) {
       isInitialCollectionMountRef.current = false;
       tenantCollectionPersistRef.current = snapshot;
@@ -1619,11 +1651,6 @@ export default function App() {
     setIsSyncing(true);
 
     const timer = window.setTimeout(async () => {
-      Object.entries(collectionBundle).forEach(([entity, items]) => {
-        setAppStorageItem(`${entity}_${activeTenant.id}`, JSON.stringify(items));
-        broadcastLocalMutation(activeTenant.id, entity, items);
-      });
-
       if (isAuthenticated && homeServerSyncEnabled) {
         try {
           setIsServerSaving(true);

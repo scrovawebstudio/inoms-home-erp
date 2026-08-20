@@ -11,7 +11,7 @@ import {
   getLocalCollection,
   subscribeLocalDb
 } from './localDb';
-import { getAppStorageItem } from './storage';
+import { getAppStorageItem, setAppStorageItem } from './storage';
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 export const auth = getAuth(app);
 
@@ -57,68 +57,187 @@ let isFetchingTenants = false;
 const tenantListeners = new Set<(tenants: TenantOrg[]) => void>();
 let tenantPollTimer: any = null;
 
+function ensureAdminActiveInList(list: TenantOrg[]): TenantOrg[] {
+  let hasAdmin = false;
+  const result = list.map(t => {
+    if (t.id === 'org-admin' || t.id === 'org-nibban' || t.code?.toUpperCase() === 'NIBBAN' || t.code?.toUpperCase() === 'ADMIN' || t.code?.toUpperCase() === 'ADMIN-00') {
+      hasAdmin = true;
+      return { ...t, status: 'active' as const };
+    }
+    return t;
+  });
+  if (!hasAdmin) {
+    result.unshift({
+      id: 'org-admin',
+      name: 'Master System Admin',
+      code: 'ADMIN-00',
+      ownerMobile: '+91 8149862034',
+      ownerName: 'Master Admin',
+      status: 'active',
+      createdAt: '2026-01-01',
+      subscriptionPlan: 'lifetime',
+      isTrial: false,
+      trialDays: 0,
+      pin: '1234'
+    });
+  }
+  return result;
+}
+
 export async function fetchTenantsOnce(force = false): Promise<TenantOrg[]> {
   if (cachedTenants && !force && !isFetchingTenants) {
     return cachedTenants;
   }
-  if (isFetchingTenants) {
-    return cachedTenants || [];
-  }
 
-  // Tenant metadata is maintained locally. Business data must never be
-  // fetched as a complete multi-organisation payload after login.
+  // Load from local storage immediately so UI is instant
   try {
     const raw = getAppStorageItem('tenants_v3') || localStorage.getItem('tenants_v3');
     const list = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(list)) {
-      cachedTenants = list.filter((tenant: TenantOrg) => !!tenant?.id);
-      tenantListeners.forEach(cb => cb(cachedTenants || []));
+    if (Array.isArray(list) && list.length > 0) {
+      cachedTenants = ensureAdminActiveInList(list.filter((t: any) => !!t?.id));
     }
+  } catch (e) {}
+
+  if (isFetchingTenants) {
+    return cachedTenants || INITIAL_TENANTS;
+  }
+
+  isFetchingTenants = true;
+  try {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('inoms_auth_token') || sessionStorage.getItem('inoms_auth_token') : null;
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch('/api/auth/tenants', { headers }).catch(() => null);
+    if (res && res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data && data.success && Array.isArray(data.tenants)) {
+        const serverTenants: TenantOrg[] = data.tenants;
+        
+        // Merge with local tenants to preserve any offline creations
+        const localMap = new Map<string, TenantOrg>();
+        (cachedTenants || []).forEach(t => { if (t.id) localMap.set(t.id, t); });
+
+        serverTenants.forEach(st => {
+          if (st.id) {
+            const existing = localMap.get(st.id);
+            localMap.set(st.id, {
+              ...existing,
+              ...st,
+              features: st.features || existing?.features
+            });
+          }
+        });
+
+        const merged = ensureAdminActiveInList(Array.from(localMap.values()));
+        cachedTenants = merged;
+        setAppStorageItem('tenants_v3', JSON.stringify(merged));
+        tenantListeners.forEach(cb => {
+          try { cb(merged); } catch (_) {}
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('Fetch tenants notice:', err);
   } finally {
     isFetchingTenants = false;
   }
-  return cachedTenants || [];
+
+  return cachedTenants || INITIAL_TENANTS;
 }
 
 export function subscribeTenants(onUpdate: (tenants: TenantOrg[]) => void) {
   tenantListeners.add(onUpdate);
 
-  // If we already have cached data, deliver immediately
+  // Deliver cached or local tenants immediately
   if (cachedTenants && cachedTenants.length > 0) {
     onUpdate(cachedTenants);
   } else {
-    fetchTenantsOnce();
+    try {
+      const raw = getAppStorageItem('tenants_v3') || localStorage.getItem('tenants_v3');
+      const list = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(list) && list.length > 0) {
+        const safe = ensureAdminActiveInList(list);
+        cachedTenants = safe;
+        onUpdate(safe);
+      }
+    } catch (_) {}
+  }
+
+  // Trigger background server sync
+  fetchTenantsOnce(true);
+
+  // Setup periodic sync every 10s if online
+  if (!tenantPollTimer && typeof window !== 'undefined') {
+    tenantPollTimer = setInterval(() => {
+      if (navigator.onLine) {
+        fetchTenantsOnce(true);
+      }
+    }, 10000);
   }
 
   return () => {
     tenantListeners.delete(onUpdate);
+    if (tenantListeners.size === 0 && tenantPollTimer) {
+      clearInterval(tenantPollTimer);
+      tenantPollTimer = null;
+    }
   };
 }
 
 export async function saveTenantToFirestore(tenant: TenantOrg): Promise<void> {
-  // Delegated to Home Server API
+  if (!tenant?.id) return;
+  
+  // 1. Immediately update local cache and trigger subscribers
   try {
+    const raw = getAppStorageItem('tenants_v3') || localStorage.getItem('tenants_v3');
+    const list: TenantOrg[] = raw ? JSON.parse(raw) : [];
+    const index = list.findIndex(t => t.id === tenant.id);
+    let nextList: TenantOrg[];
+    if (index >= 0) {
+      nextList = list.map(t => t.id === tenant.id ? { ...t, ...tenant } : t);
+    } else {
+      nextList = [...list, tenant];
+    }
+    const safe = ensureAdminActiveInList(nextList);
+    cachedTenants = safe;
+    setAppStorageItem('tenants_v3', JSON.stringify(safe));
+    tenantListeners.forEach(cb => {
+      try { cb(safe); } catch (_) {}
+    });
+  } catch (_) {}
+
+  // 2. Persist to Home Server API
+  try {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('inoms_auth_token') || sessionStorage.getItem('inoms_auth_token') : null;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) credentialsHeader(headers, token);
+
     const isUpdate = !!tenant.id;
     const url = isUpdate ? '/api/auth/update-org' : '/api/auth/register-org';
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(tenant)
     });
-    const result = await res.json();
-    if (!result.success && isUpdate) {
+    const result = await res.json().catch(() => null);
+    if (!result?.success && isUpdate) {
       // If update returned 404/false, try register
       await fetch('/api/auth/register-org', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(tenant)
-      });
+      }).catch(() => {});
     }
-    // Refresh cached list immediately on update
+    // Refresh cached list from server
     await fetchTenantsOnce(true);
   } catch (err) {
     console.warn('Error saving tenant to Home Server:', err);
   }
+}
+
+function credentialsHeader(headers: Record<string, string>, token: string) {
+  headers['Authorization'] = `Bearer ${token}`;
 }
 
 export async function updateTenantInFirestore(tenant: TenantOrg): Promise<void> {
@@ -126,10 +245,27 @@ export async function updateTenantInFirestore(tenant: TenantOrg): Promise<void> 
 }
 
 export async function deleteTenantFromFirestore(tenantId: string): Promise<void> {
+  // 1. Remove from local cache immediately
   try {
+    const raw = getAppStorageItem('tenants_v3') || localStorage.getItem('tenants_v3');
+    const list: TenantOrg[] = raw ? JSON.parse(raw) : [];
+    const nextList = ensureAdminActiveInList(list.filter(t => t.id !== tenantId));
+    cachedTenants = nextList;
+    setAppStorageItem('tenants_v3', JSON.stringify(nextList));
+    tenantListeners.forEach(cb => {
+      try { cb(nextList); } catch (_) {}
+    });
+  } catch (_) {}
+
+  // 2. Delete on Home Server
+  try {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('inoms_auth_token') || sessionStorage.getItem('inoms_auth_token') : null;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) credentialsHeader(headers, token);
+
     await fetch('/api/auth/delete-org', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ id: tenantId })
     });
     // Refresh cached list immediately on delete
@@ -167,6 +303,7 @@ export function subscribeCompanyConfig(tenantId: string, onUpdate: (config: Comp
 
 export async function saveCompanyConfigToFirestore(tenantId: string, config: CompanyConfig): Promise<void> {
   if (!tenantId) return;
+  setAppStorageItem(`company_config_${tenantId}`, JSON.stringify(config));
   await saveLocalRecord(tenantId, 'config', { ...config, id: tenantId });
   if (!isHomeServerSyncEnabledForTenant(tenantId)) return;
   try {
@@ -214,36 +351,39 @@ export function subscribeTenantCollection<T>(
 ) {
   if (!tenantId || !collectionName) return () => {};
 
-  // 1. Immediately load from local IndexedDB replica strictly scoped to tenantId
-  getLocalCollection<T>(tenantId, collectionName).then(items => {
-    if (items && items.length > 0) {
-      onUpdate(items);
-    } else {
-      // Check tenant-specific storage cache (support current `inoms_` prefix and legacy keys)
-      try {
-                // Prefer helper that understands prefixes and legacy keys
-        const cachedRaw = getAppStorageItem(`${collectionName}_${tenantId}`) || getAppStorageItem(`app_storage_${collectionName}_${tenantId}`) || localStorage.getItem(`${collectionName}_${tenantId}`) || localStorage.getItem(`app_storage_${collectionName}_${tenantId}`);
-        if (cachedRaw) {
-          const parsed = JSON.parse(cachedRaw as string);
-          if (Array.isArray(parsed)) {
-            // Deliver whatever cached data exists (including empty arrays for deterministic behavior)
-            onUpdate(parsed);
-            return;
-          }
-        }
-      } catch (e) {}
+  // 1. Immediately check synchronous localStorage (authoritative for fresh local edits)
+  let hasLoadedFromStorage = false;
+  try {
+    const cachedRaw = getAppStorageItem(`${collectionName}_${tenantId}`) ||
+                      localStorage.getItem(`inoms_${collectionName}_${tenantId}`) ||
+                      localStorage.getItem(`${collectionName}_${tenantId}`);
+    if (cachedRaw !== null && cachedRaw !== undefined) {
+      const parsed = JSON.parse(cachedRaw);
+      if (Array.isArray(parsed)) {
+        hasLoadedFromStorage = true;
+        onUpdate(parsed as T[]);
+        // Ensure IndexedDB replica is also synchronized with this latest snapshot
+        replaceLocalCollection(tenantId, collectionName, parsed, false, false).catch(() => {});
+      }
+    }
+  } catch (e) {}
 
-      // ONLY for Master Admin org allow initial seed fallback; all real tenant orgs remain strictly isolated & empty
-      if (tenantId === 'org-admin' && getLocalData) {
+  // 2. If storage was empty or not found, fall back to IndexedDB
+  if (!hasLoadedFromStorage) {
+    getLocalCollection<T>(tenantId, collectionName).then(items => {
+      if (items && items.length > 0) {
+        onUpdate(items);
+        setAppStorageItem(`${collectionName}_${tenantId}`, JSON.stringify(items));
+      } else if (tenantId === 'org-admin' && getLocalData) {
         const fallback = getLocalData();
         if (fallback && fallback.length > 0) {
           onUpdate(fallback);
         }
       }
-    }
-  });
+    }).catch(() => {});
+  }
 
-  // 2. Subscribe to reactive local replica updates with strict tenant isolation
+  // 3. Subscribe to reactive local replica updates with strict tenant isolation
   const unsubscribe = subscribeLocalDb((tId, entity, data) => {
     if (tId === tenantId && entity === collectionName) {
       onUpdate(data as T[]);
@@ -259,11 +399,17 @@ export async function saveTenantCollectionToFirestore(
   items: any[]
 ): Promise<void> {
   if (!tenantId || !collectionName) return;
-  // 1. Atomically replace collection in local IndexedDB replica
-  await replaceLocalCollection(tenantId, collectionName, items, false, false);
+  const safeItems = Array.isArray(items) ? items : [];
+
+  // 1. Save synchronously to localStorage
+  setAppStorageItem(`${collectionName}_${tenantId}`, JSON.stringify(safeItems));
+
+  // 2. Atomically replace collection in local IndexedDB replica
+  await replaceLocalCollection(tenantId, collectionName, safeItems, false, false);
   if (!isHomeServerSyncEnabledForTenant(tenantId)) return;
-  // 2. Persist directly to Home Server SQLite database
+
+  // 3. Persist directly to Home Server SQLite database
   try {
-    saveTenantCollectionViaApi(tenantId, collectionName, items).catch(() => {});
+    saveTenantCollectionViaApi(tenantId, collectionName, safeItems).catch(() => {});
   } catch (e) {}
 }

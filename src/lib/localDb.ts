@@ -466,6 +466,7 @@ export async function bootstrapTenantFromHomeServer(tenantId: string): Promise<{
       notifyListeners(tenantId, entityName, (items || []) as any[]);
     }
 
+    data.collections = collections;
     return data;
   } catch (err) {
     return null;
